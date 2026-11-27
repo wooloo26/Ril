@@ -256,6 +256,9 @@ pub(crate) fn extract_doc_comment(text: &str, decl_offset: usize) -> Option<Stri
     while line_idx > 0 {
         line_idx -= 1;
         let trimmed = lines.get(line_idx).map(|s| s.trim()).unwrap_or("");
+        if ril_syntax::directive::is_lint_directive_comment(trimmed) {
+            continue;
+        }
         if let Some(rest) = trimmed.strip_prefix("--") {
             let cleaned = rest.strip_prefix(' ').unwrap_or(rest);
             // Normalize doctest fence tags (`ril,no_run`, `ril,ignore`) so VS Code Markdown renders Ril highlighting.
@@ -277,17 +280,22 @@ pub(crate) fn extract_doc_comment(text: &str, decl_offset: usize) -> Option<Stri
     (!doc.is_empty()).then_some(doc)
 }
 
-/// Returns the LSP range at which a new `use ...` import line should be inserted.
+/// Returns the 0-based line index at which a new `use ...` import line should be inserted.
+///
+/// Places imports immediately after the last top-level `use` statement, or—when a file has no
+/// imports yet—after any leading `--! ril:` file directives / header comments and *before* the
+/// first declaration's attached doc comments and `meta(...)` attributes.
 pub(crate) fn import_insert_line(text: &str) -> usize {
+    let lines: Vec<&str> = text.lines().collect();
     let mut last_use_line: Option<usize> = None;
-    let mut first_non_comment: Option<usize> = None;
-    for (idx, raw) in text.lines().enumerate() {
+    let mut first_code_line: Option<usize> = None;
+    for (idx, raw) in lines.iter().enumerate() {
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed.starts_with("--") {
             continue;
         }
-        if first_non_comment.is_none() {
-            first_non_comment = Some(idx);
+        if first_code_line.is_none() {
+            first_code_line = Some(idx);
         }
         let is_import = trimmed.starts_with("use ")
             || trimmed.starts_with("pub use ")
@@ -299,10 +307,21 @@ pub(crate) fn import_insert_line(text: &str) -> usize {
         }
     }
     if let Some(line) = last_use_line {
-        line + 1
-    } else {
-        first_non_comment.unwrap_or(0)
+        return line + 1;
     }
+    let Some(mut anchor) = first_code_line else {
+        return 0;
+    };
+    // Walk back across contiguous leading doc comments / directives directly attached to the first
+    // declaration, stopping before any blank line or `--! ril:` file-wide directive.
+    while anchor > 0 {
+        let prev = lines.get(anchor - 1).map_or("", |l| l.trim());
+        if prev.starts_with("--!") || !prev.starts_with("--") {
+            break;
+        }
+        anchor -= 1;
+    }
+    anchor
 }
 
 #[cfg(test)]

@@ -355,11 +355,13 @@ impl Parser<'_> {
     ) -> Result<Signature> {
         self.open("(", ")", Layout::List)?;
         let params = self.list(")", |p| p.parameter(named, parameter_types))?;
+        let params_close_span = self.last;
         let obligations = self.obligations()?;
         self.continue_lines(|tok| tok == "->");
-        self.require("->")?;
+        let arrow_span = self.require("->")?.span;
         self.skip_lines();
-        let result_mode = self.mode(&[Mode::New, Mode::Ref, Mode::Shared, Mode::Infer]);
+        let (result_mode, result_mode_start) =
+            self.mode_spanned(&[Mode::New, Mode::Ref, Mode::Shared, Mode::Infer]);
         let mut result_sources = Vec::new();
         if matches!(result_mode, Mode::Ref | Mode::Shared) {
             self.open("(", ")", Layout::List)?;
@@ -373,6 +375,7 @@ impl Parser<'_> {
             }
             self.close(")")?;
         }
+        let result_mode_span = result_mode_start.map(|start| start.join(self.last));
         let result = self.ty()?;
         let guards = if named && !parameter_types {
             self.guards()?
@@ -382,8 +385,11 @@ impl Parser<'_> {
         Ok(Signature {
             is_ctl,
             params,
+            params_close_span,
             obligations,
+            arrow_span,
             result_mode,
+            result_mode_span,
             result_sources,
             result,
             guards,
@@ -393,7 +399,7 @@ impl Parser<'_> {
     pub(super) fn parameter(&mut self, named: bool, types_only: bool) -> Result<Parameter> {
         self.layout();
         let meta = !types_only && self.eat("meta");
-        let mode = self.mode(PARAMETERS);
+        let (mode, mode_span) = self.mode_spanned(PARAMETERS);
         if self.eat("var") {
             return Err(self.error(Code::E0403, self.last, "parameters cannot be reassignable"));
         }
@@ -440,6 +446,7 @@ impl Parser<'_> {
             pattern,
             is_meta: meta,
             mode,
+            mode_span,
             ty,
             guards,
             default,
@@ -468,12 +475,15 @@ impl Parser<'_> {
         loop {
             self.continue_lines(|tok| matches!(tok, "@" | "&"));
             if self.eat("@") {
+                let at_span = self.last;
                 let effect = matches!(
                     self.current().kind,
                     Kind::Word(Word::Value | Word::Pascal | Word::Constant | Word::Primitive)
                 );
                 if effect && self.current().tight_left {
-                    obligations.effects.push(self.path(Angle::Type, true)?);
+                    let path = self.path(Angle::Type, true)?;
+                    obligations.effect_spans.push(at_span.join(path.span));
+                    obligations.effects.push(path);
                 } else {
                     obligations.open_effects = true;
                 }
@@ -840,10 +850,12 @@ impl Parser<'_> {
 
     fn binding(&mut self, is_meta: bool, top: bool) -> Result<StmtKind> {
         let variable = self.eat("var");
-        if !variable {
-            self.require("let")?;
-        }
-        let mode = self.mode(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
+        let keyword_span = if variable {
+            Some(self.last)
+        } else {
+            Some(self.require("let")?.span)
+        };
+        let (mode, mode_span) = self.mode_spanned(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
         if variable && mode == Mode::Via {
             return Err(self.error(Code::E0403, self.last, "var binding cannot use via mode"));
         }
@@ -911,6 +923,8 @@ impl Parser<'_> {
                 mode,
                 mode_path: None,
                 bind_mode: false,
+                keyword_span,
+                mode_span,
             },
             pattern,
             ty,
@@ -925,11 +939,12 @@ impl Parser<'_> {
         let operation = self.path(Angle::Type, false)?;
         self.require("=")?;
         self.skip_lines();
-        let mode = self.mode(ARGUMENT);
+        let (mode, mode_span) = self.mode_spanned(ARGUMENT);
         Ok(Handler {
             is_ctl,
             operation,
             mode,
+            mode_span,
             value: self.expr()?,
         })
     }

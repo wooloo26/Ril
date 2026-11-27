@@ -30,9 +30,10 @@ use std::{
 
 use ril_source::{
     diag::Severity,
+    fix::DiagnosticTag,
     span::{FileId, SourceFile},
 };
-use ril_syntax::{fmt, parser::FileKind};
+use ril_syntax::{directive, fmt, lexer, parser::FileKind};
 use serde_json::{Value, json};
 
 use crate::{
@@ -99,7 +100,11 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
                                     },
                                     "inlayHintProvider": true,
                                     "codeActionProvider": {
-                                        "codeActionKinds": ["quickfix"]
+                                        "codeActionKinds": [
+                                            "quickfix",
+                                            "source.fixAll.ril",
+                                            "source.organizeImports"
+                                        ]
                                     }
                                 },
                                 "serverInfo": {
@@ -125,7 +130,12 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
                         doc.get("text").and_then(Value::as_str),
                     )
                 {
-                    state.documents.insert(uri.to_owned(), text.to_owned());
+                    let normalized = if text.contains("\r\n") {
+                        text.replace("\r\n", "\n")
+                    } else {
+                        text.to_owned()
+                    };
+                    state.documents.insert(uri.to_owned(), normalized);
                     let notif = publish_diagnostics(&mut state, uri);
                     write_message(&mut writer, &notif)?;
                 }
@@ -136,7 +146,12 @@ pub fn handle_session<R: BufRead, W: Write>(mut reader: R, mut writer: W) -> Res
                         .pointer("/contentChanges/0/text")
                         .and_then(Value::as_str)
                 {
-                    state.documents.insert(uri.to_owned(), text.to_owned());
+                    let normalized = if text.contains("\r\n") {
+                        text.replace("\r\n", "\n")
+                    } else {
+                        text.to_owned()
+                    };
+                    state.documents.insert(uri.to_owned(), normalized);
                     let notif = publish_diagnostics(&mut state, uri);
                     write_message(&mut writer, &notif)?;
                 }
@@ -314,6 +329,11 @@ fn apply_config(state: &mut LspState, opts: &Value) {
     } else if let Some(v) = opts.get("inlayHints").and_then(Value::as_bool) {
         state.config.inlay_hints = v;
     }
+    if let Some(v) = opts.pointer("/lint/enable").and_then(Value::as_bool) {
+        state.config.lint_enabled = v;
+    } else if let Some(v) = opts.get("lint").and_then(Value::as_bool) {
+        state.config.lint_enabled = v;
+    }
 }
 
 fn publish_diagnostics(state: &mut LspState, uri: &str) -> Value {
@@ -347,6 +367,19 @@ fn publish_diagnostics(state: &mut LspState, uri: &str) -> Value {
             {
                 obj.insert("code".into(), json!(code.as_str()));
             }
+            if !diag.tags().is_empty()
+                && let Some(obj) = item.as_object_mut()
+            {
+                let tags: Vec<u32> = diag
+                    .tags()
+                    .iter()
+                    .map(|tag| match tag {
+                        DiagnosticTag::Unnecessary => 1,
+                        DiagnosticTag::Deprecated => 2,
+                    })
+                    .collect();
+                obj.insert("tags".into(), json!(tags));
+            }
             if !diag.labels().is_empty()
                 && let Some(obj) = item.as_object_mut()
             {
@@ -355,8 +388,19 @@ fn publish_diagnostics(state: &mut LspState, uri: &str) -> Value {
                     .iter()
                     .filter_map(|label| {
                         let range = span_to_lsp_range(&partial.sources, label.span)?;
+                        let label_uri = partial.sources.path(label.span.file).map_or_else(
+                            || uri.to_owned(),
+                            |logical| {
+                                workspace::logical_path_to_uri(
+                                    state.workspace_root.as_deref(),
+                                    &ws,
+                                    logical,
+                                    uri,
+                                )
+                            },
+                        );
                         Some(json!({
-                            "location": { "uri": uri, "range": range },
+                            "location": { "uri": label_uri, "range": range },
                             "message": label.message
                         }))
                     })
@@ -366,6 +410,60 @@ fn publish_diagnostics(state: &mut LspState, uri: &str) -> Value {
                 }
             }
             diagnostics.push(item);
+        }
+
+        // Run `ril-lint` on the active file when enabled (non-blocking, best-effort partial stage).
+        let is_std_file = uri_to_fs_path(uri)
+            .as_deref()
+            .and_then(workspace::detect_std_file)
+            .is_some();
+        if state.config.lint_enabled && !is_std_file {
+            let lint_cfg = uri_to_fs_path(uri)
+                .as_deref()
+                .and_then(ril_driver::find_manifest_for)
+                .map(|(_, m)| m.lint)
+                .unwrap_or_default();
+            let mut target_files = std::collections::BTreeSet::new();
+            target_files.insert(entry_file_id);
+            let report = ril_lint::run_partial(
+                &partial.sources,
+                &target_files,
+                partial.typed.as_deref(),
+                partial.analysis.as_deref(),
+                &lint_cfg,
+            );
+            if let Some(cached) = state.cache.get_mut(uri) {
+                cached.latest_lints = report.diagnostics.clone();
+            }
+            for ldiag in &report.diagnostics {
+                let range =
+                    span_to_lsp_range(&partial.sources, ldiag.primary).unwrap_or_else(zero_range);
+                let severity = match ldiag.level {
+                    ril_lint::LintLevel::Deny => 1,
+                    ril_lint::LintLevel::Warn | ril_lint::LintLevel::Allow => 2,
+                };
+                let mut item = json!({
+                    "range": range,
+                    "severity": severity,
+                    "source": "ril-lint",
+                    "code": ldiag.rule,
+                    "message": ldiag.message,
+                });
+                if !ldiag.tags.is_empty()
+                    && let Some(obj) = item.as_object_mut()
+                {
+                    let tags: Vec<u32> = ldiag
+                        .tags
+                        .iter()
+                        .map(|tag| match tag {
+                            DiagnosticTag::Unnecessary => 1,
+                            DiagnosticTag::Deprecated => 2,
+                        })
+                        .collect();
+                    obj.insert("tags".into(), json!(tags));
+                }
+                diagnostics.push(item);
+            }
         }
     }
     json!({
@@ -381,20 +479,34 @@ fn publish_diagnostics(state: &mut LspState, uri: &str) -> Value {
 fn formatting(state: &LspState, params: &Value) -> Option<Value> {
     let uri = params.pointer("/textDocument/uri")?.as_str()?;
     let text = state.documents.get(uri)?;
+    if directive::is_suite_file(text) {
+        return Some(json!([]));
+    }
     let logical = uri_to_logical_path(uri);
-    let kind = if text.contains("fn main") {
-        FileKind::Executable
-    } else {
-        FileKind::Module
-    };
     let source =
         SourceFile::from_bytes(FileId::from_path(&logical), logical, text.as_bytes()).ok()?;
+    let kind = if uri_to_fs_path(uri)
+        .as_deref()
+        .and_then(workspace::detect_std_file)
+        .is_some()
+    {
+        FileKind::Module
+    } else {
+        let lexed = lexer::lex_with_recovery(&source);
+        if !lexed.diagnostics.is_empty() {
+            return Some(json!([]));
+        }
+        ril_syntax::parser::infer_file_kind(&source, &lexed.tokens)
+    };
     let formatted = fmt::format_source(&source, kind).ok()?;
-    let end_line = text.lines().count();
+    if formatted == *text {
+        return Some(json!([]));
+    }
+    let (end_line, end_char) = protocol::offset_to_line_col(text, text.len());
     Some(json!([{
         "range": {
             "start": { "line": 0, "character": 0 },
-            "end": { "line": end_line + 1, "character": 0 }
+            "end": { "line": end_line, "character": end_char }
         },
         "newText": formatted
     }]))

@@ -369,6 +369,7 @@ impl Program {
                 target,
                 propagate: false,
                 mode,
+                ..
             } => match &ast.expr(*target).value {
                 Expr::Call { callee, args } if args.is_empty() => (*callee, *value, *mode),
                 Expr::Path(_) => (*target, *value, *mode),

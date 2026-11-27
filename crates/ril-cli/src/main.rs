@@ -9,7 +9,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ril_driver::{CompileOptions, Driver, OptLevel, infer_unit, load_package};
-use ril_source::diag::Diagnostic;
+use ril_source::diag::{Diagnostic, Severity};
 use ril_test::{Stage, Unit};
 
 #[derive(Parser)]
@@ -36,6 +36,14 @@ enum IrFormat {
 enum MessageFormat {
     Human,
     Json,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum FixFilterArg {
+    All,
+    Errors,
+    Lints,
+    Sigs,
 }
 
 #[derive(Subcommand)]
@@ -81,10 +89,65 @@ enum Action {
         timings: bool,
     },
     Fmt {
-        #[arg(required = true)]
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
         paths: Vec<PathBuf>,
         #[arg(long)]
         check: bool,
+        #[arg(long)]
+        diff: bool,
+        #[arg(long)]
+        stdin: bool,
+        #[arg(long, value_enum, default_value = "human")]
+        message_format: MessageFormat,
+    },
+    Lint {
+        #[arg(required_unless_present = "list_rules")]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        unit: Option<Unit>,
+        #[arg(long, value_name = "TOML")]
+        config: Option<PathBuf>,
+        #[arg(long = "allow", value_name = "RULE|CATEGORY|all")]
+        allow: Vec<String>,
+        #[arg(long = "warn", value_name = "RULE|CATEGORY|all")]
+        warn: Vec<String>,
+        #[arg(long = "deny", value_name = "RULE|CATEGORY|warnings|all")]
+        deny: Vec<String>,
+        #[arg(long, value_enum, default_value = "human")]
+        message_format: MessageFormat,
+        #[arg(long, num_args = 0..=1, default_missing_value = ".ril-cache", value_name = "CACHE_DIR")]
+        incremental: Option<PathBuf>,
+        #[arg(long)]
+        list_rules: bool,
+        #[arg(long)]
+        timings: bool,
+    },
+    Fix {
+        path: PathBuf,
+        #[arg(long)]
+        unit: Option<Unit>,
+        #[arg(long, value_enum, default_value = "all")]
+        only: FixFilterArg,
+        #[arg(long = "code", value_name = "CODE|RULE")]
+        codes: Vec<String>,
+        #[arg(long)]
+        no_sigs: bool,
+        #[arg(long)]
+        allow_api_change: bool,
+        #[arg(long = "unsafe")]
+        allow_unsafe: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        check: bool,
+        #[arg(long)]
+        diff: bool,
+        #[arg(long)]
+        fmt: bool,
+        #[arg(long, value_name = "TOML")]
+        config: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "human")]
+        message_format: MessageFormat,
     },
     Inspect {
         path: PathBuf,
@@ -242,7 +305,12 @@ fn run(action: Action) -> Result<ExitCode, String> {
                         t0.elapsed().as_secs_f64() * 1000.0,
                     );
                 }
-                if !checked.result.diagnostics.is_empty() {
+                if checked
+                    .result
+                    .diagnostics
+                    .iter()
+                    .any(|diag| diag.severity == Severity::Error)
+                {
                     return Ok(ExitCode::FAILURE);
                 }
                 if emit_interface.is_some() || emit_interface_json.is_some() {
@@ -259,13 +327,13 @@ fn run(action: Action) -> Result<ExitCode, String> {
                 Ok(ExitCode::SUCCESS)
             };
             if watch {
-                let mut last_mtime = file_mtime(&path);
+                let mut last_state = watch_fingerprint(&path);
                 let _ = run_once()?;
                 loop {
                     std::thread::sleep(Duration::from_millis(250));
-                    let current = file_mtime(&path);
-                    if current != last_mtime {
-                        last_mtime = current;
+                    let current = watch_fingerprint(&path);
+                    if current != last_state {
+                        last_state = current;
                         eprintln!("--- change detected, re-checking {} ---", path.display());
                         let _ = run_once()?;
                     }
@@ -310,7 +378,73 @@ fn run(action: Action) -> Result<ExitCode, String> {
                 );
             }
         }
-        Action::Fmt { paths, check } => {
+        Action::Fmt {
+            paths,
+            check,
+            diff,
+            stdin,
+            message_format,
+        } => {
+            let use_color = std::io::stderr().is_terminal();
+            if stdin {
+                let mut buf = Vec::new();
+                std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut buf)
+                    .map_err(|e| format!("<stdin>: {e}"))?;
+                let original = String::from_utf8(buf).map_err(|e| format!("<stdin>: {e}"))?;
+                if ril_syntax::directive::is_suite_file(&original) {
+                    std::io::stdout()
+                        .write_all(original.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                    return Ok(ExitCode::SUCCESS);
+                }
+                let logical = PathBuf::from("<stdin>");
+                let mut sources = ril_source::span::SourceMap::default();
+                let file_id = match sources.add(logical, original.as_bytes()) {
+                    Ok(id) => id,
+                    Err(diag) => {
+                        render_diagnostic(&diag, &sources, message_format, use_color)?;
+                        return Ok(ExitCode::from(2));
+                    }
+                };
+                let Some(source) = sources.get(file_id) else {
+                    return Ok(ExitCode::from(2));
+                };
+                match ril_syntax::fmt::format_source_auto(source) {
+                    Ok(formatted) => {
+                        if diff {
+                            print!(
+                                "{}",
+                                ril_syntax::fmt::unified_diff("<stdin>", &original, &formatted)
+                            );
+                        } else if !check {
+                            std::io::stdout()
+                                .write_all(formatted.as_bytes())
+                                .map_err(|e| e.to_string())?;
+                        }
+                        if (check || diff) && formatted != original {
+                            if check {
+                                match message_format {
+                                    MessageFormat::Human => eprintln!("would reformat <stdin>"),
+                                    MessageFormat::Json => {
+                                        eprintln!(
+                                            "{{\"kind\":\"unformatted\",\"path\":\"<stdin>\"}}"
+                                        );
+                                    }
+                                }
+                            }
+                            return Ok(ExitCode::FAILURE);
+                        }
+                        return Ok(ExitCode::SUCCESS);
+                    }
+                    Err(diags) => {
+                        for diag in &diags {
+                            render_diagnostic(diag, &sources, message_format, use_color)?;
+                        }
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            }
+
             let mut files = Vec::new();
             for path in paths {
                 collect_ril_files(&path, &mut files)?;
@@ -318,20 +452,69 @@ fn run(action: Action) -> Result<ExitCode, String> {
             files.sort();
             files.dedup();
             let mut needs_formatting = false;
+            let mut had_error = false;
             for path in files {
-                let original = std::fs::read_to_string(&path)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                if original
-                    .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .is_some_and(|first| first.trim_start().starts_with("-- @suite"))
-                {
+                let bytes = match std::fs::read(&path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("{}: {e}", path.display());
+                        had_error = true;
+                        continue;
+                    }
+                };
+                let original = match String::from_utf8(bytes.clone()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("{}: {e}", path.display());
+                        had_error = true;
+                        continue;
+                    }
+                };
+                if ril_syntax::directive::is_suite_file(&original) {
                     continue;
                 }
-                let formatted = ril_driver::format_file(&path)?;
+                let mut sources = ril_source::span::SourceMap::default();
+                let file_id = match sources.add(path.clone(), &bytes) {
+                    Ok(id) => id,
+                    Err(diag) => {
+                        render_diagnostic(&diag, &sources, message_format, use_color)?;
+                        had_error = true;
+                        continue;
+                    }
+                };
+                let Some(source) = sources.get(file_id) else {
+                    had_error = true;
+                    continue;
+                };
+                let formatted = match ril_syntax::fmt::format_source_auto(source) {
+                    Ok(f) => f,
+                    Err(diags) => {
+                        for diag in &diags {
+                            render_diagnostic(diag, &sources, message_format, use_color)?;
+                        }
+                        had_error = true;
+                        continue;
+                    }
+                };
                 if formatted != original {
-                    if check {
-                        eprintln!("would reformat {}", path.display());
+                    if diff {
+                        let label = path.display().to_string();
+                        print!(
+                            "{}",
+                            ril_syntax::fmt::unified_diff(&label, &original, &formatted)
+                        );
+                        needs_formatting = true;
+                    } else if check {
+                        match message_format {
+                            MessageFormat::Human => {
+                                eprintln!("would reformat {}", path.display());
+                            }
+                            MessageFormat::Json => {
+                                let escaped = serde_json::to_string(&path.display().to_string())
+                                    .unwrap_or_else(|_| "\"\"".to_owned());
+                                eprintln!("{{\"kind\":\"unformatted\",\"path\":{escaped}}}");
+                            }
+                        }
                         needs_formatting = true;
                     } else {
                         std::fs::write(&path, formatted)
@@ -339,7 +522,277 @@ fn run(action: Action) -> Result<ExitCode, String> {
                     }
                 }
             }
-            if check && needs_formatting {
+            if had_error {
+                return Ok(ExitCode::from(2));
+            }
+            if (check || diff) && needs_formatting {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+        Action::Lint {
+            path,
+            unit,
+            config,
+            allow,
+            warn,
+            deny,
+            message_format,
+            incremental,
+            list_rules,
+            timings,
+        } => {
+            if list_rules {
+                for desc in ril_lint::ALL_LINTS {
+                    let fix_tag = desc.fix_safety.map_or("none", |s| s.as_str());
+                    println!(
+                        "{:<30} {:<12} {:<6} fix={:<6} {}",
+                        desc.id,
+                        desc.category.as_str(),
+                        desc.default_level.as_str(),
+                        fix_tag,
+                        desc.summary
+                    );
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            let Some(path) = path else {
+                eprintln!("missing <PATH> argument");
+                return Ok(ExitCode::from(2));
+            };
+            let mut lint_cfg = if let Some(cfg_path) = config {
+                let text = std::fs::read_to_string(&cfg_path)
+                    .map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+                match ril_driver::parse_manifest(&text) {
+                    Ok(m) => m.lint,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            } else {
+                ril_driver::find_manifest_for(&path)
+                    .map(|(_, m)| m.lint)
+                    .unwrap_or_default()
+            };
+            for raw in allow {
+                match ril_lint::LintConfig::parse_cli_override(ril_lint::LintLevel::Allow, &raw) {
+                    Ok(ov) => lint_cfg.cli_overrides.push(ov),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            }
+            for raw in warn {
+                match ril_lint::LintConfig::parse_cli_override(ril_lint::LintLevel::Warn, &raw) {
+                    Ok(ov) => lint_cfg.cli_overrides.push(ov),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            }
+            for raw in deny {
+                match ril_lint::LintConfig::parse_cli_override(ril_lint::LintLevel::Deny, &raw) {
+                    Ok(ov) => lint_cfg.cli_overrides.push(ov),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            }
+
+            let t0 = Instant::now();
+            let package = load_package(&path, unit.unwrap_or_else(|| infer_unit(&path)))?;
+            let t_load = t0.elapsed();
+            let t1 = Instant::now();
+            let compiler = compiler_for(false, OptLevel::None, incremental);
+            let linted = compiler.lint_package(&package, &lint_cfg);
+            let t_lint = t1.elapsed();
+            let use_color = std::io::stderr().is_terminal();
+
+            let mut fixable_count = 0usize;
+            for diag in &linted.partial.diagnostics {
+                if diag
+                    .fixes()
+                    .iter()
+                    .any(|f| f.safety == ril_source::fix::FixSafety::Safe)
+                {
+                    fixable_count += 1;
+                }
+                render_diagnostic(diag, &linted.partial.sources, message_format, use_color)?;
+            }
+            for diag in &linted.lint.diagnostics {
+                if diag
+                    .fixes
+                    .iter()
+                    .any(|f| f.safety == ril_source::fix::FixSafety::Safe)
+                {
+                    fixable_count += 1;
+                }
+                match message_format {
+                    MessageFormat::Human => {
+                        diag.render_with_color(
+                            &linted.partial.sources,
+                            use_color,
+                            std::io::stderr().lock(),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                    MessageFormat::Json => {
+                        writeln!(
+                            std::io::stdout().lock(),
+                            "{}",
+                            diag.to_json_line(&linted.partial.sources)
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            if matches!(message_format, MessageFormat::Human) && fixable_count > 0 {
+                eprintln!(
+                    "hint: {fixable_count} issue(s) are auto-fixable; run `ril fix {}`",
+                    path.display()
+                );
+            }
+            if timings {
+                eprintln!(
+                    "timings: load={:.2}ms lint={:.2}ms total={:.2}ms",
+                    t_load.as_secs_f64() * 1000.0,
+                    t_lint.as_secs_f64() * 1000.0,
+                    t0.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
+            let has_errors = linted
+                .partial
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error);
+            if has_errors || linted.lint.has_denied() {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+        Action::Fix {
+            path,
+            unit,
+            only,
+            codes,
+            no_sigs,
+            allow_api_change,
+            allow_unsafe,
+            dry_run,
+            check,
+            diff,
+            fmt,
+            config,
+            message_format,
+        } => {
+            let lint_cfg = if let Some(cfg_path) = config {
+                let text = std::fs::read_to_string(&cfg_path)
+                    .map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+                match ril_driver::parse_manifest(&text) {
+                    Ok(m) => m.lint,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            } else {
+                ril_driver::find_manifest_for(&path)
+                    .map(|(_, m)| m.lint)
+                    .unwrap_or_default()
+            };
+            let filter = match only {
+                FixFilterArg::All => ril_driver::fix::FixFilter::All,
+                FixFilterArg::Errors => ril_driver::fix::FixFilter::Errors,
+                FixFilterArg::Lints => ril_driver::fix::FixFilter::Lints,
+                FixFilterArg::Sigs => ril_driver::fix::FixFilter::Sigs,
+            };
+            let options = ril_driver::fix::FixOptions {
+                filter,
+                codes: codes.into_iter().collect(),
+                no_sigs,
+                allow_api_change,
+                allow_unsafe,
+                dry_run: dry_run || check || diff,
+                fmt_after: fmt,
+                max_passes: 12,
+            };
+            let compiler = compiler_for(false, OptLevel::None, None);
+            let report = ril_driver::fix::fix_package_files(
+                &compiler,
+                &path,
+                unit.unwrap_or_else(|| infer_unit(&path)),
+                &options,
+                &lint_cfg,
+            )?;
+
+            match message_format {
+                MessageFormat::Json => {
+                    let json = serde_json::to_string(&report).map_err(|e| e.to_string())?;
+                    println!("{json}");
+                }
+                MessageFormat::Human => {
+                    if !report.syntax_errors.is_empty() {
+                        eprintln!("ril fix refused: fix syntax errors first");
+                        for err in &report.syntax_errors {
+                            eprint!("{err}");
+                        }
+                        return Ok(ExitCode::from(2));
+                    }
+                    if diff {
+                        for file in &report.modified_files {
+                            print!(
+                                "{}",
+                                ril_syntax::fmt::unified_diff(
+                                    &file.path,
+                                    &file.original,
+                                    &file.updated
+                                )
+                            );
+                        }
+                    }
+                    if let Some(banner) = report.format_capability_banner() {
+                        eprint!("{banner}");
+                    }
+                    for skip in &report.skipped {
+                        let cause = skip
+                            .capability_delta
+                            .as_ref()
+                            .filter(|d| d.causal_chain.len() > 1)
+                            .map(|d| format!(" (via {})", d.causal_chain.join(" -> ")))
+                            .unwrap_or_default();
+                        eprintln!(
+                            "skipped [{}] {} ({}): {}{cause}",
+                            skip.code, skip.title, skip.file, skip.reason
+                        );
+                    }
+                    if report.oscillated {
+                        eprintln!(
+                            "warning: fix loop stopped early after {} pass(es) due to edit oscillation",
+                            report.passes
+                        );
+                    }
+                    let mode_label = if options.dry_run {
+                        "would apply"
+                    } else {
+                        "applied"
+                    };
+                    eprintln!(
+                        "{mode_label} {} fix(es) across {} file(s) in {} pass(es); {} remaining error(s), {} warning(s)",
+                        report.applied.len(),
+                        report.modified_files.len(),
+                        report.passes,
+                        report.remaining_errors.len(),
+                        report.remaining_warnings.len()
+                    );
+                }
+            }
+
+            if !report.syntax_errors.is_empty() {
+                return Ok(ExitCode::from(2));
+            }
+            if (check && !report.modified_files.is_empty()) || !report.remaining_errors.is_empty() {
                 return Ok(ExitCode::FAILURE);
             }
         }
@@ -525,8 +978,58 @@ fn collect_ril_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> 
     Ok(())
 }
 
-fn file_mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
+fn file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+fn watch_fingerprint(path: &Path) -> Vec<(PathBuf, Option<(SystemTime, u64)>)> {
+    let mut watched = Vec::new();
+    let root = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
+    };
+    let mut files = Vec::new();
+    let _ = collect_ril_files(&root, &mut files);
+    files.sort();
+    files.dedup();
+    for file in files {
+        let stamp = file_stamp(&file);
+        watched.push((file, stamp));
+    }
+    for ancestor in root.ancestors() {
+        let manifest = ancestor.join("ril.toml");
+        if manifest.is_file() {
+            let stamp = file_stamp(&manifest);
+            watched.push((manifest, stamp));
+            break;
+        }
+    }
+    if watched.is_empty() {
+        watched.push((path.to_path_buf(), file_stamp(path)));
+    }
+    watched
+}
+
+fn render_diagnostic(
+    diagnostic: &Diagnostic,
+    sources: &ril_source::span::SourceMap,
+    message_format: MessageFormat,
+    use_color: bool,
+) -> Result<(), String> {
+    match message_format {
+        MessageFormat::Human => diagnostic
+            .render_with_color(sources, use_color, std::io::stderr().lock())
+            .map_err(|err| err.to_string()),
+        MessageFormat::Json => writeln!(
+            std::io::stderr().lock(),
+            "{}",
+            diagnostic.to_json_line(sources)
+        )
+        .map_err(|err| err.to_string()),
+    }
 }
 
 fn display(diagnostics: Vec<Diagnostic>) -> String {

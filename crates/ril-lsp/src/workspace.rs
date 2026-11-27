@@ -29,6 +29,7 @@ pub(crate) struct LspConfig {
     pub(crate) dot_to_pipe: bool,
     pub(crate) auto_import: bool,
     pub(crate) inlay_hints: bool,
+    pub(crate) lint_enabled: bool,
 }
 
 impl Default for LspConfig {
@@ -37,6 +38,7 @@ impl Default for LspConfig {
             dot_to_pipe: true,
             auto_import: true,
             inlay_hints: true,
+            lint_enabled: true,
         }
     }
 }
@@ -150,11 +152,20 @@ pub(crate) fn build_package_with_override(
 
     // Fallback for unsaved/virtual URIs not backed by an on-disk file.
     let logical = uri_to_logical_path(uri);
-    let unit = if text.contains("fn main") {
-        Unit::Bin
-    } else {
-        Unit::Lib
-    };
+    let unit = ril_source::span::SourceFile::from_bytes(
+        ril_source::span::FileId::from_path(&logical),
+        logical.clone(),
+        text.as_bytes(),
+    )
+    .ok()
+    .map(|source| {
+        let lexed = ril_syntax::lexer::lex_with_recovery(&source);
+        match ril_syntax::parser::infer_file_kind(&source, &lexed.tokens) {
+            ril_syntax::parser::FileKind::Executable => Unit::Bin,
+            _ => Unit::Lib,
+        }
+    })
+    .unwrap_or(Unit::Lib);
     let mut pkg = VirtualPackage::new(unit);
     pkg.entry = logical.clone();
     pkg.insert(logical.clone(), text.as_bytes().to_vec());

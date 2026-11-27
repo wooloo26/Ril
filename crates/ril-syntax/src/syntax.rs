@@ -66,6 +66,10 @@ impl Ast {
         id
     }
 
+    pub fn is_grouped(&self, id: ExprId) -> bool {
+        self.grouped.contains(&id)
+    }
+
     pub fn navigation_chain(&self, root: ExprId) -> Option<(ExprId, Vec<ExprId>)> {
         let mut steps = Vec::new();
         let mut current = root;
@@ -173,18 +177,36 @@ pub enum Mode {
     Infer,
 }
 
+impl Mode {
+    pub const fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Plain => None,
+            Self::Ref => Some("ref"),
+            Self::Mut => Some("mut"),
+            Self::Shared => Some("^mut"),
+            Self::New => Some("new"),
+            Self::Via => Some("via"),
+            Self::Infer => Some("infer"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Storage {
     pub variable: bool,
     pub mode: Mode,
     pub mode_path: Option<Path>,
     pub bind_mode: bool,
+    pub keyword_span: Option<Span>,
+    pub mode_span: Option<Span>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Argument {
     pub name: Option<Name>,
     pub mode: Mode,
+    pub mode_span: Option<Span>,
+    pub pipe_span: Option<Span>,
     pub value: ExprId,
 }
 
@@ -194,6 +216,7 @@ pub struct Parameter {
     pub pattern: Option<PatternId>,
     pub is_meta: bool,
     pub mode: Mode,
+    pub mode_span: Option<Span>,
     pub ty: Option<TypeId>,
     pub guards: Vec<ExprId>,
     pub default: Option<ExprId>,
@@ -202,6 +225,7 @@ pub struct Parameter {
 #[derive(Clone, Debug, Default)]
 pub struct Obligations {
     pub effects: Vec<Path>,
+    pub effect_spans: Vec<Span>,
     pub open_effects: bool,
     pub state: Vec<StateClause>,
     pub open_state: bool,
@@ -227,8 +251,11 @@ pub struct StateClause {
 pub struct Signature {
     pub is_ctl: bool,
     pub params: Vec<Parameter>,
+    pub params_close_span: Span,
     pub obligations: Obligations,
+    pub arrow_span: Span,
     pub result_mode: Mode,
+    pub result_mode_span: Option<Span>,
     pub result_sources: Vec<Name>,
     pub result: TypeId,
     pub guards: Vec<ExprId>,
@@ -299,6 +326,7 @@ pub struct Handler {
     pub is_ctl: bool,
     pub operation: Path,
     pub mode: Mode,
+    pub mode_span: Option<Span>,
     pub value: ExprId,
 }
 
@@ -476,7 +504,9 @@ pub enum Expr {
     },
     Pipeline {
         value: ExprId,
+        pipe_span: Span,
         mode: Mode,
+        mode_span: Option<Span>,
         target: ExprId,
         propagate: bool,
     },

@@ -48,3 +48,8 @@ doc = false
 name = "fuzz_rt_graph"
 path = "fuzz_targets/fuzz_rt_graph.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_fmt"
+path = "fuzz_targets/fuzz_fmt.rs"
+doc = false

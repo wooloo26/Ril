@@ -689,9 +689,12 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ril-driver",
+ "ril-lint",
  "ril-lsp",
  "ril-source",
+ "ril-syntax",
  "ril-test",
+ "serde_json",
  "tempfile",
 ]
 
@@ -716,6 +719,7 @@ version = "0.1.0"
 dependencies = [
  "ril-codegen",
  "ril-hir",
+ "ril-lint",
  "ril-mir",
  "ril-sema",
  "ril-source",
@@ -736,11 +740,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ril-lint"
+version = "0.1.0"
+dependencies = [
+ "ariadne",
+ "ril-hir",
+ "ril-sema",
+ "ril-source",
+ "ril-syntax",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ril-lsp"
 version = "0.1.0"
 dependencies = [
  "ril-driver",
  "ril-hir",
+ "ril-lint",
  "ril-sema",
  "ril-source",
  "ril-syntax",

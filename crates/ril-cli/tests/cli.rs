@@ -266,7 +266,11 @@ fn cli_fmt_check_std_examples_run_hello_and_spawn_lsp() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\"hoverProvider\":true"));
-    assert!(stdout.contains("\"diagnostics\":[]"));
+    assert!(stdout.contains("\"method\":\"textDocument/publishDiagnostics\""));
+    assert!(
+        !stdout.contains("\"severity\":1"),
+        "expected zero error diagnostics from ril lsp:\n{stdout}"
+    );
 }
 
 #[test]

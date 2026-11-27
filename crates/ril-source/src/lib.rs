@@ -2,6 +2,7 @@
 #![deny(clippy::indexing_slicing)]
 
 pub mod diag;
+pub mod fix;
 pub mod span;
 pub mod symbol;
 

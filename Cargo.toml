@@ -29,6 +29,7 @@ ril-source = { path = "crates/ril-source" }
 ril-syntax = { path = "crates/ril-syntax" }
 ril-hir = { path = "crates/ril-hir" }
 ril-sema = { path = "crates/ril-sema" }
+ril-lint = { path = "crates/ril-lint" }
 ril-mir = { path = "crates/ril-mir" }
 ril-codegen = { path = "crates/ril-codegen" }
 ril-rt = { path = "crates/ril-rt" }

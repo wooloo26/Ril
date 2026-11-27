@@ -323,7 +323,8 @@ impl Parser<'_> {
                     "array and map elements cannot be var",
                 ));
             }
-            let mode = self.mode(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
+            let (mode, mode_span) =
+                self.mode_spanned(&[Mode::Mut, Mode::Ref, Mode::Shared, Mode::Via]);
             let mode_path = if allow_bracket_mode
                 && mode == Mode::Plain
                 && matches!(
@@ -362,6 +363,8 @@ impl Parser<'_> {
                 mode,
                 mode_path,
                 bind_mode: false,
+                keyword_span: None,
+                mode_span,
             })
         }
     }

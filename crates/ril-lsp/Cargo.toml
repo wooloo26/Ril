@@ -12,6 +12,7 @@ ril-source.workspace = true
 ril-syntax.workspace = true
 ril-hir.workspace = true
 ril-sema.workspace = true
+ril-lint.workspace = true
 ril-driver.workspace = true
 ril-test.workspace = true
 serde_json.workspace = true

@@ -1,10 +1,20 @@
-//! Canonical comment-preserving, idempotent Ril source formatter (`ril fmt`).
+//! Zero-config canonical AST + Doc-IR formatter for Ril (`ril fmt`).
+//!
+//! Guarantees:
+//! - Purely syntactic layout (zero semantic edits, zero import reordering, zero paren stripping).
+//! - Fixed canonical style: 4-space indent, 100-column target width, Zig-style trailing-comma
+//!   layout signal, verbatim `--` comment preservation, LF line endings, single trailing newline.
+//! - Refuses files with lex/parse errors and is strictly idempotent (`fmt(fmt(src)) == fmt(src)`).
+
+mod comments;
+mod doc;
+mod printer;
+mod tokens;
 
 use ril_source::{diag::Diagnostic, span::SourceFile};
 
 use crate::{
-    cst::{CstElement, CstFile},
-    lexer::{self, Kind, Token, TriviaKind, Word},
+    lexer::{self, LexOutput},
     parser::{self, FileKind},
 };
 
@@ -14,6 +24,15 @@ use crate::{
 /// Refuses to format files with lexer or parser errors, returning those diagnostics.
 pub fn format_source(source: &SourceFile, kind: FileKind) -> Result<String, Vec<Diagnostic>> {
     let lexed = lexer::lex_with_recovery(source);
+    format_source_with_lex(source, kind, lexed)
+}
+
+/// Formats a Ril source file using an already-lexed [`LexOutput`] (single-lex fast path).
+pub fn format_source_with_lex(
+    source: &SourceFile,
+    kind: FileKind,
+    lexed: LexOutput,
+) -> Result<String, Vec<Diagnostic>> {
     if !lexed.diagnostics.is_empty() {
         return Err(lexed.diagnostics);
     }
@@ -21,269 +40,201 @@ pub fn format_source(source: &SourceFile, kind: FileKind) -> Result<String, Vec<
     if !parsed.diagnostics.is_empty() {
         return Err(parsed.diagnostics);
     }
-    let cst = CstFile::lex(source);
-    Ok(format_cst(source, &cst))
+    let token_index = tokens::TokenIndex::build(source, &lexed.tokens);
+    let comment_store = comments::CommentStore::build(source, &lexed.tokens, &lexed.trivia);
+    let mut printer = printer::Printer::new(source, &parsed.ast, token_index, comment_store);
+    let root = printer.print_file();
+    Ok(doc::render(&printer.arena, root))
 }
 
-#[derive(Clone, Copy)]
-enum Item<'a> {
-    Tok(Token, &'a str),
-    LineComment(&'a str),
+/// Formats a Ril source file while inferring [`FileKind`] from its top-level token stream.
+pub fn format_source_auto(source: &SourceFile) -> Result<String, Vec<Diagnostic>> {
+    let lexed = lexer::lex_with_recovery(source);
+    if !lexed.diagnostics.is_empty() {
+        return Err(lexed.diagnostics);
+    }
+    let kind = parser::infer_file_kind(source, &lexed.tokens);
+    format_source_with_lex(source, kind, lexed)
 }
 
-fn format_cst(source: &SourceFile, cst: &CstFile) -> String {
-    // Group concrete elements into logical lines (split on `Kind::Newline`),
-    // stripping pure whitespace trivia while keeping all tokens and comments.
-    let mut lines: Vec<Vec<Item<'_>>> = vec![Vec::new()];
-    for &elem in &cst.elements {
-        match elem {
-            CstElement::Token(tok) if tok.kind == Kind::Eof => {}
-            CstElement::Token(tok) if tok.kind == Kind::Newline => {
-                lines.push(Vec::new());
-            }
-            CstElement::Token(tok) => {
-                if let Some(line) = lines.last_mut() {
-                    line.push(Item::Tok(tok, tok.text(source)));
-                }
-            }
-            CstElement::Trivia(triv) => match triv.kind {
-                TriviaKind::Whitespace => {}
-                TriviaKind::LineComment => {
-                    if let Some(line) = lines.last_mut() {
-                        line.push(Item::LineComment(
-                            source
-                                .text()
-                                .get(triv.span.start..triv.span.end)
-                                .unwrap_or_default()
-                                .trim_end(),
-                        ));
-                    }
-                }
-            },
-        }
+/// Generates a compact unified diff between `original` and `revised` with 3 lines of context.
+pub fn unified_diff(label: &str, original: &str, revised: &str) -> String {
+    if original == revised {
+        return String::new();
+    }
+    let old: Vec<&str> = original.lines().collect();
+    let new: Vec<&str> = revised.lines().collect();
+
+    // Trim common prefix and suffix to keep DP linear for localized edits.
+    let mut prefix = 0usize;
+    while prefix < old.len() && prefix < new.len() && old.get(prefix) == new.get(prefix) {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while prefix + suffix < old.len()
+        && prefix + suffix < new.len()
+        && old.get(old.len() - 1 - suffix) == new.get(new.len() - 1 - suffix)
+    {
+        suffix += 1;
     }
 
-    let mut out = String::with_capacity(source.text().len());
-    let mut indent = 0usize;
-    let mut blank_run = 0usize;
-    let mut emitted_any = false;
+    let old_mid = old.get(prefix..old.len() - suffix).unwrap_or(&[]);
+    let new_mid = new.get(prefix..new.len() - suffix).unwrap_or(&[]);
 
-    for line in &lines {
-        if line.is_empty() {
-            if emitted_any {
-                blank_run += 1;
-            }
-            continue;
-        }
-        if emitted_any {
-            if blank_run > 0 {
-                out.push('\n');
-            }
-            out.push('\n');
-        }
-        blank_run = 0;
-        emitted_any = true;
+    #[derive(Clone, Copy)]
+    enum Op<'a> {
+        Equal(&'a str),
+        Delete(&'a str),
+        Insert(&'a str),
+    }
 
-        // Leading closing delimiters dedent the current line before rendering.
-        let mut leading_closes = 0usize;
-        for item in line {
-            if let Item::Tok(tok, text) = item
-                && tok.kind == Kind::Punctuation
-                && matches!(*text, "}" | "]" | ")")
-            {
-                leading_closes += 1;
+    let mut ops: Vec<Op<'_>> = Vec::with_capacity(old.len() + new.len());
+    for &line in old.get(..prefix).unwrap_or(&[]) {
+        ops.push(Op::Equal(line));
+    }
+
+    if old_mid.len().saturating_mul(new_mid.len()) <= 250_000 {
+        let m = old_mid.len();
+        let n = new_mid.len();
+        let stride = n + 1;
+        let mut dp = vec![0u32; (m + 1) * stride];
+        for i in (0..m).rev() {
+            for j in (0..n).rev() {
+                let val = if old_mid.get(i) == new_mid.get(j) {
+                    dp.get((i + 1) * stride + (j + 1)).copied().unwrap_or(0) + 1
+                } else {
+                    let down = dp.get((i + 1) * stride + j).copied().unwrap_or(0);
+                    let right = dp.get(i * stride + (j + 1)).copied().unwrap_or(0);
+                    down.max(right)
+                };
+                if let Some(slot) = dp.get_mut(i * stride + j) {
+                    *slot = val;
+                }
+            }
+        }
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < m && j < n {
+            if old_mid.get(i) == new_mid.get(j) {
+                if let Some(&l) = old_mid.get(i) {
+                    ops.push(Op::Equal(l));
+                }
+                i += 1;
+                j += 1;
             } else {
-                break;
-            }
-        }
-        let line_indent = indent.saturating_sub(leading_closes);
-        for _ in 0..line_indent {
-            out.push_str("    ");
-        }
-
-        render_line(line, &mut out);
-
-        // Update running block/bracket indentation for subsequent lines.
-        for item in line {
-            if let Item::Tok(tok, text) = item
-                && tok.kind == Kind::Punctuation
-            {
-                match *text {
-                    "{" | ".{" | "[" | "(" => indent += 1,
-                    "}" | "]" | ")" => indent = indent.saturating_sub(1),
-                    _ => {}
+                let down = dp.get((i + 1) * stride + j).copied().unwrap_or(0);
+                let right = dp.get(i * stride + (j + 1)).copied().unwrap_or(0);
+                if down >= right {
+                    if let Some(&l) = old_mid.get(i) {
+                        ops.push(Op::Delete(l));
+                    }
+                    i += 1;
+                } else {
+                    if let Some(&l) = new_mid.get(j) {
+                        ops.push(Op::Insert(l));
+                    }
+                    j += 1;
                 }
             }
         }
+        while i < m {
+            if let Some(&l) = old_mid.get(i) {
+                ops.push(Op::Delete(l));
+            }
+            i += 1;
+        }
+        while j < n {
+            if let Some(&l) = new_mid.get(j) {
+                ops.push(Op::Insert(l));
+            }
+            j += 1;
+        }
+    } else {
+        for &l in old_mid {
+            ops.push(Op::Delete(l));
+        }
+        for &l in new_mid {
+            ops.push(Op::Insert(l));
+        }
     }
 
-    if !out.is_empty() {
-        out.push('\n');
+    for &line in old.get(old.len() - suffix..).unwrap_or(&[]) {
+        ops.push(Op::Equal(line));
+    }
+
+    // Group non-equal ops into unified diff hunks with 3 lines of context.
+    let context = 3usize;
+    let changed: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, op)| (!matches!(op, Op::Equal(_))).then_some(idx))
+        .collect();
+    if changed.is_empty() {
+        return String::new();
+    }
+
+    let mut out = format!("--- a/{label}\n+++ b/{label}\n");
+    let mut hunks: Vec<(usize, usize)> = Vec::new();
+    for idx in changed {
+        let start = idx.saturating_sub(context);
+        let end = (idx + context + 1).min(ops.len());
+        if let Some(last) = hunks.last_mut()
+            && start <= last.1
+        {
+            last.1 = end;
+        } else {
+            hunks.push((start, end));
+        }
+    }
+
+    for (h_start, h_end) in hunks {
+        let mut old_line = 1usize;
+        let mut new_line = 1usize;
+        for op in ops.get(..h_start).unwrap_or(&[]) {
+            match op {
+                Op::Equal(_) => {
+                    old_line += 1;
+                    new_line += 1;
+                }
+                Op::Delete(_) => old_line += 1,
+                Op::Insert(_) => new_line += 1,
+            }
+        }
+        let mut old_count = 0usize;
+        let mut new_count = 0usize;
+        for op in ops.get(h_start..h_end).unwrap_or(&[]) {
+            match op {
+                Op::Equal(_) => {
+                    old_count += 1;
+                    new_count += 1;
+                }
+                Op::Delete(_) => old_count += 1,
+                Op::Insert(_) => new_count += 1,
+            }
+        }
+        out.push_str(&format!(
+            "@@ -{old_line},{old_count} +{new_line},{new_count} @@\n"
+        ));
+        for op in ops.get(h_start..h_end).unwrap_or(&[]) {
+            match op {
+                Op::Equal(l) => {
+                    out.push(' ');
+                    out.push_str(l);
+                    out.push('\n');
+                }
+                Op::Delete(l) => {
+                    out.push('-');
+                    out.push_str(l);
+                    out.push('\n');
+                }
+                Op::Insert(l) => {
+                    out.push('+');
+                    out.push_str(l);
+                    out.push('\n');
+                }
+            }
+        }
     }
     out
-}
-
-fn render_line(items: &[Item<'_>], out: &mut String) {
-    let mut prev: Option<Item<'_>> = None;
-    for &item in items {
-        if let Some(before) = prev
-            && needs_space(before, item)
-        {
-            out.push(' ');
-        }
-        match item {
-            Item::Tok(_, text) | Item::LineComment(text) => {
-                out.push_str(text);
-            }
-        }
-        prev = Some(item);
-    }
-}
-
-fn is_string_left_inside(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::StringStart | Kind::StringChunk | Kind::InterpolationStart | Kind::InterpolationEnd
-    )
-}
-
-fn is_string_right_inside(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::StringChunk | Kind::StringEnd | Kind::InterpolationStart | Kind::InterpolationEnd
-    )
-}
-
-fn needs_space(left: Item<'_>, right: Item<'_>) -> bool {
-    match (left, right) {
-        (_, Item::LineComment(_)) => true,
-        (Item::LineComment(_), _) => false,
-        (Item::Tok(lt, ltext), Item::Tok(rt, rtext)) => {
-            if is_string_left_inside(lt.kind) || is_string_right_inside(rt.kind) {
-                return false;
-            }
-            // Keep space after `meta` except tight declaration metadata `meta(...)`.
-            if ltext == "meta" && !(rt.tight_left && rtext == "(") {
-                return true;
-            }
-            // Never split Ril's syntactically tight-left constructs:
-            // `Ok(42)`, `User.{ ... }`, `arr[0]`, `x?`, `a.b`, `a::b`, `x: T`, `a, b`, `a; b`.
-            if rt.tight_left && matches!(rtext, "(" | ".{" | "[" | "?" | "?.") {
-                return false;
-            }
-            if matches!(rtext, "," | ";" | ":" | ")" | "]" | "::" | "." | "?.") {
-                return false;
-            }
-            if rtext == ".." && !matches!(ltext, "{" | ".{") {
-                return false;
-            }
-            if matches!(
-                ltext,
-                "(" | "[" | "::" | "." | "?." | "\\" | "^" | "!" | "!<" | "~" | ".."
-            ) {
-                return false;
-            }
-            if ltext == "@" && rtext != "->" {
-                return false;
-            }
-            // Keep array type prefix `[]T` tight when originally tight.
-            if ltext == "]" && rt.tight_left {
-                return false;
-            }
-            // Preserve tight `<T>` / `!<T, E>` / `!<(), E<T>>` generic brackets when originally tight.
-            if (rtext == "<" || ltext == "<" || rtext == ">" || rtext == ">>") && rt.tight_left {
-                return false;
-            }
-            // Keep `&mut`, `&^mut`, `&return`, `&up`, `&capture` tight when originally tight.
-            if ltext == "&" && rt.tight_left {
-                return false;
-            }
-            // Keep unary `-x` tight when originally tight.
-            if ltext == "-" && rt.tight_left {
-                return false;
-            }
-            // Keep path imports `use pkg/math/util` tight around `/`.
-            if (ltext == "/" || rtext == "/") && rt.tight_left {
-                return false;
-            }
-            // Empty braces `{}` / `.{}` stay tight.
-            if matches!(ltext, "{" | ".{") && rtext == "}" {
-                return false;
-            }
-            // Prefix `?T` optional type stays tight when `?` precedes a type or word tightly.
-            if ltext == "?" && rt.tight_left {
-                return false;
-            }
-            // Space after `:` or `,` or `;` or `{` or `.{`, and before `{` or `}`.
-            if matches!(ltext, ":" | "," | ";" | "{" | ".{") || matches!(rtext, "{" | "}") {
-                return true;
-            }
-            // Space around binary operators, arrows, keywords, and words.
-            if matches!(
-                ltext,
-                "=" | "=="
-                    | "!="
-                    | "<="
-                    | ">="
-                    | "<"
-                    | ">"
-                    | "+"
-                    | "-"
-                    | "*"
-                    | "/"
-                    | "%"
-                    | "&&"
-                    | "||"
-                    | "->"
-                    | "=>"
-                    | "|>"
-                    | "|"
-                    | "+="
-                    | "-="
-                    | "*="
-                    | "/="
-                    | "%="
-            ) || matches!(
-                rtext,
-                "=" | "=="
-                    | "!="
-                    | "<="
-                    | ">="
-                    | "<"
-                    | ">"
-                    | "+"
-                    | "-"
-                    | "*"
-                    | "/"
-                    | "%"
-                    | "&&"
-                    | "||"
-                    | "->"
-                    | "=>"
-                    | "|>"
-                    | "|"
-                    | "+="
-                    | "-="
-                    | "*="
-                    | "/="
-                    | "%="
-            ) {
-                return true;
-            }
-            // Space between adjacent words/literals (e.g. `fn main`, `let mut x`, `pub type`).
-            matches!(
-                lt.kind,
-                Kind::Word(
-                    Word::Keyword
-                        | Word::Value
-                        | Word::Pascal
-                        | Word::Constant
-                        | Word::Primitive
-                        | Word::Wildcard
-                )
-            ) || !rt.tight_left
-        }
-    }
 }
 
 #[cfg(test)]
@@ -292,8 +243,24 @@ mod tests {
 
     use ril_source::span::{FileId, SourceFile};
 
-    use super::format_source;
+    use super::{format_source, unified_diff};
     use crate::parser::FileKind;
+
+    fn fmt(src: &str) -> String {
+        let source =
+            SourceFile::from_bytes(FileId(1), PathBuf::from("pkg/fmt_test.ril"), src.as_bytes())
+                .expect("valid utf-8");
+        let out1 = format_source(&source, FileKind::Module).expect("formats cleanly");
+        let source2 = SourceFile::from_bytes(
+            FileId(1),
+            PathBuf::from("pkg/fmt_test.ril"),
+            out1.as_bytes(),
+        )
+        .expect("valid utf-8");
+        let out2 = format_source(&source2, FileKind::Module).expect("reformats cleanly");
+        assert_eq!(out1, out2, "formatter must be strictly idempotent");
+        out1
+    }
 
     #[test]
     fn format_preserves_spaces_before_and_after_string_literals() {
@@ -309,14 +276,7 @@ mod tests {
             "    }\n",
             "}\n",
         );
-        let source = SourceFile::from_bytes(
-            FileId(1),
-            PathBuf::from("pkg/fmt_strings.ril"),
-            input.as_bytes(),
-        )
-        .expect("valid utf-8");
-        let formatted = format_source(&source, FileKind::Module).expect("formats cleanly");
-        assert_eq!(formatted, input);
+        assert_eq!(fmt(input), input);
     }
 
     #[test]
@@ -336,13 +296,44 @@ mod tests {
             "    let _ = (id, pt, c, n)\n",
             "}\n",
         );
-        let source = SourceFile::from_bytes(
-            FileId(2),
-            PathBuf::from("pkg/fmt_wrap.ril"),
-            input.as_bytes(),
-        )
-        .expect("valid utf-8");
-        let formatted = format_source(&source, FileKind::Module).expect("formats cleanly");
-        assert_eq!(formatted, input);
+        assert_eq!(fmt(input), input);
+    }
+
+    #[test]
+    fn format_fixes_bitwise_xor_and_binary_operators() {
+        let input = "fn bits(a: int, b: int) -> int {\n    (a^b) + (a<<1) + (b>>1)\n}\n";
+        let expected = "fn bits(a: int, b: int) -> int {\n    (a ^ b) + (a << 1) + (b >> 1)\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn format_zig_trailing_comma_signal() {
+        let expanded = "fn f(\n    a: int,\n    b: int,\n) -> int {\n    a + b\n}\n";
+        assert_eq!(fmt(expanded), expanded);
+        let collapsed = "fn f(\n    a: int,\n    b: int\n) -> int {\n    a + b\n}\n";
+        assert_eq!(
+            fmt(collapsed),
+            "fn f(a: int, b: int) -> int {\n    a + b\n}\n"
+        );
+    }
+
+    #[test]
+    fn format_preserves_comments_and_meta_expr_space() {
+        let input = concat!(
+            "-- Doc comment.\n",
+            "-- ril: allow(unused_binding)\n",
+            "fn f() -> int {\n",
+            "    let x = meta (1 + 2) -- inline note\n",
+            "    x\n",
+            "}\n",
+        );
+        assert_eq!(fmt(input), input);
+    }
+
+    #[test]
+    fn unified_diff_reports_hunks() {
+        let diff = unified_diff("pkg/a.ril", "a\nb\nc\n", "a\nB\nc\n");
+        assert!(diff.contains("--- a/pkg/a.ril"));
+        assert!(diff.contains("-b\n+B\n"));
     }
 }

@@ -31,9 +31,10 @@ const RESERVED_INCLUDES: &[&str] = &[
     "effect_flow",
     "ownership",
     "horn",
-    "fix_hints",
     "mir_summary",
 ];
+
+const SUPPORTED_INCLUDES: &[&str] = &["fix_hints"];
 
 #[derive(Clone, Debug, Default)]
 pub struct AtQuery {
@@ -128,9 +129,20 @@ pub struct InspectQuery {
 }
 
 impl InspectQuery {
+    pub fn wants_fix_hints(&self) -> bool {
+        self.includes
+            .iter()
+            .flat_map(|raw| raw.split(','))
+            .map(str::trim)
+            .any(|item| item == "fix_hints")
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         for raw in &self.includes {
-            if let Some(item) = raw.split(',').map(str::trim).find(|s| !s.is_empty()) {
+            for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                if SUPPORTED_INCLUDES.contains(&item) {
+                    continue;
+                }
                 if RESERVED_INCLUDES.contains(&item) {
                     return Err(format!(
                         "--include section `{item}` is reserved and not yet implemented"
@@ -141,6 +153,25 @@ impl InspectQuery {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InspectFixEdit {
+    pub loc: String,
+    pub start: usize,
+    pub end: usize,
+    pub replacement: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InspectFixHint {
+    pub code: String,
+    pub title: String,
+    pub safety: ril_source::fix::FixSafety,
+    pub kind: ril_source::fix::FixKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_delta: Option<ril_source::fix::CapabilityDelta>,
+    pub edits: Vec<InspectFixEdit>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -155,6 +186,8 @@ pub struct InspectReport {
     pub symbols: Vec<SymbolFact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sites: Vec<SiteFact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fix_hints: Vec<InspectFixHint>,
 }
 
 impl InspectReport {
@@ -745,6 +778,45 @@ pub fn build_report(
     symbols.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.sym.cmp(&b.1.sym)));
     sites.sort_by_key(|a| a.0);
 
+    let mut fix_hints = Vec::new();
+    if query.wants_fix_hints() {
+        let candidates = crate::fix::collect_fix_hints(partial, &ril_lint::LintConfig::default());
+        for cand in candidates {
+            let matches = cand.fix.edits.iter().any(|edit| {
+                index.file_matches_filter(edit.span.file, &query.files)
+                    && index.span_matches_at(edit.span, &query.at)
+            });
+            if !matches {
+                continue;
+            }
+            let edits: Vec<InspectFixEdit> = cand
+                .fix
+                .edits
+                .iter()
+                .filter_map(|edit| {
+                    let loc = index.format_span(edit.span)?;
+                    Some(InspectFixEdit {
+                        loc,
+                        start: edit.span.start,
+                        end: edit.span.end,
+                        replacement: edit.replacement.clone(),
+                    })
+                })
+                .collect();
+            if edits.is_empty() {
+                continue;
+            }
+            fix_hints.push(InspectFixHint {
+                code: cand.code,
+                title: cand.fix.title,
+                safety: cand.fix.safety,
+                kind: cand.fix.kind,
+                capability_delta: cand.fix.delta,
+                edits,
+            });
+        }
+    }
+
     InspectReport {
         schema_version: SCHEMA_VERSION,
         ok,
@@ -753,6 +825,7 @@ pub fn build_report(
         diagnostics,
         symbols: symbols.into_iter().map(|(_, s)| s).collect(),
         sites: sites.into_iter().map(|(_, s)| s).collect(),
+        fix_hints,
     }
 }
 

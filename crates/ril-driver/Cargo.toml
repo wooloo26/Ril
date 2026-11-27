@@ -12,6 +12,7 @@ ril-source.workspace = true
 ril-syntax.workspace = true
 ril-hir.workspace = true
 ril-sema.workspace = true
+ril-lint.workspace = true
 ril-mir.workspace = true
 ril-codegen = { workspace = true, features = ["native-runtime"] }
 ril-test.workspace = true

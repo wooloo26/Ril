@@ -714,7 +714,7 @@ impl TypedProgram {
             .is_some_and(|id| self.hir.effect_has_ctl(id))
     }
 
-    pub(crate) fn effect_covers(&self, covering: &str, actual: &str) -> bool {
+    pub fn effect_covers(&self, covering: &str, actual: &str) -> bool {
         covering == actual
             || self.effect_instances.get(covering).map_or_else(
                 || self.hir.effect_covers(covering, actual),

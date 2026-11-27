@@ -296,6 +296,12 @@ impl Analyzer<'_> {
                 .chain(storage_flow.iter_mut().flat_map(StorageFlow::values_mut)),
             body_span,
         );
+        let (has_holes, has_pruned_meta) = self.scan_body_flags(ctx.file, body);
+        let outer_slots = outer
+            .slots
+            .iter()
+            .map(|(&decl, slot)| (decl, (slot.variable, slot.mode)))
+            .collect();
         self.functions.push(DefinitionCheck {
             owner: ctx.owner,
             id,
@@ -311,6 +317,10 @@ impl Analyzer<'_> {
             storage_flow,
             normal_exit: !exits.is_empty(),
             capture_names: captures,
+            outer_slots,
+            is_meta: fun.is_meta,
+            has_holes,
+            has_pruned_meta,
         });
     }
 
@@ -1378,5 +1388,472 @@ impl Analyzer<'_> {
             forbids_dup.into_iter().collect(),
             forbids_suspend.into_iter().collect(),
         )
+    }
+
+    pub(super) fn solve_fix_effect_closure(
+        &self,
+        base_facts: &BTreeSet<Fact>,
+    ) -> (Vec<Rule<Fact>>, BTreeSet<Fact>, BTreeMap<Fact, usize>) {
+        let mut fix_rules = self.rules.clone();
+        let mut distinct_effects = BTreeSet::new();
+        let mut distinct_ops = BTreeSet::new();
+        for fact in base_facts {
+            match &fact.obligation {
+                Obligation::Effect(effect) => {
+                    distinct_effects.insert(effect.clone());
+                }
+                Obligation::Operation(op) => {
+                    distinct_ops.insert(op.clone());
+                }
+                _ => {}
+            }
+        }
+        for edge in &self.call_edges {
+            for effect in &distinct_effects {
+                let ops = self.effect_operations(effect);
+                let handled = !ops.is_empty() && ops.iter().all(|op| edge.handled_ops.contains(op));
+                if !handled {
+                    fix_rules.push(Rule {
+                        premises: vec![Fact {
+                            owner: edge.callee_owner,
+                            obligation: Obligation::Effect(effect.clone()),
+                        }],
+                        conclusion: Fact {
+                            owner: edge.caller_owner,
+                            obligation: Obligation::Effect(effect.clone()),
+                        },
+                    });
+                }
+            }
+            for op in &distinct_ops {
+                if !edge.handled_ops.contains(op) {
+                    fix_rules.push(Rule {
+                        premises: vec![Fact {
+                            owner: edge.callee_owner,
+                            obligation: Obligation::Operation(op.clone()),
+                        }],
+                        conclusion: Fact {
+                            owner: edge.caller_owner,
+                            obligation: Obligation::Operation(op.clone()),
+                        },
+                    });
+                }
+            }
+        }
+        let (fix_facts, derived_by) = horn::solve_with_witnesses(&fix_rules);
+        (fix_rules, fix_facts, derived_by)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn build_inferred_signature(
+        &self,
+        fun: &DefinitionCheck,
+        summary: &Summary,
+        base_facts: &BTreeSet<Fact>,
+        fix_rules: &[Rule<Fact>],
+        fix_facts: &BTreeSet<Fact>,
+        derived_by: &BTreeMap<Fact, usize>,
+        owner_names: &BTreeMap<Span, String>,
+    ) -> crate::access::InferredSignature {
+        let def = self.program.hir.definition(fun.id);
+        let is_local_where = !def
+            .stmt
+            .is_some_and(|stmt| self.is_top_level_stmt(fun.owner.file, stmt));
+        let is_main = !is_local_where
+            && def.name.value == "main"
+            && self.program.hir.file(fun.owner.file).kind
+                == ril_syntax::parser::FileKind::Executable;
+
+        let mut effect_fact_map: BTreeMap<String, Vec<Fact>> = BTreeMap::new();
+        for fact in fix_facts.iter().filter(|f| f.owner == fun.owner) {
+            match &fact.obligation {
+                Obligation::Effect(effect) => {
+                    effect_fact_map
+                        .entry(effect.clone())
+                        .or_default()
+                        .push(fact.clone());
+                }
+                Obligation::Operation(op) => {
+                    effect_fact_map
+                        .entry(op.effect.clone())
+                        .or_default()
+                        .push(fact.clone());
+                }
+                _ => {}
+            }
+        }
+        let all_effects: Vec<String> = effect_fact_map.keys().cloned().collect();
+        let mut effects = Vec::new();
+        for eff in &all_effects {
+            let covered_by_other = all_effects
+                .iter()
+                .any(|other| other != eff && self.program.effect_covers(other, eff));
+            if !covered_by_other {
+                effects.push(eff.clone());
+            }
+        }
+
+        let mut effect_causes = BTreeMap::new();
+        for eff in &effects {
+            if let Some(candidate_facts) = effect_fact_map.get(eff) {
+                let mut best_chain: Option<Vec<String>> = None;
+                for fact in candidate_facts {
+                    let chain =
+                        Self::extract_causal_chain(fact, fix_rules, derived_by, owner_names);
+                    if best_chain
+                        .as_ref()
+                        .is_none_or(|cur| chain.len() < cur.len())
+                    {
+                        best_chain = Some(chain);
+                    }
+                }
+                if let Some(chain) = best_chain {
+                    effect_causes.insert(eff.clone(), chain);
+                }
+            }
+        }
+
+        let exercised = |slots: &[usize]| {
+            slots.iter().any(|&i| {
+                fun.formals
+                    .get(i)
+                    .and_then(|decl| *decl)
+                    .is_some_and(|span| !fun.via.contains(&span))
+            })
+        };
+        let needs_mut = exercised(&summary.writes);
+        let needs_shared_mut = exercised(&summary.retained);
+        let needs_capture = summary.captures;
+
+        let mut up_spans = BTreeSet::new();
+        let mut up_replaced = BTreeSet::new();
+        let mut up_written = BTreeSet::new();
+        let mut up_shared = BTreeSet::new();
+        for fact in base_facts.iter().filter(|f| f.owner == fun.owner) {
+            match &fact.obligation {
+                Obligation::ReadUp(span) => {
+                    up_spans.insert(*span);
+                }
+                Obligation::Replace(span) => {
+                    up_replaced.insert(*span);
+                }
+                Obligation::Write(span) | Obligation::WriteExisting(span) => {
+                    up_written.insert(*span);
+                }
+                Obligation::Share(span)
+                | Obligation::StoreShare(span)
+                | Obligation::NeedsSharing(span) => {
+                    up_shared.insert(*span);
+                }
+                _ => {}
+            }
+        }
+
+        let mut up_captures = Vec::new();
+        for span in up_spans {
+            let name = self
+                .definition(span)
+                .map(|id| self.program.hir.definition(id).name.value.clone())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            let (_, outer_mode) = fun
+                .outer_slots
+                .get(&span)
+                .copied()
+                .unwrap_or((false, Mode::Plain));
+            let variable = up_replaced.contains(&span);
+            let mode = if up_shared.contains(&span) {
+                Mode::Shared
+            } else if up_written.contains(&span) {
+                if outer_mode == Mode::Shared {
+                    Mode::Shared
+                } else {
+                    Mode::Mut
+                }
+            } else if outer_mode != Mode::Plain {
+                Mode::Ref
+            } else {
+                Mode::Plain
+            };
+            up_captures.push(crate::access::InferredUpCapture {
+                binding_span: span,
+                name,
+                variable,
+                mode,
+            });
+        }
+        up_captures.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let return_mode = if fun.returned_new
+            && !self.program.is_value(&fun.declared.result)
+            && !self.program.is_must_consume(&fun.declared.result)
+        {
+            Some(crate::access::InferredReturnMode::New)
+        } else {
+            None
+        };
+
+        let mut return_contained_set = BTreeSet::new();
+        for entry in &fun.return_sources {
+            if entry.result_path.is_empty() {
+                continue;
+            }
+            if let Some(Some(formal_span)) = fun.formals.get(entry.formal)
+                && let Some(param_id) = self.definition(*formal_span)
+            {
+                let param_name = self.program.hir.definition(param_id).name.value.clone();
+                return_contained_set.insert((entry.access, param_name));
+            }
+        }
+        let return_contained: Vec<_> = return_contained_set.into_iter().collect();
+
+        crate::access::InferredSignature {
+            def_id: fun.id,
+            owner_span: fun.owner,
+            visibility: def.visibility,
+            is_local_where,
+            is_main,
+            is_meta: fun.is_meta,
+            has_holes: fun.has_holes,
+            has_pruned_meta: fun.has_pruned_meta,
+            has_via: !fun.via.is_empty() || !fun.member_axes.is_empty(),
+            effects,
+            effect_causes,
+            needs_mut,
+            needs_shared_mut,
+            needs_capture,
+            up_captures,
+            return_mode,
+            return_contained,
+        }
+    }
+
+    fn extract_causal_chain(
+        root: &Fact,
+        rules: &[Rule<Fact>],
+        derived_by: &BTreeMap<Fact, usize>,
+        owner_names: &BTreeMap<Span, String>,
+    ) -> Vec<String> {
+        let mut chain = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut current = root.clone();
+        loop {
+            if let Some(name) = owner_names.get(&current.owner)
+                && chain.last() != Some(name)
+            {
+                chain.push(name.clone());
+            }
+            if !visited.insert(current.clone()) {
+                break;
+            }
+            let Some(&rule_idx) = derived_by.get(&current) else {
+                break;
+            };
+            let Some(rule) = rules.get(rule_idx) else {
+                break;
+            };
+            let next = rule
+                .premises
+                .iter()
+                .find(|p| p.owner != current.owner)
+                .or_else(|| rule.premises.first());
+            match next {
+                Some(premise) => current = premise.clone(),
+                None => break,
+            }
+        }
+        chain
+    }
+
+    fn is_top_level_stmt(&self, file: FileId, target: StmtId) -> bool {
+        fn contains_stmt(ast: &Ast, items: &[StmtId], target: StmtId) -> bool {
+            for &item in items {
+                if item == target {
+                    return true;
+                }
+                if let StmtKind::Sub {
+                    items: sub_items, ..
+                } = &ast.stmt(item).value.kind
+                    && contains_stmt(ast, sub_items, target)
+                {
+                    return true;
+                }
+            }
+            false
+        }
+        let ast = self.ast(file);
+        contains_stmt(ast, &ast.items, target)
+    }
+
+    fn scan_body_flags(&self, file: FileId, body: ExprId) -> (bool, bool) {
+        fn walk_stmt(ast: &Ast, id: StmtId, holes: &mut bool, meta: &mut bool) {
+            match &ast.stmt(id).value.kind {
+                StmtKind::Binding {
+                    value, fallback, ..
+                } => {
+                    if let Some(v) = value {
+                        walk_expr(ast, *v, holes, meta);
+                    }
+                    if let Some(f) = fallback {
+                        walk_expr(ast, *f, holes, meta);
+                    }
+                }
+                StmtKind::Defer(e) | StmtKind::Expr(e) => walk_expr(ast, *e, holes, meta),
+                StmtKind::With(h) => walk_expr(ast, h.value, holes, meta),
+                StmtKind::Function(f) => {
+                    if let Some(b) = f.body {
+                        walk_expr(ast, b, holes, meta);
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn walk_expr(ast: &Ast, id: ExprId, holes: &mut bool, meta: &mut bool) {
+            match &ast.expr(id).value {
+                Expr::Hole => *holes = true,
+                Expr::Block {
+                    statements,
+                    helpers,
+                } => {
+                    for &s in statements.iter().chain(helpers) {
+                        walk_stmt(ast, s, holes, meta);
+                    }
+                }
+                Expr::With {
+                    handlers,
+                    statements,
+                    helpers,
+                } => {
+                    for h in handlers {
+                        walk_expr(ast, h.value, holes, meta);
+                    }
+                    for &s in statements.iter().chain(helpers) {
+                        walk_stmt(ast, s, holes, meta);
+                    }
+                }
+                Expr::If {
+                    is_meta,
+                    condition,
+                    yes,
+                    no,
+                } => {
+                    if *is_meta {
+                        *meta = true;
+                    }
+                    match condition {
+                        Condition::Expr(e) | Condition::Binding { value: e, .. } => {
+                            walk_expr(ast, *e, holes, meta);
+                        }
+                    }
+                    walk_expr(ast, *yes, holes, meta);
+                    if let Some(n) = no {
+                        walk_expr(ast, *n, holes, meta);
+                    }
+                }
+                Expr::Match {
+                    is_meta,
+                    value,
+                    arms,
+                    ..
+                } => {
+                    if *is_meta {
+                        *meta = true;
+                    }
+                    walk_expr(ast, *value, holes, meta);
+                    for arm in arms {
+                        if let Some(g) = arm.guard {
+                            walk_expr(ast, g, holes, meta);
+                        }
+                        walk_expr(ast, arm.body, holes, meta);
+                    }
+                }
+                Expr::While { condition, body } => {
+                    match condition {
+                        Condition::Expr(e) | Condition::Binding { value: e, .. } => {
+                            walk_expr(ast, *e, holes, meta);
+                        }
+                    }
+                    walk_expr(ast, *body, holes, meta);
+                }
+                Expr::For { iterable, body, .. } => {
+                    walk_expr(ast, *iterable, holes, meta);
+                    walk_expr(ast, *body, holes, meta);
+                }
+                Expr::Unary { value, .. }
+                | Expr::Cast { value, .. }
+                | Expr::Meta(value)
+                | Expr::Closure { body: value, .. } => walk_expr(ast, *value, holes, meta),
+                Expr::Binary { left, right, .. } => {
+                    walk_expr(ast, *left, holes, meta);
+                    walk_expr(ast, *right, holes, meta);
+                }
+                Expr::Pipeline { value, target, .. } => {
+                    walk_expr(ast, *value, holes, meta);
+                    walk_expr(ast, *target, holes, meta);
+                }
+                Expr::Member { base, member, .. } => {
+                    walk_expr(ast, *base, holes, meta);
+                    if let Member::Computed(e) = member {
+                        walk_expr(ast, *e, holes, meta);
+                    }
+                }
+                Expr::Index { base, index, .. } => {
+                    walk_expr(ast, *base, holes, meta);
+                    walk_expr(ast, *index, holes, meta);
+                }
+                Expr::Range { start, end, .. } => {
+                    if let Some(s) = start {
+                        walk_expr(ast, *s, holes, meta);
+                    }
+                    if let Some(e) = end {
+                        walk_expr(ast, *e, holes, meta);
+                    }
+                }
+                Expr::Call { callee, args } => {
+                    walk_expr(ast, *callee, holes, meta);
+                    for a in args {
+                        walk_expr(ast, a.value, holes, meta);
+                    }
+                }
+                Expr::Wrap { args, .. } => {
+                    for a in args {
+                        walk_expr(ast, a.value, holes, meta);
+                    }
+                }
+                Expr::Record { fields, .. } => {
+                    for f in fields {
+                        if let Some(v) = f.value {
+                            walk_expr(ast, v, holes, meta);
+                        }
+                    }
+                }
+                Expr::Array(items) | Expr::Tuple(items) => {
+                    for &e in items {
+                        walk_expr(ast, e, holes, meta);
+                    }
+                }
+                Expr::Map(entries) => {
+                    for &(k, v) in entries {
+                        walk_expr(ast, k, holes, meta);
+                        walk_expr(ast, v, holes, meta);
+                    }
+                }
+                Expr::Interpolated(parts) => {
+                    for p in parts {
+                        if let ril_syntax::syntax::StringPart::Interpolation(e) = p {
+                            walk_expr(ast, *e, holes, meta);
+                        }
+                    }
+                }
+                Expr::Transfer { value: Some(v), .. } => walk_expr(ast, *v, holes, meta),
+                _ => {}
+            }
+        }
+        let mut holes = false;
+        let mut meta = false;
+        walk_expr(self.ast(file), body, &mut holes, &mut meta);
+        (holes, meta)
     }
 }

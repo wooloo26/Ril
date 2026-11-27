@@ -216,13 +216,17 @@ impl Checker<'_> {
             }
             Expr::Pipeline {
                 value,
+                pipe_span,
                 mode,
+                mode_span,
                 target,
                 propagate,
             } => {
                 let argument = Argument {
                     name: None,
                     mode: *mode,
+                    mode_span: *mode_span,
+                    pipe_span: Some(*pipe_span),
                     value: *value,
                 };
                 let target_node = self.ast(env.file).expr(*target);

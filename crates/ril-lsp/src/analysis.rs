@@ -9,7 +9,10 @@ use ril_sema::{
     access::Analysis,
     ty::{Ty, TypedProgram},
 };
-use ril_source::span::{FileId, Span};
+use ril_source::{
+    diag::Diagnostic,
+    span::{FileId, SourceMap, Span},
+};
 
 use crate::workspace::{LspConfig, WorkspacePackage, build_package_with_override};
 
@@ -19,6 +22,9 @@ pub(crate) struct CachedDoc {
     pub(crate) last_good_typed: Option<Arc<TypedProgram>>,
     pub(crate) latest_analysis: Option<Arc<Analysis>>,
     pub(crate) last_good_analysis: Option<Arc<Analysis>>,
+    pub(crate) latest_diagnostics: Vec<Diagnostic>,
+    pub(crate) latest_lints: Vec<ril_lint::LintDiagnostic>,
+    pub(crate) latest_sources: Option<SourceMap>,
 }
 
 pub(crate) struct LspState {
@@ -54,6 +60,8 @@ impl LspState {
         let ws = self.build_package(uri)?;
         let partial = self.compiler.analyze_partial(&ws.pkg);
         let entry = self.cache.entry(uri.to_owned()).or_default();
+        entry.latest_diagnostics = partial.diagnostics.clone();
+        entry.latest_sources = Some(partial.sources.clone());
         if let Some(ref typed) = partial.typed {
             entry.latest_typed = Some(Arc::clone(typed));
             entry.latest_analysis = partial.analysis.clone();

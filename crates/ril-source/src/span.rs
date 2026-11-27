@@ -4,9 +4,13 @@ use std::{
     sync::Arc,
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::diag::{Code, Diagnostic};
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub struct FileId(pub usize);
 
 impl FileId {
@@ -35,7 +39,9 @@ impl FileId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 pub struct Span {
     pub file: FileId,
     pub start: usize,

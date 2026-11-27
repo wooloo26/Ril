@@ -2,6 +2,7 @@
 #![deny(clippy::indexing_slicing)]
 
 pub mod cst;
+pub mod directive;
 pub mod fmt;
 pub mod lexer;
 pub mod parser;

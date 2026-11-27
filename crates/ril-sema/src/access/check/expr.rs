@@ -977,7 +977,9 @@ impl Analyzer<'_> {
             Expr::Wrap { path, args } => self.wrap(ctx, ledger, path, args, span),
             Expr::Pipeline {
                 value,
+                pipe_span,
                 mode,
+                mode_span,
                 target,
                 propagate,
             } => {
@@ -988,6 +990,8 @@ impl Analyzer<'_> {
                     let mut args = vec![ril_syntax::syntax::Argument {
                         value: *value,
                         mode: *mode,
+                        mode_span: *mode_span,
+                        pipe_span: Some(*pipe_span),
                         name: None,
                     }];
                     let callee = if let Expr::Call { callee, args: rest } = &ast.expr(*target).value

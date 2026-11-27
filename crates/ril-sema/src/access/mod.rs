@@ -530,6 +530,52 @@ pub struct ViaCallSite {
     pub choices: Vec<(usize, Input)>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AnalysisMode {
+    #[default]
+    Check,
+    Fix,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InferredReturnMode {
+    New,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InferredUpCapture {
+    pub binding_span: ril_source::span::Span,
+    pub name: String,
+    pub variable: bool,
+    pub mode: Mode,
+}
+
+#[derive(Clone, Debug)]
+pub struct InferredSignature {
+    pub def_id: DefinitionId,
+    pub owner_span: ril_source::span::Span,
+    pub visibility: ril_syntax::syntax::Visibility,
+    pub is_local_where: bool,
+    pub is_main: bool,
+    pub is_meta: bool,
+    pub has_holes: bool,
+    pub has_pruned_meta: bool,
+    pub has_via: bool,
+    pub effects: Vec<String>,
+    pub effect_causes: BTreeMap<String, Vec<String>>,
+    pub needs_mut: bool,
+    pub needs_shared_mut: bool,
+    pub needs_capture: bool,
+    pub up_captures: Vec<InferredUpCapture>,
+    pub return_mode: Option<InferredReturnMode>,
+    pub return_contained: Vec<(Access, String)>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FixMetadata {
+    pub inferred_sigs: BTreeMap<DefinitionId, InferredSignature>,
+}
+
 #[derive(Default)]
 pub struct Analysis {
     pub summaries: BTreeMap<DefinitionId, Summary>,
@@ -538,10 +584,11 @@ pub struct Analysis {
     pub behavior: crate::behavior::BehaviorAnalysis,
     pub via_calls: Vec<ViaCallSite>,
     pub closure_captures: BTreeMap<ril_source::span::Span, Vec<(ril_source::span::Span, Mode)>>,
+    pub fix_meta: FixMetadata,
 }
 
 pub fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {
-    let (analysis, diagnostics) = check::analyze(program);
+    let (analysis, diagnostics) = check::analyze_with_mode(program, AnalysisMode::Check);
     if diagnostics.is_empty() {
         Ok(analysis)
     } else {
@@ -550,9 +597,15 @@ pub fn check(program: &TypedProgram) -> Result<Analysis, Vec<Diagnostic>> {
 }
 
 pub fn check_partial(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
-    check::analyze(program)
+    check::analyze_with_mode(program, AnalysisMode::Check)
+}
+
+pub fn check_with_mode(program: &TypedProgram, mode: AnalysisMode) -> (Analysis, Vec<Diagnostic>) {
+    check::analyze_with_mode(program, mode)
 }
 
 pub fn horn_rules(program: &TypedProgram) -> Vec<horn::Rule<usize>> {
-    check::analyze(program).0.horn_rules
+    check::analyze_with_mode(program, AnalysisMode::Check)
+        .0
+        .horn_rules
 }

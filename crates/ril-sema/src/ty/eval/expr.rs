@@ -284,13 +284,17 @@ impl Checker<'_> {
             Expr::Wrap { path, args } => self.eval_wrap(env, slots, path, args, span, fuel),
             Expr::Pipeline {
                 value,
+                pipe_span,
                 mode,
+                mode_span,
                 target,
                 propagate,
             } => {
                 let input = Argument {
                     name: None,
                     mode: *mode,
+                    mode_span: *mode_span,
+                    pipe_span: Some(*pipe_span),
                     value: *value,
                 };
                 let value = match &ast.expr(*target).value {

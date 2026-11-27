@@ -2,7 +2,10 @@ use std::{collections::HashMap, fmt, io, str::FromStr};
 
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
 
-use crate::span::{FileId, SourceMap, Span};
+use crate::{
+    fix::{DiagnosticTag, Fix},
+    span::{FileId, SourceMap, Span},
+};
 
 macro_rules! diagnostic_codes {
     ($(($code:ident, $name:ident)),+ $(,)?) => {
@@ -69,7 +72,7 @@ impl Severity {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SecondaryLabel {
     pub span: Span,
     pub message: String,
@@ -80,6 +83,8 @@ struct DiagnosticExtra {
     labels: Vec<SecondaryLabel>,
     notes: Vec<String>,
     help: Vec<String>,
+    tags: Vec<DiagnosticTag>,
+    fixes: Vec<Fix>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,6 +147,29 @@ impl Diagnostic {
 
     pub fn help(&self) -> &[String] {
         self.extra.as_deref().map_or(&[], |e| &e.help)
+    }
+
+    pub fn tags(&self) -> &[DiagnosticTag] {
+        self.extra.as_deref().map_or(&[], |e| &e.tags)
+    }
+
+    pub fn fixes(&self) -> &[Fix] {
+        self.extra.as_deref().map_or(&[], |e| &e.fixes)
+    }
+
+    #[must_use]
+    pub fn with_tag(mut self, tag: DiagnosticTag) -> Self {
+        let tags = &mut self.extra.get_or_insert_with(Box::default).tags;
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_fix(mut self, fix: Fix) -> Self {
+        self.extra.get_or_insert_with(Box::default).fixes.push(fix);
+        self
     }
 
     #[must_use]
@@ -271,9 +299,77 @@ impl Diagnostic {
             }
             push_json_str(&mut out, item);
         }
+        out.push_str("],\"tags\":[");
+        for (idx, tag) in self.tags().iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            push_json_str(&mut out, tag.as_str());
+        }
+        out.push_str("],\"fixes\":[");
+        for (idx, fix) in self.fixes().iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            push_fix_json(&mut out, sources, fix);
+        }
         out.push_str("]}");
         out
     }
+}
+
+fn push_fix_json(out: &mut String, sources: &SourceMap, fix: &Fix) {
+    out.push_str("{\"id\":");
+    push_json_str(out, &fix.id);
+    out.push_str(",\"title\":");
+    push_json_str(out, &fix.title);
+    out.push_str(",\"safety\":");
+    push_json_str(out, fix.safety.as_str());
+    out.push_str(",\"kind\":");
+    push_json_str(out, fix.kind.as_str());
+    out.push_str(",\"is_preferred\":");
+    out.push_str(if fix.is_preferred { "true" } else { "false" });
+    out.push_str(",\"edits\":[");
+    for (idx, edit) in fix.edits.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"span\":");
+        push_span_json(out, sources, edit.span);
+        out.push_str(",\"replacement\":");
+        push_json_str(out, &edit.replacement);
+        out.push('}');
+    }
+    out.push(']');
+    if let Some(delta) = &fix.delta {
+        out.push_str(",\"delta\":{\"symbol\":");
+        push_json_str(out, &delta.symbol);
+        out.push_str(",\"visibility\":");
+        push_json_str(out, &delta.visibility);
+        out.push_str(",\"added\":[");
+        for (idx, item) in delta.added.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            push_json_str(out, item);
+        }
+        out.push_str("],\"removed\":[");
+        for (idx, item) in delta.removed.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            push_json_str(out, item);
+        }
+        out.push_str("],\"causal_chain\":[");
+        for (idx, item) in delta.causal_chain.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            push_json_str(out, item);
+        }
+        out.push_str("]}");
+    }
+    out.push('}');
 }
 
 fn push_span_json(out: &mut String, sources: &SourceMap, span: Span) {

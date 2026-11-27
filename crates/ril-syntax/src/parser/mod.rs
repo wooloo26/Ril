@@ -21,6 +21,56 @@ pub enum FileKind {
     Snippet,
 }
 
+/// Token-level detection of whether a source file defines a top-level ordinary `fn main`.
+///
+/// Ignores comments, string literals, nested blocks, and `meta fn main`.
+pub fn infer_file_kind(source: &SourceFile, tokens: &[Token]) -> FileKind {
+    let mut depth = 0usize;
+    let mut prev_was_meta = false;
+    let mut i = 0;
+    while let Some(tok) = tokens.get(i) {
+        if tok.kind == Kind::Newline {
+            i += 1;
+            continue;
+        }
+        let text = tok.text(source);
+        match text {
+            "{" | ".{" => {
+                depth += 1;
+                prev_was_meta = false;
+            }
+            "}" => {
+                depth = depth.saturating_sub(1);
+                prev_was_meta = false;
+            }
+            "meta" if depth == 0 => {
+                prev_was_meta = true;
+            }
+            "fn" if depth == 0 && !prev_was_meta => {
+                let mut next_idx = i + 1;
+                while tokens
+                    .get(next_idx)
+                    .is_some_and(|t| t.kind == Kind::Newline)
+                {
+                    next_idx += 1;
+                }
+                if tokens
+                    .get(next_idx)
+                    .is_some_and(|next| next.text(source) == "main")
+                {
+                    return FileKind::Executable;
+                }
+                prev_was_meta = false;
+            }
+            _ => {
+                prev_was_meta = false;
+            }
+        }
+        i += 1;
+    }
+    FileKind::Module
+}
+
 #[derive(Clone, Debug)]
 pub struct ParseOutput {
     pub ast: Ast,
@@ -447,6 +497,10 @@ impl Parser<'_> {
     }
 
     fn mode(&mut self, allowed: &[Mode]) -> Mode {
+        self.mode_spanned(allowed).0
+    }
+
+    fn mode_spanned(&mut self, allowed: &[Mode]) -> (Mode, Option<Span>) {
         let mode = match self.text() {
             "mut" => Mode::Mut,
             "ref" => Mode::Ref,
@@ -457,17 +511,26 @@ impl Parser<'_> {
             _ => Mode::Plain,
         };
         if mode != Mode::Plain && allowed.contains(&mode) {
-            self.bump();
-            mode
+            let span = self.bump().span;
+            (mode, Some(span))
         } else {
-            Mode::Plain
+            (Mode::Plain, None)
         }
     }
 
     fn storage(&mut self, paths: bool) -> Result<Storage> {
-        self.eat("let");
+        let keyword_span = if self.eat("let") {
+            Some(self.last)
+        } else {
+            None
+        };
         let variable = self.eat("var");
-        let mode = self.mode(&[Mode::Mut, Mode::Shared, Mode::Ref, Mode::Via]);
+        let keyword_span = if variable {
+            Some(self.last)
+        } else {
+            keyword_span
+        };
+        let (mode, mode_span) = self.mode_spanned(&[Mode::Mut, Mode::Shared, Mode::Ref, Mode::Via]);
         let is_path = matches!(
             self.current().kind,
             Kind::Word(Word::Pascal | Word::Constant)
@@ -483,6 +546,8 @@ impl Parser<'_> {
             mode,
             mode_path,
             bind_mode: false,
+            keyword_span,
+            mode_span,
         })
     }
 }

@@ -232,6 +232,17 @@ struct DefinitionCheck {
     member_axes: Vec<(usize, Region)>,
     returned_new: bool,
     capture_names: BTreeSet<Span>,
+    outer_slots: BTreeMap<Span, (bool, Mode)>,
+    is_meta: bool,
+    has_holes: bool,
+    has_pruned_meta: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CallEdge {
+    caller_owner: Span,
+    callee_owner: Span,
+    handled_ops: BTreeSet<Operation>,
 }
 
 struct ModeUse {
@@ -297,6 +308,7 @@ struct Analyzer<'a> {
     replaying_storage: BTreeSet<(Span, storage::ReplaySite)>,
     storage_read_sites: BTreeMap<storage::ReadSite, usize>,
     functions: Vec<DefinitionCheck>,
+    call_edges: Vec<CallEdge>,
     done: BTreeSet<DefinitionId>,
     checked_defers: BTreeSet<Span>,
     generic_linear_calls: Vec<(DefinitionId, Span)>,
@@ -338,6 +350,7 @@ fn collect(
         replaying_storage: BTreeSet::new(),
         storage_read_sites,
         functions: Vec::new(),
+        call_edges: Vec::new(),
         done: BTreeSet::new(),
         checked_defers: BTreeSet::new(),
         generic_linear_calls: Vec::new(),
@@ -355,11 +368,19 @@ fn collect(
     analyzer
 }
 
-pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
+pub(super) fn analyze_with_mode(
+    program: &TypedProgram,
+    mode: super::AnalysisMode,
+) -> (Analysis, Vec<Diagnostic>) {
     let mut analyzer = storage::solve_recursive_storage(program);
     analyzer.link_higher_order_calls();
     analyzer.check_snapshot_calls();
     let facts = horn::solve(&analyzer.rules);
+    let fix_closure = if mode == super::AnalysisMode::Fix {
+        Some(analyzer.solve_fix_effect_closure(&facts))
+    } else {
+        None
+    };
     for conflict in std::mem::take(&mut analyzer.capture_conflicts) {
         if conflict
             .conditions
@@ -397,8 +418,34 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
     }
     let mut sharing_inputs = BTreeMap::new();
     let mut domains = domains::Domains::default();
-    for function in std::mem::take(&mut analyzer.functions) {
+    let functions = std::mem::take(&mut analyzer.functions);
+    let owner_names: BTreeMap<Span, String> = if fix_closure.is_some() {
+        functions
+            .iter()
+            .map(|f| (f.owner, program.hir.definition(f.id).name.value.clone()))
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    for function in functions {
         let summary = analyzer.finish_function(&facts, &function);
+        if let Some((fix_rules, fix_facts, derived_by)) = &fix_closure
+            && !program.hir.is_stdlib_file(function.owner.file)
+        {
+            let inferred = analyzer.build_inferred_signature(
+                &function,
+                &summary,
+                &facts,
+                fix_rules,
+                fix_facts,
+                derived_by,
+                &owner_names,
+            );
+            analysis
+                .fix_meta
+                .inferred_sigs
+                .insert(function.id, inferred);
+        }
         let instances = analyzer.via_table(&function, &summary, &facts);
         let sharing: BTreeSet<_> = function
             .formals

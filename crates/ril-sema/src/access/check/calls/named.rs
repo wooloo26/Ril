@@ -73,6 +73,13 @@ impl<'program> Analyzer<'program> {
         let mut before_updates = None;
         let mut modeled_stores = false;
         let mut normal_exit = true;
+        if has_body && ctx.reachable && !ctx.shadow && ctx.in_function {
+            self.call_edges.push(crate::access::check::CallEdge {
+                caller_owner: ctx.owner,
+                callee_owner: fun.name.span,
+                handled_ops: ctx.handlers.keys().cloned().collect(),
+            });
+        }
         if has_body && ctx.reachable && !ctx.shadow {
             self.function(fun, ledger);
             let checked = self

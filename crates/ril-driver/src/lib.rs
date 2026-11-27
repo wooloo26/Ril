@@ -23,6 +23,7 @@ use ril_syntax::{
 };
 use ril_test::{CheckResult, ExecOutput, Stage, TestDriver, Unit, VirtualPackage};
 
+pub mod fix;
 mod incremental;
 pub mod inspect;
 mod native;
@@ -30,7 +31,10 @@ mod package;
 
 pub use incremental::{IncrementalCache, QueryStats};
 pub use native::worker_entry;
-pub use package::{PackageManifest, infer_unit, load_package, parse_manifest};
+pub use package::{
+    PackageManifest, find_manifest_for, infer_unit, load_package, load_package_with_paths,
+    parse_manifest,
+};
 
 /// Formats a `.ril` source file on disk, returning the formatted text.
 pub fn format_file(path: &std::path::Path) -> Result<String, String> {
@@ -52,7 +56,9 @@ pub fn format_file(path: &std::path::Path) -> Result<String, String> {
     })
 }
 
-use incremental::{CheckKey, ContentDigest, FileFingerprint, MirKey, PackageKey, TypeKey, sha256};
+use incremental::{
+    CheckKey, ContentDigest, FileFingerprint, LintKey, MirKey, PackageKey, TypeKey, sha256,
+};
 
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize,
@@ -253,7 +259,12 @@ impl Compiler {
         pkg: &VirtualPackage,
         query: &inspect::InspectQuery,
     ) -> inspect::InspectReport {
-        let partial = self.analyze_partial(pkg);
+        let mode = if query.wants_fix_hints() {
+            access::AnalysisMode::Fix
+        } else {
+            access::AnalysisMode::Check
+        };
+        let partial = self.analyze_partial_with_mode(pkg, mode);
         let entry = partial
             .typed
             .as_ref()
@@ -267,6 +278,47 @@ impl Compiler {
                     .map(|(id, _)| id)
             });
         inspect::build_report(&partial, entry, query)
+    }
+
+    /// Runs read-only compilation analysis followed by `ril-lint` over all user source files in `pkg`.
+    pub fn lint_package(&self, pkg: &VirtualPackage, config: &ril_lint::LintConfig) -> Linted {
+        let prepared = prepare_inputs(pkg, self.cache());
+        let lint_key = LintKey {
+            type_key: TypeKey {
+                package: prepared.package_key.clone(),
+                budget: pkg.budget,
+            },
+            config_hash: sha256(&config.canonical_bytes()),
+        };
+        let partial = self.analyze_partial(pkg);
+        if partial.diagnostics.is_empty()
+            && let Some(cache) = &self.cache
+            && let Some(cached) = cache.get_lint(&lint_key)
+        {
+            return Linted {
+                partial,
+                lint: (*cached).clone(),
+            };
+        }
+        let target_files: BTreeSet<FileId> = prepared
+            .valid
+            .iter()
+            .filter(|f| !f.from_interface)
+            .map(|f| f.id)
+            .collect();
+        let lint = ril_lint::run_partial(
+            &partial.sources,
+            &target_files,
+            partial.typed.as_deref(),
+            partial.analysis.as_deref(),
+            config,
+        );
+        if partial.diagnostics.is_empty()
+            && let Some(cache) = &self.cache
+        {
+            cache.put_lint(lint_key, Arc::new(lint.clone()));
+        }
+        Linted { partial, lint }
     }
 
     pub fn analyze_cached(
@@ -283,6 +335,14 @@ impl Compiler {
     /// HIR, type, or access diagnostics occur) while collecting full `Stage::Access`
     /// diagnostics when earlier stages succeed.
     pub fn analyze_partial(&self, pkg: &VirtualPackage) -> PartialAnalysis {
+        self.analyze_partial_with_mode(pkg, access::AnalysisMode::Check)
+    }
+
+    pub fn analyze_partial_with_mode(
+        &self,
+        pkg: &VirtualPackage,
+        mode: access::AnalysisMode,
+    ) -> PartialAnalysis {
         let prepared = prepare_inputs(pkg, self.cache());
         let sources = prepared.sources.clone();
         let entry = prepared.entry;
@@ -384,7 +444,7 @@ impl Compiler {
                 .collect();
         }
         let (analysis, stage) = if !had_syntax_errors && !had_hir_errors && !had_type_errors {
-            let (analysis, access_diags) = access::check_partial(&typed);
+            let (analysis, access_diags) = access::check_with_mode(&typed, mode);
             diagnostics.extend(access_diags);
             (Some(Arc::new(analysis)), "access")
         } else if had_syntax_errors {
@@ -535,6 +595,11 @@ pub struct PartialAnalysis {
     pub analysis: Option<Arc<Analysis>>,
     pub stage: &'static str,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+pub struct Linted {
+    pub partial: PartialAnalysis,
+    pub lint: ril_lint::LintReport,
 }
 
 impl Driver {

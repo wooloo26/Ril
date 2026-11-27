@@ -349,10 +349,24 @@ impl Checker<'_> {
                                 "runtime primitive called in static computation",
                             );
                         } else if phase == PrimitivePhase::Static && env.phase == Phase::Runtime {
-                            self.error(
-                                Code::E0810,
-                                callee.span,
-                                "calling a meta fn in runtime code requires 'meta'",
+                            let insert_span = Span::new(span.file, span.start, span.start);
+                            let fix = ril_source::fix::Fix {
+                                id: format!("E0810:meta_prefix:{}:{}", span.file.0, span.start),
+                                title: "Insert `meta ` prefix".to_owned(),
+                                safety: ril_source::fix::FixSafety::Safe,
+                                kind: ril_source::fix::FixKind::SyntaxForm,
+                                is_preferred: true,
+                                is_organize_imports: false,
+                                edits: vec![ril_source::fix::TextEdit::new(insert_span, "meta ")],
+                                delta: None,
+                            };
+                            self.error_diag(
+                                ril_source::diag::Diagnostic::error(
+                                    Code::E0810,
+                                    callee.span,
+                                    "calling a meta fn in runtime code requires 'meta'",
+                                )
+                                .with_fix(fix),
                             );
                         }
                     }
@@ -374,20 +388,51 @@ impl Checker<'_> {
                     for arg in args {
                         self.expr(env, arg.value, None);
                     }
-                    self.error(
-                        Code::E0338,
-                        callee.span,
-                        "nominal construction requires 'Name::(...)' syntax",
+                    let insert_span = Span::new(callee.span.file, callee.span.end, callee.span.end);
+                    let fix = ril_source::fix::Fix {
+                        id: format!(
+                            "E0338:nominal_wrap:{}:{}",
+                            callee.span.file.0, callee.span.end
+                        ),
+                        title: "Insert `::` for nominal wrapper construction".to_owned(),
+                        safety: ril_source::fix::FixSafety::Safe,
+                        kind: ril_source::fix::FixKind::SyntaxForm,
+                        is_preferred: true,
+                        is_organize_imports: false,
+                        edits: vec![ril_source::fix::TextEdit::new(insert_span, "::")],
+                        delta: None,
+                    };
+                    self.error_diag(
+                        ril_source::diag::Diagnostic::error(
+                            Code::E0338,
+                            callee.span,
+                            "nominal construction requires 'Name::(...)' syntax",
+                        )
+                        .with_fix(fix),
                     );
                     return Ty::Unknown;
                 }
                 DefinitionKind::Function => {
                     let is_stdlib = self.hir.is_stdlib_file(def.name.span.file);
                     if !env.shadow && self.is_meta_fn(id) && env.phase == Phase::Runtime {
-                        self.error(
-                            Code::E0810,
-                            callee.span,
-                            "calling a meta fn in runtime code requires 'meta'",
+                        let insert_span = Span::new(span.file, span.start, span.start);
+                        let fix = ril_source::fix::Fix {
+                            id: format!("E0810:meta_prefix:{}:{}", span.file.0, span.start),
+                            title: "Insert `meta ` prefix".to_owned(),
+                            safety: ril_source::fix::FixSafety::Safe,
+                            kind: ril_source::fix::FixKind::SyntaxForm,
+                            is_preferred: true,
+                            is_organize_imports: false,
+                            edits: vec![ril_source::fix::TextEdit::new(insert_span, "meta ")],
+                            delta: None,
+                        };
+                        self.error_diag(
+                            ril_source::diag::Diagnostic::error(
+                                Code::E0810,
+                                callee.span,
+                                "calling a meta fn in runtime code requires 'meta'",
+                            )
+                            .with_fix(fix),
                         );
                     }
                     if !env.shadow
@@ -560,15 +605,98 @@ impl Checker<'_> {
                 parameter.mode
             };
             if !parameter.is_meta && parameter.mode != Mode::Via && expected_arg_mode != arg.mode {
-                self.error(
-                    if arg.mode == Mode::Plain {
-                        Code::E0405
-                    } else {
-                        Code::E0406
-                    },
+                let code = if arg.mode == Mode::Plain {
+                    Code::E0405
+                } else {
+                    Code::E0406
+                };
+                let mut diag = ril_source::diag::Diagnostic::error(
+                    code,
                     arg_span,
                     "required explicit argument mode does not match",
                 );
+                let mode_fix = if arg.mode == Mode::Plain {
+                    expected_arg_mode.as_str().map(|mode_str| {
+                        let (edit_span, replacement) = if let Some(pipe_span) = arg.pipe_span {
+                            (
+                                Span::new(pipe_span.file, pipe_span.end, pipe_span.end),
+                                format!(" {mode_str}"),
+                            )
+                        } else {
+                            (
+                                Span::new(arg_span.file, arg_span.start, arg_span.start),
+                                format!("{mode_str} "),
+                            )
+                        };
+                        ril_source::fix::Fix {
+                            id: format!(
+                                "{}:call_mode:{}:{}",
+                                code.as_str(),
+                                edit_span.file.0,
+                                edit_span.start
+                            ),
+                            title: format!("Insert `{mode_str}` mode marker"),
+                            safety: ril_source::fix::FixSafety::Safe,
+                            kind: ril_source::fix::FixKind::CallSiteMode,
+                            is_preferred: true,
+                            is_organize_imports: false,
+                            edits: vec![ril_source::fix::TextEdit::new(edit_span, replacement)],
+                            delta: None,
+                        }
+                    })
+                } else if let Some(mode_span) = arg.mode_span {
+                    if let Some(expected_str) = expected_arg_mode.as_str() {
+                        Some(ril_source::fix::Fix {
+                            id: format!(
+                                "{}:call_mode:{}:{}",
+                                code.as_str(),
+                                mode_span.file.0,
+                                mode_span.start
+                            ),
+                            title: format!("Replace mode marker with `{expected_str}`"),
+                            safety: ril_source::fix::FixSafety::Safe,
+                            kind: ril_source::fix::FixKind::CallSiteMode,
+                            is_preferred: true,
+                            is_organize_imports: false,
+                            edits: vec![ril_source::fix::TextEdit::new(mode_span, expected_str)],
+                            delta: None,
+                        })
+                    } else {
+                        let file_text = self.hir.file(mode_span.file).source_text();
+                        let remove_end =
+                            file_text
+                                .get(mode_span.end..)
+                                .map_or(mode_span.end, |rest| {
+                                    let ws: usize = rest
+                                        .bytes()
+                                        .take_while(|b| *b == b' ' || *b == b'\t')
+                                        .count();
+                                    mode_span.end + ws
+                                });
+                        let remove_span = Span::new(mode_span.file, mode_span.start, remove_end);
+                        Some(ril_source::fix::Fix {
+                            id: format!(
+                                "{}:call_mode:{}:{}",
+                                code.as_str(),
+                                remove_span.file.0,
+                                remove_span.start
+                            ),
+                            title: "Remove unnecessary mode marker".to_owned(),
+                            safety: ril_source::fix::FixSafety::Safe,
+                            kind: ril_source::fix::FixKind::CallSiteMode,
+                            is_preferred: true,
+                            is_organize_imports: false,
+                            edits: vec![ril_source::fix::TextEdit::new(remove_span, "")],
+                            delta: None,
+                        })
+                    }
+                } else {
+                    None
+                };
+                if let Some(fix) = mode_fix {
+                    diag = diag.with_fix(fix);
+                }
+                self.error_diag(diag);
             }
             if parameter.is_meta
                 && env.phase == Phase::Runtime

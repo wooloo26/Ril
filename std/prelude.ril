@@ -57,7 +57,10 @@ pub type Inner = \W -> match <W> {
     <Derived<let Payload>> -> <Derived<Inner<Payload>>>
     <Nominal<let Payload>> -> <Payload>
     _ -> match Reflect::type_kind(<W>) {
-        Reflect::TypeKind::OpaqueValue | Reflect::TypeKind::OpaqueShared | Reflect::TypeKind::Opaque -> compile_error_code("E0308", "opaque representation is sealed")
+        Reflect::TypeKind::OpaqueValue |
+        Reflect::TypeKind::OpaqueShared |
+        Reflect::TypeKind::Opaque ->
+            compile_error_code("E0308", "opaque representation is sealed")
         _ -> compile_error_code("E0301", "Inner requires a nominal wrapper type")
     }
 }
@@ -77,7 +80,14 @@ pub type SharedObject = \T -> match <T> {
         _ -> <T>
     }
     _ -> match Reflect::type_kind(<T>) {
-        Reflect::TypeKind::Record | Reflect::TypeKind::Tuple | Reflect::TypeKind::Array | Reflect::TypeKind::Map | Reflect::TypeKind::Sum | Reflect::TypeKind::OpaqueShared | Reflect::TypeKind::OpaqueSum -> <T>
+        Reflect::TypeKind::Record |
+        Reflect::TypeKind::Tuple |
+        Reflect::TypeKind::Array |
+        Reflect::TypeKind::Map |
+        Reflect::TypeKind::Sum |
+        Reflect::TypeKind::OpaqueShared |
+        Reflect::TypeKind::OpaqueSum ->
+            <T>
         _ -> compile_error_code("E0301", "type does not satisfy SharedObject")
     }
 }
@@ -107,10 +117,12 @@ pub type NonEmpty = \T |> LenTarget, xs: T -> if len(xs) > 0 { <()> } else { <ne
 pub type Len = \T |> LenTarget, xs: T, n: int -> if len(xs) == n { <()> } else { <never> }
 
 -- Static proof that `len(xs) == len(ys)`.
-pub type SameLen = \A |> LenTarget, B |> LenTarget, xs: A, ys: B -> if len(xs) == len(ys) { <()> } else { <never> }
+pub type SameLen = \A |> LenTarget, B |> LenTarget, xs: A, ys: B ->
+    if len(xs) == len(ys) { <()> } else { <never> }
 
 -- Static proof that `0 <= i && i < len(xs)`.
-pub type InBounds = \T |> LenTarget, i: int, xs: T -> if i >= 0 && i < len(xs) { <()> } else { <never> }
+pub type InBounds = \T |> LenTarget, i: int, xs: T ->
+    if i >= 0 && i < len(xs) { <()> } else { <never> }
 
 -- Static check accepting types that support `In`: maps, `Set<T>`, and `Derived<T>` wrapping any of them.
 pub type InTarget = \C, K -> match <C> {
@@ -118,8 +130,18 @@ pub type InTarget = \C, K -> match <C> {
         let _ = <InTarget<Payload, K>>
         <C>
     }
-    <Set<let Elem>> -> if <Elem> == <K> { <C> } else { compile_error_code("E0301", "In key type does not match Set element type") }
-    <[let Key: let _ _]> -> if <Key> == <K> { <C> } else { compile_error_code("E0301", "In key type does not match map key type") }
+    <Set<let Elem>> ->
+        if <Elem> == <K> {
+            <C>
+        } else {
+            compile_error_code("E0301", "In key type does not match Set element type")
+        }
+    <[let Key: let _ _]> ->
+        if <Key> == <K> {
+            <C>
+        } else {
+            compile_error_code("E0301", "In key type does not match map key type")
+        }
     _ -> compile_error_code("E0301", "In requires a map or Set")
 }
 

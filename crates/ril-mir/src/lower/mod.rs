@@ -1021,13 +1021,17 @@ impl<'a> Builder<'_, 'a> {
             Expr::Wrap { path, args } => self.wrap(path, args, span),
             Expr::Pipeline {
                 value,
+                pipe_span,
                 mode,
+                mode_span,
                 target,
                 propagate,
             } => {
                 let mut arguments = vec![Argument {
                     value: *value,
                     mode: *mode,
+                    mode_span: *mode_span,
+                    pipe_span: Some(*pipe_span),
                     name: None,
                 }];
                 let callee = if let Expr::Call { callee, args } = &self.ast().expr(*target).value {

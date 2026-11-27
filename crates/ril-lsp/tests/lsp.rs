@@ -151,12 +151,9 @@ fn lsp_jsonrpc_diagnostics_hover_definition_and_formatting() -> Result<(), Strin
             .and_then(|v| v.pointer("/result/range/start/line")),
         Some(&json!(0))
     );
-    assert!(
-        frames
-            .get(5)
-            .and_then(|v| v.pointer("/result/0/newText"))
-            .and_then(Value::as_str)
-            .is_some()
+    assert_eq!(
+        frames.get(5).and_then(|v| v.get("result")),
+        Some(&json!([]))
     );
     Ok(())
 }
@@ -244,15 +241,19 @@ fn lsp_real_workspace_cross_file_and_stdlib_definition() -> Result<(), String> {
     let frames = parse_lsp_frames(&output)?;
     assert_eq!(frames.len(), 6, "expected 6 LSP messages, got {frames:#?}");
 
-    // 1. Clean diagnostics on examples/hello/src/main.ril
+    // 1. Zero compiler errors on examples/hello/src/main.ril
     let diags = frames
         .get(1)
         .and_then(|v| v.pointer("/params/diagnostics"))
         .and_then(Value::as_array)
         .ok_or("missing diagnostics")?;
+    let compiler_errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.get("severity") == Some(&json!(1)))
+        .collect();
     assert!(
-        diags.is_empty(),
-        "expected clean example diagnostics: {diags:?}"
+        compiler_errors.is_empty(),
+        "expected zero compiler errors on example: {compiler_errors:?}"
     );
 
     // 2. Cross-file Go-To-Definition jumps to examples/hello/src/math.ril
@@ -380,7 +381,14 @@ fn lsp_prelude_definitions_jump_to_std_prelude_ril() -> Result<(), String> {
         .and_then(|v| v.pointer("/params/diagnostics"))
         .and_then(Value::as_array)
         .ok_or("missing diagnostics")?;
-    assert!(diags.is_empty(), "expected clean diagnostics: {diags:?}");
+    let compiler_errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.get("severity") == Some(&json!(1)))
+        .collect();
+    assert!(
+        compiler_errors.is_empty(),
+        "expected zero compiler errors: {compiler_errors:?}"
+    );
 
     for (idx, label, expected_suffix) in [
         (2, "Option", "std/prelude.ril"),

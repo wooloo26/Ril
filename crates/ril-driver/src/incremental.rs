@@ -22,7 +22,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::CompileOptions;
 
-const DISK_SCHEMA_VERSION: u32 = 3;
+const DISK_SCHEMA_VERSION: u32 = 4;
 
 pub(crate) type ContentDigest = [u8; 32];
 
@@ -52,6 +52,8 @@ pub struct QueryStats {
     pub clif_misses: usize,
     pub object_hits: usize,
     pub object_misses: usize,
+    pub lint_hits: usize,
+    pub lint_misses: usize,
     pub disk_hits: usize,
     pub disk_misses: usize,
 }
@@ -117,6 +119,12 @@ pub(crate) struct TypeKey {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub(crate) struct LintKey {
+    pub(crate) type_key: TypeKey,
+    pub(crate) config_hash: ContentDigest,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 pub(crate) struct MirKey {
     pub(crate) access: TypeKey,
     pub(crate) codegen_hashes: Vec<(PathBuf, String)>,
@@ -172,6 +180,7 @@ struct CacheState {
     mir: HashMap<MirKey, Result<Arc<mir::Program>, Vec<Diagnostic>>>,
     clif: HashMap<MirKey, Result<Arc<String>, Vec<Diagnostic>>>,
     objects: HashMap<MirKey, Result<Arc<Vec<u8>>, Vec<Diagnostic>>>,
+    lints: HashMap<LintKey, Arc<ril_lint::LintReport>>,
 }
 
 pub struct IncrementalCache {
@@ -450,6 +459,40 @@ impl IncrementalCache {
         self.lock().objects.insert(key, value);
     }
 
+    pub(crate) fn get_lint(&self, key: &LintKey) -> Option<Arc<ril_lint::LintReport>> {
+        {
+            let mut state = self.lock();
+            if let Some(hit) = state.lints.get(key).cloned() {
+                state.stats.lint_hits += 1;
+                return Some(hit);
+            }
+            state.stats.lint_misses += 1;
+        }
+        let path = self.disk_path("lint", "json", key)?;
+        let Ok(bytes) = fs::read(&path) else {
+            self.lock().stats.disk_misses += 1;
+            return None;
+        };
+        let Ok(report) = serde_json::from_slice::<ril_lint::LintReport>(&bytes) else {
+            self.lock().stats.disk_misses += 1;
+            return None;
+        };
+        let report = Arc::new(report);
+        let mut state = self.lock();
+        state.stats.disk_hits += 1;
+        state.lints.insert(key.clone(), Arc::clone(&report));
+        Some(report)
+    }
+
+    pub(crate) fn put_lint(&self, key: LintKey, value: Arc<ril_lint::LintReport>) {
+        if let Some(path) = self.disk_path("lint", "json", &key)
+            && let Ok(bytes) = serde_json::to_vec(&*value)
+        {
+            write_atomic(&path, &bytes);
+        }
+        self.lock().lints.insert(key, value);
+    }
+
     fn disk_path<K: Serialize>(&self, prefix: &str, ext: &str, key: &K) -> Option<PathBuf> {
         let dir = self.disk_dir.as_ref()?;
         let payload = serde_json::to_vec(&(
@@ -510,6 +553,10 @@ struct DiskDiagnostic {
     labels: Vec<DiskLabel>,
     notes: Vec<String>,
     help: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<ril_source::fix::DiagnosticTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fixes: Vec<ril_source::fix::Fix>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -540,6 +587,8 @@ impl From<&CheckResult> for DiskCheckEntry {
                         .collect(),
                     notes: diag.notes().to_vec(),
                     help: diag.help().to_vec(),
+                    tags: diag.tags().to_vec(),
+                    fixes: diag.fixes().to_vec(),
                 })
                 .collect(),
             signatures: result.signatures.clone(),
@@ -582,6 +631,12 @@ impl DiskCheckEntry {
             }
             for help in item.help {
                 diag = diag.with_help(help);
+            }
+            for tag in item.tags {
+                diag = diag.with_tag(tag);
+            }
+            for fix in item.fixes {
+                diag = diag.with_fix(fix);
             }
             diagnostics.push(diag);
         }

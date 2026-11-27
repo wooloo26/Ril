@@ -107,13 +107,15 @@ impl Parser<'_> {
                     target: self.ty()?,
                 },
                 "|>" => {
-                    let mode = self.mode(ARGUMENT);
+                    let (mode, mode_span) = self.mode_spanned(ARGUMENT);
                     let target = self.atom(context)?;
                     let target = self.postfix(target, false, context)?;
                     let propagate = self.eat("?");
                     Expr::Pipeline {
                         value: left,
+                        pipe_span: token.span,
                         mode,
+                        mode_span,
                         target,
                         propagate,
                     }
@@ -201,6 +203,8 @@ impl Parser<'_> {
                     args.push(Argument {
                         name: None,
                         mode: Mode::Plain,
+                        mode_span: None,
+                        pipe_span: None,
                         value: self.closure(context)?,
                     });
                 }
@@ -278,6 +282,8 @@ impl Parser<'_> {
                     args: vec![Argument {
                         name: None,
                         mode: Mode::Plain,
+                        mode_span: None,
+                        pipe_span: None,
                         value: self.closure(context)?,
                     }],
                 }
@@ -298,10 +304,12 @@ impl Parser<'_> {
         } else {
             None
         };
-        let mode = self.mode(ARGUMENT);
+        let (mode, mode_span) = self.mode_spanned(ARGUMENT);
         Ok(Argument {
             name,
             mode,
+            mode_span,
+            pipe_span: None,
             value: self.expr()?,
         })
     }

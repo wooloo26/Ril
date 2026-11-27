@@ -11,25 +11,7 @@ use ril_test::{Unit, VirtualPackage};
 
 /// Lightweight token-stream check for a top-level `fn main` without constructing an AST.
 fn has_top_level_main(source: &SourceFile, tokens: &[Token]) -> bool {
-    let mut depth = 0usize;
-    let mut i = 0;
-    while let Some(tok) = tokens.get(i) {
-        let text = tok.text(source);
-        match text {
-            "{" | ".{" => depth += 1,
-            "}" => depth = depth.saturating_sub(1),
-            "fn" if depth == 0 => {
-                if let Some(next) = tokens.get(i + 1)
-                    && next.text(source) == "main"
-                {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    false
+    ril_syntax::parser::infer_file_kind(source, tokens) == ril_syntax::parser::FileKind::Executable
 }
 
 /// Lightweight token-stream scanner collecting module `use a/b/c` import paths without full parsing.
@@ -102,6 +84,36 @@ pub struct PackageManifest {
     pub name: Option<String>,
     pub entry: Option<PathBuf>,
     pub dependencies: BTreeMap<String, PathBuf>,
+    pub lint: ril_lint::LintConfig,
+}
+
+fn strip_toml_comment(raw: &str) -> &str {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut escaped = false;
+    for (idx, ch) in raw.char_indices() {
+        if in_double {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_double = false;
+            }
+        } else if in_single {
+            if ch == '\'' {
+                in_single = false;
+            }
+        } else {
+            match ch {
+                '"' => in_double = true,
+                '\'' => in_single = true,
+                '#' => return raw.get(..idx).unwrap_or(raw),
+                _ => {}
+            }
+        }
+    }
+    raw
 }
 
 fn unquote_toml_string(raw: &str) -> Option<String> {
@@ -116,12 +128,12 @@ fn unquote_toml_string(raw: &str) -> Option<String> {
     }
 }
 
-/// Parse a `ril.toml` manifest (`[package]` and `[dependencies]` sections).
+/// Parse a `ril.toml` manifest (`[package]`, `[dependencies]`, `[lint]`, `[lint.options]`).
 pub fn parse_manifest(text: &str) -> Result<PackageManifest, String> {
     let mut manifest = PackageManifest::default();
     let mut section = String::new();
     for (line_no, raw_line) in text.lines().enumerate() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
+        let line = strip_toml_comment(raw_line).trim();
         if line.is_empty() {
             continue;
         }
@@ -178,10 +190,51 @@ pub fn parse_manifest(text: &str) -> Result<PackageManifest, String> {
                     .dependencies
                     .insert(key.to_owned(), PathBuf::from(dep_path));
             }
+            "lint" => {
+                let level_str = unquote_toml_string(value).ok_or_else(|| {
+                    format!(
+                        "ril.toml:{}: expected string level (\"allow\"|\"warn\"|\"deny\") for `{key}`",
+                        line_no + 1
+                    )
+                })?;
+                manifest
+                    .lint
+                    .insert_manifest_entry(key, &level_str)
+                    .map_err(|e| format!("ril.toml:{}: {e}", line_no + 1))?;
+            }
+            "lint.options" => {
+                let num = value.parse::<usize>().map_err(|_| {
+                    format!(
+                        "ril.toml:{}: expected non-negative integer for `lint.options.{key}`",
+                        line_no + 1
+                    )
+                })?;
+                match key {
+                    "max_args" => manifest.lint.options.max_args = num,
+                    "max_nesting" => manifest.lint.options.max_nesting = num,
+                    "max_lines" => manifest.lint.options.max_lines = num,
+                    _ => {
+                        return Err(format!(
+                            "ril.toml:{}: unknown lint option `{key}`",
+                            line_no + 1
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
     }
     Ok(manifest)
+}
+
+/// Locates and parses the nearest enclosing `ril.toml` manifest for `path`.
+pub fn find_manifest_for(path: &Path) -> Option<(PathBuf, PackageManifest)> {
+    let start = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    find_manifest(start)
 }
 
 fn find_manifest(start: &Path) -> Option<(PathBuf, PackageManifest)> {
@@ -249,6 +302,13 @@ fn check_manifest_cycles(root_dir: &Path, root_manifest: &PackageManifest) -> Re
 }
 
 pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> {
+    load_package_with_paths(entry, unit).map(|(pkg, _)| pkg)
+}
+
+pub fn load_package_with_paths(
+    entry: &Path,
+    unit: Unit,
+) -> Result<(VirtualPackage, BTreeMap<PathBuf, PathBuf>), String> {
     let mut entry = entry
         .canonicalize()
         .map_err(|err| format!("{}: {err}", entry.display()))?;
@@ -318,10 +378,12 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
     let parent = package_dir.parent().unwrap_or(&package_dir).to_owned();
     let mut pending = vec![(package.entry.clone(), entry)];
     let mut visited = BTreeSet::new();
+    let mut disk_paths = BTreeMap::new();
     while let Some((path, source_path)) = pending.pop() {
         if !visited.insert(path.clone()) {
             continue;
         }
+        disk_paths.insert(path.clone(), source_path.clone());
         let data =
             fs::read(&source_path).map_err(|err| format!("{}: {err}", source_path.display()))?;
         let mut module = path.clone();
@@ -408,5 +470,5 @@ pub fn load_package(entry: &Path, unit: Unit) -> Result<VirtualPackage, String> 
         }
         package.insert(path, data);
     }
-    Ok(package)
+    Ok((package, disk_paths))
 }

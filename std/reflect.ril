@@ -58,7 +58,7 @@ meta fn raw_type_kind<T>(target: Type<T>) -> TypeKind
 pub meta fn type_kind<T>(target: Type<T>) -> TypeKind {
     match target {
         <bool> | <int> | <f64> | <str> | <bytes> | <()> | <never> -> TypeKind::Value
-        <.{ ..}> -> TypeKind::Record
+        <.{ .. }> -> TypeKind::Record
         <(..)> -> TypeKind::Tuple
         <[let _]_> -> TypeKind::Array
         <[_: let _ _]> -> TypeKind::Map
@@ -72,15 +72,16 @@ pub meta fn type_kind<T>(target: Type<T>) -> TypeKind {
 -- Computes the field coordinate type of `T` (`str` for records, `int` for tuples and `()`).
 -- Fails with `E0308` on sealed opaque types and `E0358` otherwise.
 pub type FieldKey = \T -> match <T> {
-    <.{ ..}> -> <str>
+    <.{ .. }> -> <str>
     <(..)> | <()> -> <int>
     <Nominal<let Payload>> -> match <Payload> {
-        <.{ ..}> -> <str>
+        <.{ .. }> -> <str>
         <(..)> | <()> -> <int>
         _ -> compile_error_code("E0358", "FieldKey requires a record or tuple type")
     }
     _ -> match type_kind(<T>) {
-        TypeKind::OpaqueValue | TypeKind::OpaqueShared | TypeKind::OpaqueSum | TypeKind::Opaque -> compile_error_code("E0308", "opaque representation is sealed")
+        TypeKind::OpaqueValue | TypeKind::OpaqueShared | TypeKind::OpaqueSum | TypeKind::Opaque ->
+            compile_error_code("E0308", "opaque representation is sealed")
         _ -> compile_error_code("E0358", "FieldKey requires a record or tuple type")
     }
 }
