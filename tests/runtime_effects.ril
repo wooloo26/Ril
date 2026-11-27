@@ -1,13 +1,46 @@
 -- @suite runtime_effects
 -- @default_stage run
 
--- @case division_by_zero_unwinds run-panic "integer division by zero" backend=both
-fn divide(n: int) -> int { 20 / n }
-fn main() -> () { let _ = divide(0) }
-
--- @case negative_shift_unwinds run-panic "negative shift count" backend=both
-fn shift(n: int) -> int { 15 << n }
-fn main() -> () { let _ = shift(-1) }
+-- @case static_proofs_and_proved_stdlib_runtime run-pass backend=both
+linear type Token(int)
+fn drop_tok(t: Token) -> int { inner(t) }
+fn div_shift(a: int, d |> NonZero, k |> Nat) -> int { (a / d) << k }
+fn lower_bound(xs: []int, target: int) -> int |> Between(0, len(xs)) {
+    var lo = 0
+    var hi = len(xs)
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2
+        if xs[mid] < target { lo = mid + 1 } else { hi = mid }
+    }
+    lo
+}
+fn main() -> () {
+    assert(div_shift(25, 5, 2) == 20)
+    assert(Numeric::abs(-7) == 7 && Numeric::min(3, 9) == 3 && Numeric::max(3, 9) == 9)
+    assert(Numeric::clamp(15, 0, 10) == 10)
+    let raw = bytes"ril"
+    assert(raw[0] == 114 && raw[2] == 108 && raw?[9] == None)
+    let arr = Bytes::to_array(raw)
+    assert(arr[0] == 114 && arr[2] == 108)
+    let mut xs = Array::repeat(0, 3)
+    xs[0] = 10
+    xs[2] = 30
+    Array::swap(mut xs, 0, 2)
+    assert(Array::first(ref xs) == Some(30) && Array::last(ref xs) == Some(10))
+    let sorted = [10, 20, 30, 40]
+    let idx = lower_bound(sorted, 25)
+    let mut ys = clone(sorted)
+    Array::insert(mut ys, idx, 25)
+    assert(ys == [10, 20, 25, 30, 40])
+    assert(Array::remove(mut ys, 2) == 25)
+    let mut toks: []Token = []
+    Array::insert(mut toks, 0, Token::(42))
+    let tok = Array::remove(mut toks, 0)
+    assert(drop_tok(tok) == 42)
+    while let Some(rem) = Array::pop(mut toks) {
+        let _ = drop_tok(rem)
+    }
+}
 
 -- @case cleanup_runs_in_reverse_order run-pass backend=both
 -- @expect-stdout second
@@ -50,11 +83,12 @@ fn main() @io -> () {
     panic("failure")
 }
 
--- @case double_panic_aborts run-abort backend=both
+-- @case double_panic_statically_prevented compile-fail E0627
 use ril/panic
 fn main() -> () {
     let outcome = Panic::recover \-> {
         defer panic("second")
+        -- ^ E0627
         panic("first")
     }
     match outcome { Ok(_) -> (); Err(_) -> () }
@@ -184,7 +218,9 @@ fn member(via box: .{ via item: Cell, var stamp: int }) -> Cell {
 }
 fn replace(via box: .{ via item: Cell, var stamp: int }) -> []Cell {
     let base = [Cell.{ count: 1 }]
-    derive(base) \mut draft -> { draft[0] = box.item }
+    derive(base) \mut draft -> {
+        draft[0] = box.item
+    }
 }
 fn main() -> () {
     let item = Cell.{ count: 4 }
@@ -195,7 +231,8 @@ fn main() -> () {
     assert(forward(member, mut writer).count == 5 && writer.item.count == 4)
     assert(member(fixed).count == 7 && fixed.item.count == 6)
     assert(member(mut writer).count == 5 && writer.item.count == 4)
-    assert(replace(fixed)[0].count == 6)
+    let out = replace(fixed)
+    assert(len(out) == 1 && out[0].count == 6)
 }
 
 -- @case local_effect_dispatches_through_its_handler run-pass backend=both
@@ -337,7 +374,12 @@ fn main() -> () {
 -- @case isolated_closure_in_new_return_handles_its_own_panic run-pass backend=both
 use ril/panic
 fn protected(values: []int) -> new !<int, Panic::Error> {
-    Panic::recover \-> values[1]
+    Panic::recover \-> {
+        match values?[1] {
+            Some(v) -> v
+            None -> panic("missing element 1")
+        }
+    }
 }
 fn main() -> () {
     let Err(Panic::Error::Panicked(info)) = protected([1]) else { panic("expected error") }
@@ -385,6 +427,7 @@ fn main() @io -> () {
     let row = [Cell.{ count: 1 }, Cell.{ count: 7 }]
     let base = (row, row)
     let updated = derive(base) \mut draft -> { draft.0 = [row[1]] }
+    assert(len(updated.0) == 1)
     Io::println("{len(base.0)}:{len(updated.0)}:{len(updated.1)}:{updated.0[0].count}")
 }
 
@@ -399,6 +442,7 @@ fn main() @io -> () {
         draft.0 = [row[1], row[0]]
         draft.0[1].count = 2
     }
+    assert(len(updated.0) == 2 && len(updated.1) == 2)
     Io::println("{base.0[0].count}:{base.0[1].count}:{updated.0[0].count}:{updated.0[1].count}:{updated.1[0].count}:{updated.1[1].count}")
 }
 
@@ -414,7 +458,7 @@ fn main() @io -> () {
     let caught = Panic::recover \-> {
         let _ = derive(base) \mut draft -> {
             Array::push(mut draft.0, outside)
-            draft.0[1].count = 8
+            if len(ref draft.0) > 1 { draft.0[1].count = 8 }
             panic("aborted derive")
         }
     }

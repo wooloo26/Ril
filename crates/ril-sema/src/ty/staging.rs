@@ -489,10 +489,27 @@ impl Checker<'_> {
         input: &Value,
         span: Span,
     ) {
-        let input = GenericValue::Data(input.clone());
+        let input_gv = GenericValue::Data(input.clone());
         for &guard in guards {
-            if let Expr::Path(path) = &self.ast(env.file).expr(guard).value {
-                self.apply_static_check(env, path, &input, span);
+            let node = self.ast(env.file).expr(guard);
+            match &node.value {
+                Expr::Path(path) => {
+                    self.apply_static_check(env, path, &input_gv, span);
+                }
+                Expr::Call { callee, args } => {
+                    let args = args.clone();
+                    if let Expr::Path(path) = &self.ast(env.file).expr(*callee).value {
+                        let path = path.clone();
+                        self.apply_static_check_with_value_args(
+                            env,
+                            &path,
+                            &input_gv,
+                            &args,
+                            span,
+                        );
+                    }
+                }
+                _ => {}
             }
         }
     }

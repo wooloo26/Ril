@@ -291,3 +291,104 @@ fn ril_toml_rejects_cyclic_and_self_package_dependencies() -> Result<(), String>
     );
     Ok(())
 }
+
+#[test]
+fn rili_static_proof_variance_and_signature_where_roundtrip() -> Result<(), String> {
+    let build_iface = |src: &str| -> Result<Interface, String> {
+        let pkg = lib_package(src);
+        Driver
+            .interface(&pkg)
+            .map_err(|diags| format!("interface failed: {diags:?}"))
+    };
+
+    // Baseline with parameter proof, return proof, and SignatureWhere followed by another pub fn.
+    let base = build_iface(
+        r#"
+pub fn f(x |> Positive) -> int |> Nat
+where
+    type LocalTag = int
+{
+    let _: LocalTag = x
+    x
+}
+
+pub fn after_where() -> int { 1 }
+"#,
+    )?;
+
+    // Weakening param proof (`Positive` -> `Nat`) and strengthening return proof (`Nat` -> `Positive`) is compatible.
+    let compat = build_iface(
+        r#"
+pub fn f(x |> Nat) -> int |> Positive
+where
+    type LocalTag = int
+{
+    let _: LocalTag = x
+    x + 1
+}
+
+pub fn after_where() -> int { 1 }
+"#,
+    )?;
+    assert!(
+        base.compare(&compat).is_empty(),
+        "expected compatible variance, got {:?}",
+        base.compare(&compat)
+    );
+
+    // Strengthening param proof (`Positive` -> `AtLeast(2)`) breaks compatibility (`E0552`).
+    let stronger_param = build_iface(
+        r#"
+pub fn f(x |> AtLeast(2)) -> int |> Nat
+where
+    type LocalTag = int
+{
+    let _: LocalTag = x
+    x
+}
+
+pub fn after_where() -> int { 1 }
+"#,
+    )?;
+    assert!(
+        base.compare(&stronger_param)
+            .iter()
+            .any(|d| d.code == Some(ril_source::diag::Code::E0552)),
+        "expected E0552 for strengthened param proof"
+    );
+
+    // Dropping return proof (`Nat` -> none) breaks compatibility (`E0552`).
+    let weaker_ret = build_iface(
+        r#"
+pub fn f(x |> Positive) -> int
+where
+    type LocalTag = int
+{
+    let _: LocalTag = x
+    x
+}
+
+pub fn after_where() -> int { 1 }
+"#,
+    )?;
+    assert!(
+        base.compare(&weaker_ret)
+            .iter()
+            .any(|d| d.code == Some(ril_source::diag::Code::E0552)),
+        "expected E0552 for weakened return proof"
+    );
+
+    // Separate compilation against the published `.rili` (including `where` followed by `after_where`) succeeds!
+    let base_bin = base.encode().map_err(|e| e.to_string())?;
+    let mut consumer = bin_package(
+        "use dep/lib\nfn main() -> () {\n    let y = Lib::f(3)\n    let _ = 1 << y\n    let _ = Lib::after_where()\n}\n",
+    );
+    consumer.insert("dep/lib.rili".into(), base_bin);
+    let checked = Driver.check(&consumer, Stage::Access);
+    assert!(
+        checked.result.diagnostics.is_empty(),
+        "expected separate compilation with .rili proofs to succeed, got {:?}",
+        checked.result.diagnostics
+    );
+    Ok(())
+}

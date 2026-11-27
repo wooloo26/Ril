@@ -212,6 +212,57 @@ impl Checker<'_> {
                     })
                 }
                 DefinitionKind::Primitive(_)
+                    if name == "swap" && self.hir.primitive_module(id) == Some("Array") =>
+                {
+                    let [array, i_arg, j_arg] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, array.value, fuel)?;
+                    let Value::Int(i_val) = self.evaluate(env, slots, i_arg.value, fuel)? else {
+                        return Err(defect(span, "static Array::swap index must be int"));
+                    };
+                    let Value::Int(j_val) = self.evaluate(env, slots, j_arg.value, fuel)? else {
+                        return Err(defect(span, "static Array::swap index must be int"));
+                    };
+                    let Value::Array(items) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Array::swap requires an array"));
+                    };
+                    let (Some(i), Some(j)) = (
+                        num_traits::ToPrimitive::to_usize(&i_val),
+                        num_traits::ToPrimitive::to_usize(&j_val),
+                    ) else {
+                        return Err(defect(span, "static Array::swap index out of bounds"));
+                    };
+                    if i < items.len() && j < items.len() {
+                        items.swap(i, j);
+                        Ok(Value::Unit)
+                    } else {
+                        Err(defect(span, "static Array::swap index out of bounds"))
+                    }
+                }
+                DefinitionKind::Primitive(_)
+                    if name == "remove" && self.hir.primitive_module(id) == Some("Array") =>
+                {
+                    let [array, index] = args else {
+                        return Err(nonstatic(span));
+                    };
+                    fuel.step(span)?;
+                    let place = self.eval_place(env, slots, array.value, fuel)?;
+                    let Value::Int(index) = self.evaluate(env, slots, index.value, fuel)? else {
+                        return Err(defect(span, "static Array::remove index must be int"));
+                    };
+                    let Value::Array(items) = place.slot(slots, false)? else {
+                        return Err(defect(span, "static Array::remove requires an array"));
+                    };
+                    let Some(idx) = num_traits::ToPrimitive::to_usize(&index)
+                        .filter(|&idx| idx < items.len())
+                    else {
+                        return Err(defect(span, "static Array::remove index out of bounds"));
+                    };
+                    Ok(items.remove(idx))
+                }
+                DefinitionKind::Primitive(_)
                     if name == "insert" && self.hir.primitive_module(id) == Some("Map") =>
                 {
                     let [map, key, value] = args else {

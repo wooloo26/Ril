@@ -427,7 +427,12 @@ impl<'a> Lowering<'a> {
                         self.typed.hir.export_name(id),
                         body,
                         f.signature.params.as_slice(),
-                        f.signature.guards.clone(),
+                        f.signature
+                            .guards
+                            .iter()
+                            .copied()
+                            .filter(|&g| !self.typed.hir.is_static_proof_guard(f.name.span.file, g))
+                            .collect(),
                         captures,
                         types,
                         statics,
@@ -589,7 +594,9 @@ impl<'a> Lowering<'a> {
         }
         for (param, value) in params.iter().zip(builder.params(entry)) {
             for &guard in &param.guards {
-                builder.run_guard(guard, value)?;
+                if !builder.global.typed.hir.is_static_proof_guard(file, guard) {
+                    builder.run_guard(guard, value)?;
+                }
             }
         }
         let result = match body {

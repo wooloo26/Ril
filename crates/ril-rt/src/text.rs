@@ -54,14 +54,6 @@ pub(crate) fn str_at(gc: &GcRuntime, text: Value, index: Value) -> Option<u32> {
     text.scalar_at(index).map(u32::from)
 }
 
-pub(crate) fn byte_at(gc: &GcRuntime, bytes: Value, index: Value) -> Option<u8> {
-    let Object::Bytes(bytes) = gc.object(bytes)? else {
-        return None;
-    };
-    let index = gc.integer(index)?.to_usize()?;
-    bytes.get(index).copied()
-}
-
 pub(crate) fn scalars(gc: &GcRuntime, values: Value) -> Option<String> {
     let Object::Array(values) = gc.object(values)? else {
         return None;

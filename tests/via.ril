@@ -1028,7 +1028,9 @@ fn invalid() -> () {
 }
 
 -- @case forwarding_arrays_propagates_element_write_requirements compile-fail E0520
-fn change(mut items: [via]Cell) &mut -> () { items[0].count += 1 }
+fn change(mut items: [via]Cell) &mut -> () {
+    if len(ref items) > 0 { items[0].count += 1 }
+}
 fn forward(mut items: [via]Cell) &mut -> () { change(mut items) }
 fn invalid() -> () {
     let mut items = [Cell.{ count: 42 }]

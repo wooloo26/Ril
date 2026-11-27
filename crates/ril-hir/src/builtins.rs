@@ -173,6 +173,13 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         ),
         prim(
             "Array",
+            "swap",
+            Both,
+            Some("ril_rt_array_swap"),
+            Some(ArraySwap),
+        ),
+        prim(
+            "Array",
             "insert",
             Both,
             Some("ril_rt_array_insert"),
@@ -266,7 +273,6 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some(StringDecodeUtf8),
         ),
         // Bytes
-        prim("Bytes", "at", Both, Some("ril_rt_bytes_at"), Some(BytesAt)),
         prim(
             "Bytes",
             "from_array",

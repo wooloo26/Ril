@@ -5,5 +5,9 @@ pub fn square(x: int) -> int {
 }
 
 pub fn safe_ratio(a: int, b: int) -> new ?int {
-    Numeric::div(a, b)
+    if b == 0 {
+        None
+    } else {
+        Some(a / b)
+    }
 }

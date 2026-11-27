@@ -364,8 +364,10 @@ type Cell = .{ var count: int }
 fn insert(ref live: Cell) -> []Cell {
     let base = [Cell.{ count: 1 }]
     derive(base) \mut draft -> {
-        draft[0] = live
-        -- ^ E0535
+        if len(ref draft) > 0 {
+            draft[0] = live
+            -- ^ E0535
+        }
     }
 }
 
@@ -617,8 +619,10 @@ fn run() -> int {
     live.count += 1
     let base = [count]
     let next = derive(base) \mut draft -> { Array::push(mut draft, freeze) }
-    let _ = next[1](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if len(next) > 1 {
+        let _ = next[1](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count += 8
     live.count
 }
@@ -634,7 +638,9 @@ fn run() -> int {
     live.count += 1
     let base = [count]
     let next = derive(base) \mut draft -> { Array::push(mut draft, freeze) }
-    let _ = next[0](Shelf.{ item: ^mut live })
+    if len(next) > 0 {
+        let _ = next[0](Shelf.{ item: ^mut live })
+    }
     live.count += 8
     live.count
 }
@@ -671,8 +677,10 @@ fn run(flag: bool) -> int {
     let base = [count]
     let next = if flag { derive(base) \mut draft -> { Array::push(mut draft, freeze) } }
         else { [count, count] }
-    let _ = next[1](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if len(next) > 1 {
+        let _ = next[1](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count += 8
     live.count
 }
@@ -690,8 +698,233 @@ fn run() -> int {
     let mut actions = [count]
     with Append::push = \-> Array::push(mut actions, freeze)
     Append::push()
-    let _ = actions[1](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if len(ref actions) > 1 {
+        let _ = actions[1](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count += 8
     live.count
+}
+
+-- @case defer_forbids_direct_panic compile-fail E0627
+fn bad() -> () {
+    defer panic("cannot panic in defer")
+    -- ^ E0627
+    ()
+}
+
+-- @case defer_forbids_transitive_panic compile-fail E0627
+fn may_fail(x: int) -> () {
+    if x < 0 { panic("negative") }
+}
+fn bad(x: int) -> () {
+    defer may_fail(x)
+    -- ^ E0627
+    ()
+}
+
+-- @case unproved_divisor_rejected_e0361 compile-fail E0361
+fn bad(a: int, b: int) -> int {
+    a / b
+    -- ^ E0361
+}
+
+-- @case unproved_shift_rejected_e0361 compile-fail E0361
+fn bad(a: int, k: int) -> int {
+    a << k
+    -- ^ E0361
+}
+
+-- @case unproved_array_index_rejected_e0362 compile-fail E0362
+fn bad(xs: []int, i: int) -> int {
+    xs[i]
+    -- ^ E0362
+}
+
+-- @case negative_index_upper_bound_alone_rejected_e0362 compile-fail E0362
+fn bad(xs: []int, i: int) -> int {
+    if i < len(xs) {
+        xs[i]
+        -- ^ E0362
+    } else {
+        0
+    }
+}
+
+-- @case resized_array_invalidates_bounds_proof_e0362 compile-fail E0362
+fn bad(mut xs: []int, i: int) &mut -> int {
+    if 0 <= i && i < len(ref xs) {
+        let _ = Array::pop(mut xs)
+        xs[i]
+        -- ^ E0362
+    } else {
+        0
+    }
+}
+
+-- @case mutated_var_in_while_invalidates_nonzero_proof_e0361 compile-fail E0361
+fn bad(flag: bool) -> int {
+    var d = 2
+    var out = 0
+    while flag {
+        out = 10 / d
+        -- ^ E0361
+        d = 0
+    }
+    out
+}
+
+-- @case unproved_slice_bounds_rejected_e0362 compile-fail E0362
+fn bad(xs: []int, lo: int, hi: int) -> []int {
+    xs[lo..hi]
+    -- ^ E0362
+}
+
+-- @case unproved_array_insert_rejected_e0362 compile-fail E0362
+fn bad(mut xs: []int, idx: int) &mut -> () {
+    Array::insert(mut xs, idx, 1)
+    -- ^ E0362
+}
+
+-- @case defer_allows_io_println_and_safe_ops compile-pass
+use ril/io
+fn ok(mut xs: []int, i: int) @io &mut -> () {
+    defer {
+        if i >= 0 && i < len(ref xs) {
+            xs[i] = 0
+        }
+        Io::println("clean")
+    }
+    if i < 0 { panic("boom") }
+}
+
+-- @case proved_bounds_and_witnesses_compile_pass compile-pass
+fn safe_work(xs: []int, d |> NonZero, k |> Nat) -> int {
+    var total = 0
+    for 0..len(xs) as i {
+        total += xs[i]
+    }
+    let q = total / d
+    let r = if len(xs) > 0 { total / len(xs) } else { 0 }
+    (q + r) >> k
+}
+
+-- @case where_guard_proves_nonzero_and_bounds compile-pass
+fn avg_checked(xs: []int, months: int |> positive) -> new !<int, str>
+where
+    fn positive(n: int) -> new !<(), str> {
+        if n > 0 { Ok() } else { Err("months must be positive") }
+    }
+{
+    var sum = 0
+    for xs as x { sum += x }
+    Ok(sum / months)
+}
+
+-- @case static_proof_lower_bound_and_insert_sorted compile-pass
+fn lower_bound(xs: []int, target: int) -> int |> Between(0, len(xs)) {
+    var lo = 0
+    var hi = len(xs)
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2
+        if xs[mid] < target {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    lo
+}
+
+fn insert_sorted(mut xs: []int, value: int) &mut -> () {
+    let idx = lower_bound(clone(ref xs), value)
+    Array::insert(mut xs, idx, value)
+}
+
+-- @case static_proof_fallible_return_and_binary_search compile-pass
+fn binary_search(xs: []int, target: int) -> new ?int |> InBounds(xs) {
+    var lo = 0
+    var hi = len(xs)
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2
+        if xs[mid] == target {
+            return Some(mid)
+        } else if xs[mid] < target {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    None
+}
+
+fn use_bs(xs: []int, target: int) -> int {
+    if let Some(idx) = binary_search(xs, target) {
+        xs[idx]
+    } else {
+        0
+    }
+}
+
+-- @case static_proof_match_narrowing compile-pass
+fn div_or_default(a: int, b: int) -> int {
+    match b {
+        0 -> 0
+        _ -> a / b
+    }
+}
+
+fn head_or_zero(xs: []int) -> int {
+    match xs {
+        [] -> 0
+        _ -> xs[0]
+    }
+}
+
+-- @case static_proof_unproved_call_arg_is_e0323 compile-fail E0323
+fn div_nz(a: int, b |> NonZero) -> int { a / b }
+fn bad(a: int, b: int) -> int {
+    div_nz(a, b)
+    -- ^ E0323
+}
+
+-- @case static_proof_unproved_return_is_e0323 compile-fail E0323
+fn bad_nat(x: int) -> int |> Nat {
+    x
+    -- ^ E0323
+}
+
+-- @case static_proof_defer_mutation_invalidates_return_proof compile-fail E0323
+fn bad_defer(mut xs: []int |> NonEmpty) &mut -> int |> InBounds(xs) {
+    defer Array::clear(mut xs)
+    0
+    -- ^ E0323
+}
+
+-- @case static_proof_param_fn_first_class_decay_is_e0534 compile-fail E0534
+fn div_nz(a: int, b |> NonZero) -> int { a / b }
+fn bad() -> fn(int, int) -> int {
+    div_nz
+    -- ^ E0534
+}
+
+-- @case static_proof_return_only_fn_first_class_decay_is_allowed compile-pass
+fn always_pos() -> int |> Positive { 1 }
+fn ok() -> fn() -> int { always_pos }
+
+-- @case static_proof_closure_param_is_e0534 compile-fail E0534
+fn bad() -> fn(int) -> int {
+    \x |> NonZero -> 10 / x
+    -- ^ E0534
+}
+
+-- @case static_proof_private_type_fn_leak_is_e0910 compile-fail E0910
+type PrivateNz = \n: int -> if n != 0 { <()> } else { <never> }
+pub fn leaked(a: int, b |> PrivateNz) -> int { a / b }
+-- ^ E0910
+
+-- @case static_proof_bounds_intrinsic_unproved_is_e0362 compile-fail E0362
+fn bad_swap(mut xs: []int, i: int) &mut -> () {
+    Array::swap(mut xs, i, 0)
+    -- ^ E0362
 }

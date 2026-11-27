@@ -36,7 +36,7 @@ meta let _ = assert(~0 == -1 && (-8 >> 2) == -2)
 
 -- @case static_named_call_and_defaults compile-pass
 meta fn align(n: int, size: int = 16) -> int {
-    assert(n >= 0)
+    if size <= 0 { return 0 }
     ((n + size - 1) / size) * size
 }
 meta let COUNT = align(22)
@@ -233,7 +233,7 @@ meta fn check_paths() -> bool {
     let base = (row, row)
     let updated = derive(base) \mut draft -> {
         Array::push(mut draft.0, cell)
-        draft.0[0].count = 8
+        if len(ref draft.0) > 0 { draft.0[0].count = 8 }
     }
     base == ([Cell.{ count: 7 }], [Cell.{ count: 7 }]) &&
         updated == ([Cell.{ count: 8 }, Cell.{ count: 7 }], [Cell.{ count: 7 }])
@@ -312,7 +312,10 @@ type State = .{ items: []?Cell }
 meta fn edit(base: State, index: int) -> State {
     var evaluations = 0
     let updated = derive(base) \mut draft -> {
-        if let Some(mut cell) = draft.items[{ evaluations += 1; index }] { cell.count += 1 }
+        let idx = { evaluations += 1; index }
+        if 0 <= idx && idx < len(ref draft.items) {
+            if let Some(mut cell) = draft.items[idx] { cell.count += 1 }
+        }
     }
     assert(evaluations == 1)
     updated

@@ -67,6 +67,7 @@ pub enum Intrinsic {
     ArrayPush,
     ArrayPop,
     ArrayPopFront,
+    ArraySwap,
     ArrayInsert,
     ArrayRemove,
     MapInsert,
@@ -81,7 +82,6 @@ pub enum Intrinsic {
     StringFromScalars,
     StringEncodeUtf8,
     StringDecodeUtf8,
-    BytesAt,
     BytesFromArray,
     ReflectAttrs,
     ReflectFieldAttrs,
@@ -111,6 +111,7 @@ impl Intrinsic {
                 | ArrayPush
                 | ArrayPop
                 | ArrayPopFront
+                | ArraySwap
                 | ArrayInsert
                 | ArrayRemove
                 | MapInsert
@@ -124,7 +125,6 @@ impl Intrinsic {
                 | StringFromScalars
                 | StringEncodeUtf8
                 | StringDecodeUtf8
-                | BytesAt
                 | BytesFromArray
                 | ReflectAttrs
                 | ReflectFieldAttrs
@@ -144,6 +144,14 @@ pub enum StdType {
     TypeKind,
     PanicReport,
     PanicError,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuardKind {
+    StaticProof(DefinitionId),
+    StaticProofPrimitive(DefinitionId),
+    RuntimeFn(DefinitionId),
+    Invalid,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -738,6 +746,68 @@ impl Program {
             },
         )?;
         Ok(def)
+    }
+
+    pub fn classify_guard(&self, file: FileId, expr: ExprId) -> GuardKind {
+        let ast = &self.file(file).ast;
+        let mut node = ast.expr(expr);
+        if let Expr::Unary { op, value } = &node.value
+            && op.value == "ref"
+        {
+            node = ast.expr(*value);
+        }
+        if let Expr::Call { callee, .. } = &node.value {
+            node = ast.expr(*callee);
+        }
+        let Expr::Path(path) = &node.value else {
+            return GuardKind::Invalid;
+        };
+        let Some(id) = self.resolve(path.span).and_then(|res| res.definition()) else {
+            return GuardKind::Invalid;
+        };
+        let def = self.definition(id);
+        match def.kind {
+            DefinitionKind::Type => {
+                if let Some(stmt) = def.stmt
+                    && let StmtKind::Type(decl) =
+                        &self.file(def.name.span.file).ast.stmt(stmt).value.kind
+                    && matches!(decl.definition, ril_syntax::syntax::TypeDefinition::Function(_, _))
+                {
+                    GuardKind::StaticProof(id)
+                } else {
+                    GuardKind::Invalid
+                }
+            }
+            DefinitionKind::Primitive(_) if def.name.value == "KeyOf" => {
+                GuardKind::StaticProofPrimitive(id)
+            }
+            DefinitionKind::Function | DefinitionKind::Primitive(_) => GuardKind::RuntimeFn(id),
+            _ => GuardKind::Invalid,
+        }
+    }
+
+    pub fn is_static_proof_guard(&self, file: FileId, expr: ExprId) -> bool {
+        matches!(
+            self.classify_guard(file, expr),
+            GuardKind::StaticProof(_) | GuardKind::StaticProofPrimitive(_)
+        )
+    }
+
+    pub fn has_static_param_proof(&self, def_id: DefinitionId) -> bool {
+        let def = self.definition(def_id);
+        let Some(stmt) = def.stmt else {
+            return false;
+        };
+        let file = def.name.span.file;
+        let StmtKind::Function(fun) = &self.file(file).ast.stmt(stmt).value.kind else {
+            return false;
+        };
+        fun.signature.params.iter().any(|p| {
+            !p.is_meta
+                && p.guards
+                    .iter()
+                    .any(|&g| self.is_static_proof_guard(file, g))
+        })
     }
 
     fn namespace(&self, target: Target) -> Option<ScopeId> {

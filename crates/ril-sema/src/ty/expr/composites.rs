@@ -42,7 +42,7 @@ impl Checker<'_> {
                             last_was_safe_index_on_non_option = true;
                         }
                     }
-                    self.index(env, ty, *index, *safe, node.span)
+                    self.index(env, None, ty, *index, *safe, node.span)
                 }
                 _ => ril_source::ice!("unexpected navigation step"),
             };
@@ -62,6 +62,7 @@ impl Checker<'_> {
     pub(super) fn index(
         &mut self,
         env: &mut Env,
+        base_expr: Option<ExprId>,
         base: Ty,
         index: ExprId,
         safe: bool,
@@ -97,7 +98,8 @@ impl Checker<'_> {
         let (key, value) = match &base {
             Ty::Array(item) => (Ty::Int, item.ty.clone()),
             Ty::Map(key, value) => ((**key).clone(), value.ty.clone()),
-            Ty::Str | Ty::Bytes => (Ty::Int, Ty::Unknown),
+            Ty::Bytes => (Ty::Int, Ty::Int),
+            Ty::Str => (Ty::Int, Ty::Unknown),
             Ty::Unknown => (Ty::Unknown, Ty::Unknown),
             _ => {
                 self.error(
@@ -110,16 +112,42 @@ impl Checker<'_> {
         };
         let index_ty = self.expr(env, index, Some(&key));
         if index_ty == Ty::Range && matches!(base, Ty::Array(_) | Ty::Str | Ty::Bytes) {
+            if !safe && !env.shadow {
+                if self.is_proved_slice(env, base_expr, index) {
+                    self.proved_ops.insert(span);
+                } else {
+                    self.error(
+                        Code::E0362,
+                        span,
+                        "slice bounds are not statically proved in range; use '?[lo..hi]' or guard bounds before slicing",
+                    );
+                }
+            }
             base
-        } else if matches!(base, Ty::Str | Ty::Bytes) {
+        } else if matches!(base, Ty::Str) {
             self.error(
                 Code::E0352,
                 span,
-                "str and bytes do not support single-element bracket indexing; use String::scalar_at or Bytes::at",
+                "str does not support single-element bracket indexing; use String::scalar_at",
             );
             Ty::Unknown
         } else {
             self.require(env, self.ast(env.file).expr(index).span, &index_ty, &key);
+            if !safe
+                && !env.shadow
+                && matches!(base, Ty::Array(_) | Ty::Bytes)
+                && index_ty == Ty::Int
+            {
+                if self.is_proved_index(env, base_expr, index) {
+                    self.proved_ops.insert(span);
+                } else {
+                    self.error(
+                        Code::E0362,
+                        span,
+                        "index is not statically proved in bounds; use '?[i]', 'for 0..len(xs) as i', '|> InBounds(xs)', or guard '0 <= i && i < len(xs)'",
+                    );
+                }
+            }
             value
         }
     }

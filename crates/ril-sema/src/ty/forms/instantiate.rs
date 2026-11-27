@@ -345,7 +345,7 @@ impl Checker<'_> {
         }
     }
 
-    fn validate_static_checks(
+    pub(super) fn validate_static_checks(
         &mut self,
         env: &mut Env,
         parameter: &GenericParam,
@@ -536,7 +536,153 @@ impl Checker<'_> {
             );
             return;
         };
-        let Some((first, parameters)) = parameters.split_first() else {
+        let parameters = parameters.clone();
+        let body = *body;
+        let arguments = path
+            .segments
+            .last()
+            .map_or(&[][..], |segment| segment.arguments.as_slice());
+        let call_span = env.error_span.unwrap_or(span);
+        let mut local = Env::new(file, def.scope);
+        local.phase = Phase::TypeEval;
+        local.caller_scope = Some(env.effective_scope());
+        local.error_span = Some(call_span);
+        local.domains = env.domains.clone();
+
+        if matches!(input, GenericValue::Data(_)) {
+            let (type_params, Some(subject), trailing) = super::partition_type_fn_params(&parameters)
+            else {
+                self.error(
+                    Code::E0340,
+                    path.span,
+                    "static check requires an input parameter",
+                );
+                return;
+            };
+            if let Some(id) = self.resolve(subject.name.span) {
+                local.generics.insert(id, input.clone());
+            }
+            if !type_params.is_empty() {
+                let value_args_start = if arguments.len() == type_params.len() + trailing.len() {
+                    for (tp, arg) in type_params.iter().zip(arguments) {
+                        if let Some(id) = self.resolve(tp.name.span) {
+                            let val = self.generic_argument(env, tp, arg, span);
+                            local.generics.insert(id, val);
+                        }
+                    }
+                    type_params.len()
+                } else {
+                    for tp in type_params {
+                        if let Some(id) = self.resolve(tp.name.span) {
+                            local.generics.insert(id, GenericValue::Type(self.fresh()));
+                        }
+                    }
+                    0
+                };
+                let rem = &arguments[value_args_start..];
+                if rem.len() > trailing.len() {
+                    self.error(Code::E0340, path.span, "too many static check arguments");
+                    return;
+                }
+                for (index, parameter) in trailing.iter().enumerate() {
+                    let value = if let Some(argument) = rem.get(index) {
+                        self.generic_argument(env, parameter, argument, span)
+                    } else if let Some(default) = &parameter.default {
+                        self.generic_argument(&mut local, parameter, default, span)
+                    } else {
+                        self.error(Code::E0340, path.span, "missing static check argument");
+                        return;
+                    };
+                    if let Some(id) = self.resolve(parameter.name.span) {
+                        local.generics.insert(id, value);
+                    }
+                }
+            } else {
+                if arguments.len() > trailing.len() {
+                    self.error(Code::E0340, path.span, "too many static check arguments");
+                    return;
+                }
+                for (index, parameter) in trailing.iter().enumerate() {
+                    let value = if let Some(argument) = arguments.get(index) {
+                        self.generic_argument(env, parameter, argument, span)
+                    } else if let Some(default) = &parameter.default {
+                        self.generic_argument(&mut local, parameter, default, span)
+                    } else {
+                        self.error(Code::E0340, path.span, "missing static check argument");
+                        return;
+                    };
+                    if let Some(id) = self.resolve(parameter.name.span) {
+                        local.generics.insert(id, value);
+                    }
+                }
+            }
+        } else {
+            let Some((first, parameters)) = parameters.split_first() else {
+                self.error(
+                    Code::E0340,
+                    path.span,
+                    "static check requires an input parameter",
+                );
+                return;
+            };
+            if arguments.len() > parameters.len() {
+                self.error(Code::E0340, path.span, "too many static check arguments");
+                return;
+            }
+            if let Some(id) = self.resolve(first.name.span) {
+                local.generics.insert(id, input.clone());
+            }
+            for (index, parameter) in parameters.iter().enumerate() {
+                let value = if let Some(argument) = arguments.get(index) {
+                    self.generic_argument(env, parameter, argument, span)
+                } else if let Some(default) = &parameter.default {
+                    self.generic_argument(&mut local, parameter, default, span)
+                } else {
+                    self.error(Code::E0340, path.span, "missing static check argument");
+                    return;
+                };
+                if let Some(id) = self.resolve(parameter.name.span) {
+                    local.generics.insert(id, value);
+                }
+            }
+        }
+        self.finish_static_check(check, &local, body, input, span, call_span);
+    }
+
+    pub(in crate::ty) fn apply_static_check_with_value_args(
+        &mut self,
+        env: &mut Env,
+        path: &syntax::Path,
+        input: &GenericValue,
+        value_args: &[syntax::Argument],
+        span: Span,
+    ) {
+        let Some(check) = self.resolve(path.span) else {
+            return;
+        };
+        let def = self.hir.definition(check);
+        let Some(stmt) = def.stmt else { return };
+        let file = def.name.span.file;
+        let StmtKind::Type(declaration) = &self.ast(file).stmt(stmt).value.kind else {
+            self.error(
+                Code::E0306,
+                path.span,
+                "static check requires a type function",
+            );
+            return;
+        };
+        let TypeDefinition::Function(parameters, body) = &declaration.definition else {
+            self.error(
+                Code::E0306,
+                path.span,
+                "static check requires a type function",
+            );
+            return;
+        };
+        let parameters = parameters.clone();
+        let body = *body;
+        let (type_params, Some(subject), trailing) = super::partition_type_fn_params(&parameters)
+        else {
             self.error(
                 Code::E0340,
                 path.span,
@@ -544,36 +690,62 @@ impl Checker<'_> {
             );
             return;
         };
-        let arguments = path
+        let angle_args = path
             .segments
             .last()
             .map_or(&[][..], |segment| segment.arguments.as_slice());
-        if arguments.len() > parameters.len() {
-            self.error(Code::E0340, path.span, "too many static check arguments");
-            return;
-        }
         let call_span = env.error_span.unwrap_or(span);
         let mut local = Env::new(file, def.scope);
         local.phase = Phase::TypeEval;
         local.caller_scope = Some(env.effective_scope());
         local.error_span = Some(call_span);
         local.domains = env.domains.clone();
-        if let Some(id) = self.resolve(first.name.span) {
+        for (idx, tp) in type_params.iter().enumerate() {
+            if let Some(id) = self.resolve(tp.name.span) {
+                let gv = if let Some(arg) = angle_args.get(idx) {
+                    self.generic_argument(env, tp, arg, span)
+                } else {
+                    GenericValue::Type(self.fresh())
+                };
+                local.generics.insert(id, gv);
+            }
+        }
+        if let Some(id) = self.resolve(subject.name.span) {
             local.generics.insert(id, input.clone());
         }
-        for (index, parameter) in parameters.iter().enumerate() {
-            let value = if let Some(argument) = arguments.get(index) {
-                self.generic_argument(env, parameter, argument, span)
-            } else if let Some(default) = &parameter.default {
-                self.generic_argument(&mut local, parameter, default, span)
+        for (idx, param) in trailing.iter().enumerate() {
+            let value = if let Some(arg) = value_args.get(idx) {
+                let mut eval_env = env.clone();
+                eval_env.phase = Phase::MetaValue;
+                match self.evaluate_static(&eval_env, arg.value) {
+                    Ok(v) | Err(crate::ty::eval::Signal::Return(v)) => GenericValue::Data(v),
+                    other => {
+                        self.finish_eval(call_span, other, true);
+                        return;
+                    }
+                }
+            } else if let Some(default) = &param.default {
+                self.generic_argument(&mut local, param, default, span)
             } else {
-                self.error(Code::E0340, path.span, "missing static check argument");
+                self.error(Code::E0314, path.span, "missing static check argument");
                 return;
             };
-            if let Some(id) = self.resolve(parameter.name.span) {
+            if let Some(id) = self.resolve(param.name.span) {
                 local.generics.insert(id, value);
             }
         }
+        self.finish_static_check(check, &local, body, input, span, call_span);
+    }
+
+    fn finish_static_check(
+        &mut self,
+        check: DefinitionId,
+        local: &Env,
+        body: syntax::ExprId,
+        input: &GenericValue,
+        span: Span,
+        call_span: Span,
+    ) {
         if u64::try_from(self.stack.len()).unwrap_or(u64::MAX) >= self.budget.min(256) {
             self.error(
                 Code::E0811,
@@ -590,7 +762,7 @@ impl Checker<'_> {
         let result = if local.shadow {
             None
         } else {
-            match self.evaluate_static(&local, *body) {
+            match self.evaluate_static(local, body) {
                 Err(crate::ty::eval::Signal::Dependent(_)) if has_unresolved => None,
                 other => self.finish_eval(call_span, other, true),
             }

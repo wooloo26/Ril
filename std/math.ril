@@ -1,4 +1,4 @@
--- Standard Math module: pure self-hosted numeric constants and helpers.
+-- Standard Math module: pure self-hosted `f64` constants and helpers.
 
 -- Ratio of a circle's circumference to its diameter (π).
 pub meta let PI: f64 = 3.141592653589793
@@ -7,15 +7,16 @@ pub meta let PI: f64 = 3.141592653589793
 pub meta let EULER: f64 = 2.718281828459045
 
 -- Returns the absolute value of `x`.
-pub fn abs<T: int | f64>(x: T) -> T {
-    meta match <T> {
-        <int> -> return if x < 0 { -x } else { x }
-        <f64> -> return if x < 0.0 { -x } else { x }
+pub fn abs(x: f64) -> f64 {
+    if x < 0.0 {
+        -x
+    } else {
+        x
     }
 }
 
 -- Returns the smaller of `a` and `b`.
-pub fn min<T: int | f64>(a: T, b: T) -> T {
+pub fn min(a: f64, b: f64) -> f64 {
     if a < b {
         a
     } else {
@@ -24,7 +25,7 @@ pub fn min<T: int | f64>(a: T, b: T) -> T {
 }
 
 -- Returns the larger of `a` and `b`.
-pub fn max<T: int | f64>(a: T, b: T) -> T {
+pub fn max(a: f64, b: f64) -> f64 {
     if a > b {
         a
     } else {
@@ -33,7 +34,7 @@ pub fn max<T: int | f64>(a: T, b: T) -> T {
 }
 
 -- Restricts `value` to the inclusive range `[low, high]`.
-pub fn clamp<T: int | f64>(value: T, low: T, high: T) -> T {
+pub fn clamp(value: f64, low: f64, high: f64) -> f64 {
     if value < low {
         low
     } else if value > high {

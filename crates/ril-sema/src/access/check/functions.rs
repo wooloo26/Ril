@@ -312,6 +312,9 @@ impl Analyzer<'_> {
             return;
         }
         for &guard in guards {
+            if self.program.hir.is_static_proof_guard(ctx.file, guard) {
+                continue;
+            }
             let mut node = self.ast(ctx.file).expr(guard);
             if let Expr::Unary { op, value } = &node.value
                 && op.value == "ref"
@@ -322,6 +325,38 @@ impl Analyzer<'_> {
                 let arg_exprs: Vec<ExprId> = args.iter().map(|a| a.value).collect();
                 for arg_expr in arg_exprs {
                     let _ = self.expr(ctx, ledger, arg_expr);
+                }
+            }
+        }
+    }
+
+    pub(super) fn check_return_static_proof_liveness(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        guards: &[ExprId],
+    ) {
+        if !ctx.runtime || ctx.shadow || !ctx.reachable {
+            return;
+        }
+        for &guard in guards {
+            if !self.program.hir.is_static_proof_guard(ctx.file, guard) {
+                continue;
+            }
+            let span = self.ast(ctx.file).expr(guard).span;
+            for (ref_span, def_id) in self.program.hir.references_within(span) {
+                let def = self.program.hir.definition(def_id);
+                if def.kind == ril_hir::DefinitionKind::Local
+                    && let Some(slot) = ledger.slots.get(&def.name.span)
+                {
+                    let slot_val = slot.value.clone();
+                    self.check_live(
+                        ctx,
+                        ledger,
+                        &slot_val,
+                        ref_span,
+                        "static return proof references a consumed parameter",
+                    );
                 }
             }
         }

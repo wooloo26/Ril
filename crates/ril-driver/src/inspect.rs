@@ -1,12 +1,12 @@
 //! Unified static inspection & provenance projection shared by `ril inspect` (AI-first JSON CLI)
-//! and `ril-lsp` (Hover, Inlay Hints, and `W0601` DOUBLE_PANIC warnings).
+//! and `ril-lsp` (Hover and Inlay Hints).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ril_hir::{DefinitionId, DefinitionKind, Program};
 use ril_sema::{
     access::{Analysis, Input, Summary},
-    behavior::{DeferDoublePanicWarning, WitnessStep, is_pure, is_total},
+    behavior::{WitnessStep, is_pure, is_total},
     ty::{Callable, Ty, TypedProgram},
 };
 use ril_source::{
@@ -484,39 +484,6 @@ pub fn build_report(
         diagnostics.push(convert_diagnostic(&mut index, diag));
     }
 
-    // Add `W0601` DOUBLE_PANIC advisory warnings when access/behavior analysis ran.
-    if let (Some(typed), Some(analysis)) = (&partial.typed, &partial.analysis) {
-        for warn in &analysis.behavior.defer_warnings {
-            if !index.file_matches_filter(warn.defer_span.file, &query.files) {
-                continue;
-            }
-            let mut labels = Vec::new();
-            if let Some(scope_span) = warn.scope_panic_span
-                && let Some(loc) = index.format_span(scope_span)
-            {
-                labels.push(InspectLabel {
-                    loc,
-                    msg: warn
-                        .scope_panic_detail
-                        .clone()
-                        .unwrap_or_else(|| "enclosing scope may panic here".into()),
-                });
-            }
-            diagnostics.push(InspectDiagnostic {
-                sev: "warning",
-                code: Some("W0601".into()),
-                loc: index.format_span(warn.defer_span),
-                msg:
-                    "defer body may panic while enclosing scope may also panic (DOUBLE_PANIC abort)"
-                        .into(),
-                labels,
-                notes: Vec::new(),
-                help: Vec::new(),
-            });
-        }
-        let _ = typed;
-    }
-
     let ok = !diagnostics.iter().any(|d| d.sev == "error");
 
     let mut symbols: Vec<((usize, usize, usize), SymbolFact)> = Vec::new();
@@ -800,13 +767,19 @@ pub fn format_expanded_signature(
     let def = typed.hir.definition(def_id);
     let param_names = function_param_names(typed, def_id);
 
-    let mut out = String::new();
-    let is_meta = def.stmt.is_some_and(|s| {
-        matches!(
-            &typed.hir.file(def.name.span.file).ast.stmt(s).value.kind,
-            StmtKind::Function(f) if f.is_meta
-        )
+    let ast_fun = def.stmt.and_then(|s| {
+        if def.name.span.file == FileId::BUILTIN {
+            return None;
+        }
+        let file = typed.hir.file(def.name.span.file);
+        match &file.ast.stmt(s).value.kind {
+            StmtKind::Function(f) => Some((file, f)),
+            _ => None,
+        }
     });
+
+    let mut out = String::new();
+    let is_meta = ast_fun.is_some_and(|(_, f)| f.is_meta);
     if is_meta {
         out.push_str("meta ");
     }
@@ -834,6 +807,16 @@ pub fn format_expanded_signature(
             out.push_str(": ");
         }
         out.push_str(&param.ty.display(&typed.hir).to_string());
+        if let Some((file, fun)) = ast_fun
+            && let Some(ast_param) = fun.signature.params.get(i)
+        {
+            for &guard in &ast_param.guards {
+                if let Some(text) = compact_expr_source(file, guard) {
+                    out.push_str(" |> ");
+                    out.push_str(&text);
+                }
+            }
+        }
     }
     out.push(')');
 
@@ -884,7 +867,22 @@ pub fn format_expanded_signature(
         Mode::Infer => out.push_str("infer "),
     }
     out.push_str(&callable.result.display(&typed.hir).to_string());
+    if let Some((file, fun)) = ast_fun {
+        for &guard in &fun.signature.guards {
+            if let Some(text) = compact_expr_source(file, guard) {
+                out.push_str(" |> ");
+                out.push_str(&text);
+            }
+        }
+    }
     Some(out)
+}
+
+fn compact_expr_source(file: &ril_hir::File, expr: ril_syntax::syntax::ExprId) -> Option<String> {
+    let span = file.ast.expr(expr).span;
+    let raw = file.source_text().get(span.start..span.end)?;
+    let compact: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!compact.is_empty()).then_some(compact)
 }
 
 /// Shared helper for `ril-lsp`: extracts parameter names written by `&mut` (and `&^mut`).
@@ -901,19 +899,6 @@ pub fn expanded_mut_params(
         formal_names(&param_names, &summary.writes),
         formal_names(&param_names, &summary.retained),
     )
-}
-
-/// Shared helper for `ril-lsp`: returns `W0601` DOUBLE_PANIC warnings in `file_id`.
-pub fn defer_warnings_for_file(
-    analysis: &Analysis,
-    file_id: FileId,
-) -> Vec<&DeferDoublePanicWarning> {
-    analysis
-        .behavior
-        .defer_warnings
-        .iter()
-        .filter(|w| w.defer_span.file == file_id)
-        .collect()
 }
 
 fn build_symbol_fact(

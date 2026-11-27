@@ -1217,6 +1217,7 @@ fn update(^mut source: Cell) &mut -> () {
 
 -- @case new_container_writes_existing_member compile-pass
 fn update(new cells: [^mut]Cell) &mut -> int {
+    if len(ref cells) == 0 { return 0 }
     cells[0].count += 1
     cells[0].count
 }
@@ -1227,12 +1228,14 @@ fn use_cell() -> int {
 
 -- @case new_container_does_not_discharge_existing_member_writes compile-fail E0510
 fn update(new cells: [^mut]Cell) -> int {
+    if len(ref cells) == 0 { return 0 }
     cells[0].count += 1
     cells[0].count
 }
 
 -- @case confined_new_container_writes_discharge compile-pass
 fn update(new cells: [mut]Cell) -> int {
+    if len(ref cells) == 0 { return 0 }
     cells[0].count += 1
     cells[0].count
 }
@@ -1512,7 +1515,9 @@ fn batch() -> new []!<int, str> { [get(1), get(2)] }
 fn run(index: int) -> () {
     let values = batch()
     -- ^ E0720
-    match values[index] { Ok(_) -> (); Err(_) -> () }
+    if 0 <= index && index < len(values) {
+        match values[index] { Ok(_) -> (); Err(_) -> () }
+    }
 }
 
 -- @case empty_returned_array_has_no_element_result_obligation compile-pass
@@ -1824,7 +1829,7 @@ fn run(flag: bool) -> () {
 -- @case replacing_an_uninspected_array_element_cannot_be_hidden_by_iteration compile-fail E0720
 fn run(new values: []!<int, str>) -> () {
 -- ^ E0720
-    values[0] = Ok(1)
+    if len(ref values) > 0 { values[0] = Ok(1) }
     for ref values as item {
         match item { Ok(_) -> (); Err(_) -> () }
     }
@@ -1961,6 +1966,7 @@ type Cell = .{ var value: int }
 fn allocate() -> new []Cell { [Cell.{ value: 1 }] }
 fn edit() -> int {
     let mut cells: [mut]Cell = allocate()
+    if len(ref cells) == 0 { return 0 }
     cells[0].value += 1
     cells[0].value
 }
@@ -1970,6 +1976,7 @@ type Cell = .{ var value: int }
 fn edit(cells: []Cell) -> int {
     let mut writable: [mut]Cell = cells
     -- ^ E0522
+    if len(ref writable) == 0 { return 0 }
     writable[0].value += 1
     writable[0].value
 }
@@ -1981,6 +1988,7 @@ fn wrap(cell: Cell) &return(cell) -> new []Cell { [cell] }
 fn edit(cell: Cell) -> int {
     let mut writable: [mut]Cell = wrap(cell)
     -- ^ E0522
+    if len(ref writable) == 0 { return 0 }
     writable[0].value += 1
     writable[0].value
 }
@@ -1994,6 +2002,7 @@ fn wrap(cell: Cell) &return(cell) -> new Both {
 }
 fn edit(cell: Cell) -> int {
     let mut writable: .{ old: Cell, mut fresh: [mut]Cell } = wrap(cell)
+    if len(ref writable.fresh) == 0 { return 0 }
     writable.fresh[0].value += 1
     writable.fresh[0].value
 }
@@ -2066,10 +2075,10 @@ fn edit() -> int {
     let mut cell = Cell.{ value: 2 }
     let mut moved = {
         let mut original = hold(^mut cell)
-        original.cells[0].value += 1
+        if len(ref original.cells) > 0 { original.cells[0].value += 1 }
         original
     }
-    moved.cells[0].value += 1
+    if len(ref moved.cells) > 0 { moved.cells[0].value += 1 }
     cell.value
 }
 
@@ -2448,8 +2457,10 @@ fn replace() -> int {
 
 -- @case replacing_a_shared_element_requires_acknowledgment compile-fail E0510
 fn replace(mut items: [^mut]Cell, ^mut value: Cell) &mut &^mut -> () {
-    items[0] = value
-    -- ^ E0510
+    if len(ref items) > 0 {
+        items[0] = value
+        -- ^ E0510
+    }
 }
 
 -- @case each_shared_replacement_branch_can_acknowledge_the_same_source compile-pass
@@ -2469,8 +2480,10 @@ fn replace(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
 fn edit(mut a: Cell, mut b: Cell) &mut -> () { a.count += 1; b.count += 1 }
 fn update(index: int) -> () {
     let mut cells: [mut]Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
-    edit(mut cells[0], mut cells[index])
-    -- ^ E0523
+    if 0 <= index && index < len(ref cells) {
+        edit(mut cells[0], mut cells[index])
+        -- ^ E0523
+    }
 }
 
 -- @case aborting_write_still_requires_write_clause compile-fail E0510
@@ -2786,8 +2799,10 @@ fn run(flag: bool, index: int) -> int {
     let mut actions = [count]
     if flag { Array::push(mut actions, freeze) }
     Array::push(mut actions, count)
-    let _ = actions[index](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if 0 <= index && index < len(ref actions) {
+        let _ = actions[index](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count += 8
     live.count
 }
@@ -2820,9 +2835,13 @@ fn run(index: int) -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
     let actions = [count, freeze]
-    let selected = actions[index..]
-    let _ = selected[0](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if 0 <= index && index <= len(actions) {
+        let selected = actions[index..]
+        if len(selected) > 0 {
+            let _ = selected[0](Shelf.{ item: ^mut live })
+            -- ^ E0535
+        }
+    }
     live.count += 8
     live.count
 }
@@ -2852,8 +2871,12 @@ fn run() -> int {
     live.count += 1
     let actions = [count, freeze]
     match actions?[1..] {
-        Some(tail) -> { let _ = tail[0](Shelf.{ item: ^mut live }) }
-        -- ^ E0535
+        Some(tail) -> {
+            if len(tail) > 0 {
+                let _ = tail[0](Shelf.{ item: ^mut live })
+                -- ^ E0535
+            }
+        }
         None -> ()
     }
     live.count += 8
@@ -2996,8 +3019,10 @@ fn run() -> int {
     let mut live = Cell.{ count: 1 }
     live.count += 1
     let copy = twice([freeze])
-    let _ = copy[0](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if len(copy) > 0 {
+        let _ = copy[0](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count
 }
 
@@ -3013,8 +3038,10 @@ fn run() -> int {
     let ^mut append = \-> Array::push(mut actions, freeze)
     actions = [count, count]
     append()
-    let _ = actions[2](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if len(ref actions) > 2 {
+        let _ = actions[2](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count += 8
     live.count
 }
@@ -3032,8 +3059,10 @@ fn run() -> int {
     let ^mut append = \-> Array::push(mut actions, action)
     action = freeze
     append()
-    let _ = actions[1](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if len(ref actions) > 1 {
+        let _ = actions[1](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count += 8
     live.count
 }
@@ -3050,8 +3079,10 @@ fn run() -> int {
     live.count += 1
     let mut holder = Holder.{ actions: [count] }
     append()
-    let _ = holder.actions[1](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if len(ref holder.actions) > 1 {
+        let _ = holder.actions[1](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count += 8
     live.count
     where
@@ -3074,8 +3105,10 @@ fn run() -> int {
     let mut actions = [count]
     let ^mut append = appender(^mut actions)
     append()
-    let _ = actions[1](Shelf.{ item: ^mut live })
-    -- ^ E0535
+    if len(ref actions) > 1 {
+        let _ = actions[1](Shelf.{ item: ^mut live })
+        -- ^ E0535
+    }
     live.count += 8
     live.count
 }
@@ -3239,8 +3272,10 @@ fn bad() -> () {
         Step::Done -> ()
         Step::Yielded(k) -> Array::push(mut ready, k)
     }
-    let _ = ready[0]
-    -- ^ E0548
+    if len(ref ready) > 0 {
+        let _ = ready[0]
+        -- ^ E0548
+    }
     while let Some(k) = Array::pop_front(mut ready) {
         unwind_ctl(k)
     }

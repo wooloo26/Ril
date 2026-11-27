@@ -61,22 +61,22 @@ pub(crate) fn inlay_hints(state: &mut LspState, params: &Value) -> Value {
                     }
                 }
             }
-            // 2. Expand ambiguous bare `&mut` on functions with >=2 parameters.
+            // 2. Expand ambiguous bare `&mut` on functions with >=2 parameters + implicit `@panic`/`@abort`/`@diverge`.
             StmtKind::Function(function) => {
                 if let Some(analysis) = analysis.as_deref()
-                    && function.signature.params.len() >= 2
                     && let Some(def_id) = typed
                         .hir
                         .resolve(function.name.span)
                         .and_then(|r| r.definition())
                 {
-                    let (mut_params, _) =
-                        ril_driver::inspect::expanded_mut_params(&typed, analysis, def_id);
-                    if !mut_params.is_empty() {
-                        let header_end = function
-                            .body
-                            .map_or(stmt.span.end, |b| file.ast.expr(b).span.start);
-                        if let Some(header) = text.get(function.name.span.end..header_end)
+                    let header_end = function
+                        .body
+                        .map_or(stmt.span.end, |b| file.ast.expr(b).span.start);
+                    if function.signature.params.len() >= 2 {
+                        let (mut_params, _) =
+                            ril_driver::inspect::expanded_mut_params(&typed, analysis, def_id);
+                        if !mut_params.is_empty()
+                            && let Some(header) = text.get(function.name.span.end..header_end)
                             && let Some(pos) = find_bare_mut_clause(header)
                         {
                             let abs = function.name.span.end + pos + 4;
@@ -85,6 +85,23 @@ pub(crate) fn inlay_hints(state: &mut LspState, params: &Value) -> Value {
                                 "position": { "line": line, "character": col },
                                 "label": format!("({})", mut_params.join(", ")),
                                 "kind": 2, // Parameter
+                                "paddingLeft": false,
+                                "paddingRight": false
+                            }));
+                        }
+                    }
+                    if let Some(behavior) = analysis.behavior.summaries.get(&def_id) {
+                        let implicit = implicit_behavior_tags(behavior);
+                        if !implicit.is_empty()
+                            && let Some(header) = text.get(function.name.span.end..header_end)
+                            && let Some(arrow_rel) = header.rfind("->")
+                        {
+                            let abs = function.name.span.end + arrow_rel;
+                            let (line, col) = offset_to_line_col(&text, abs);
+                            hints.push(json!({
+                                "position": { "line": line, "character": col },
+                                "label": format!("{} ", implicit.join(" ")),
+                                "kind": 1, // Type
                                 "paddingLeft": false,
                                 "paddingRight": false
                             }));
@@ -136,6 +153,9 @@ pub(crate) fn inlay_hints(state: &mut LspState, params: &Value) -> Value {
                 for eff in &closure.effect_ops {
                     tail_parts.push(eff.clone());
                 }
+                for tag in implicit_behavior_tags(&closure.behavior) {
+                    tail_parts.push(tag.to_owned());
+                }
                 if !closure.captures.is_empty() {
                     tail_parts.push(format!("&up({})", closure.captures.join(", ")));
                 }
@@ -160,6 +180,20 @@ pub(crate) fn inlay_hints(state: &mut LspState, params: &Value) -> Value {
     }
 
     json!(hints)
+}
+
+fn implicit_behavior_tags(behavior: &ril_sema::behavior::BehaviorSummary) -> Vec<&'static str> {
+    let mut tags = Vec::new();
+    if behavior.may_panic {
+        tags.push("@panic");
+    }
+    if behavior.may_abort {
+        tags.push("@abort");
+    }
+    if behavior.may_diverge {
+        tags.push("@diverge");
+    }
+    tags
 }
 
 fn find_bare_mut_clause(header: &str) -> Option<usize> {

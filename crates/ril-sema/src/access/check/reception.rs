@@ -983,6 +983,7 @@ impl Analyzer<'_> {
         if !ctx.return_guards.is_empty() {
             let guards = ctx.return_guards.clone();
             self.check_guard_args(ctx, ledger, &guards);
+            self.check_return_static_proof_liveness(ctx, ledger, &guards);
         }
         self.storage_exit(ctx, ledger);
         if value.creates_environment() {

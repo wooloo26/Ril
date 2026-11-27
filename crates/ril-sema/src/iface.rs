@@ -18,7 +18,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     access::{Analysis, Summary, ViaDomain},
-    ty::{Ty, TypedProgram},
+    ty::{
+        Ty, TypedProgram,
+        proofs::{ExportProof, export_proofs_entail},
+    },
 };
 
 const BINARY_MAGIC: &[u8; 5] = b"RILI\x00";
@@ -46,6 +49,10 @@ pub struct Export {
     pub generics: Vec<Generic>,
     pub parameter_defaults: Vec<Option<String>>,
     pub meta_parameters: Vec<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameter_proofs: Vec<ExportProof>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub return_proofs: Vec<ExportProof>,
     pub summary: Summary,
     pub domain: ViaDomain,
     #[serde(skip)]
@@ -130,6 +137,16 @@ impl Interface {
                         .iter()
                         .map(|param| param.is_meta)
                         .collect(),
+                    parameter_proofs: program
+                        .exported_param_proofs
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    return_proofs: program
+                        .exported_return_proofs
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_default(),
                     summary: analysis.summaries.get(&id).cloned().unwrap_or_default(),
                     domain: analysis
                         .via
@@ -503,6 +520,8 @@ impl Interface {
                         .iter()
                         .zip(&export.parameter_defaults)
                         .all(|(old, new)| old.is_none() || new.is_some())
+                    && export_proofs_entail(&baseline.parameter_proofs, &export.parameter_proofs)
+                    && export_proofs_entail(&export.return_proofs, &baseline.return_proofs)
                     && if baseline.domain.is_empty() {
                         baseline.summary.subsumes(&export.summary)
                     } else {
@@ -538,26 +557,27 @@ impl Interface {
 }
 
 fn declaration_source(file: &ril_hir::File) -> String {
-    fn omit_bodies(ast: &Ast, items: &[StmtId], spans: &mut Vec<Span>) {
+    fn omit_bodies(ast: &Ast, items: &[StmtId], replacements: &mut Vec<(Span, &'static str)>) {
         for &item in items {
             match &ast.stmt(item).value.kind {
                 StmtKind::Function(function) if !function.is_meta => {
-                    omit_bodies(ast, &function.helpers, spans);
+                    omit_bodies(ast, &function.helpers, replacements);
                     if let Some(body) = function.body {
-                        spans.push(ast.expr(body).span);
+                        let repl = if function.helpers.is_empty() { "" } else { "{}" };
+                        replacements.push((ast.expr(body).span, repl));
                     }
                 }
-                StmtKind::Sub { items, .. } => omit_bodies(ast, items, spans),
+                StmtKind::Sub { items, .. } => omit_bodies(ast, items, replacements),
                 _ => {}
             }
         }
     }
-    let mut spans = Vec::new();
-    omit_bodies(&file.ast, &file.ast.items, &mut spans);
+    let mut replacements = Vec::new();
+    omit_bodies(&file.ast, &file.ast.items, &mut replacements);
     let mut source = file.source_text().to_owned();
-    spans.sort_unstable();
-    for span in spans.into_iter().rev() {
-        source.replace_range(span.start..span.end, "");
+    replacements.sort_unstable_by_key(|(span, _)| *span);
+    for (span, repl) in replacements.into_iter().rev() {
+        source.replace_range(span.start..span.end, repl);
     }
     source
 }

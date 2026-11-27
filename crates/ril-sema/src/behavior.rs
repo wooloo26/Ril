@@ -107,6 +107,13 @@ pub struct BehaviorWitnesses {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeferPanicSite {
+    pub defer_span: Span,
+    pub enclosing_fn: Option<DefinitionId>,
+    pub witness: Vec<WitnessStep>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeferDoublePanicWarning {
     pub defer_span: Span,
     pub enclosing_fn: Option<DefinitionId>,
@@ -146,6 +153,7 @@ pub struct EffectCallSiteFact {
 pub struct BehaviorAnalysis {
     pub summaries: BTreeMap<DefinitionId, BehaviorSummary>,
     pub witnesses: BTreeMap<DefinitionId, BehaviorWitnesses>,
+    pub defer_panics: Vec<DeferPanicSite>,
     pub defer_warnings: Vec<DeferDoublePanicWarning>,
     pub closures: Vec<ClosureSiteFact>,
     pub with_sites: Vec<WithSiteFact>,
@@ -511,8 +519,8 @@ pub fn analyze(program: &TypedProgram, analysis: &Analysis) -> BehaviorAnalysis 
         });
     }
 
-    // Extract `W0601` DOUBLE_PANIC warnings for user-file `defer` statements.
-    for (defer_span, enclosing_fn, defer_owner, post_owner, nested_in_defer) in
+    // Extract hard `E0627` defer-panic sites for user-file `defer` statements.
+    for (defer_span, enclosing_fn, defer_owner, _post_owner, _nested_in_defer) in
         collector.defer_records
     {
         if program.hir.is_stdlib_file(defer_span.file) {
@@ -522,13 +530,8 @@ pub fn analyze(program: &TypedProgram, analysis: &Analysis) -> BehaviorAnalysis 
             owner: defer_owner,
             kind: BKind::Panic,
         });
-        let scope_panics = nested_in_defer
-            || facts.contains(&BFact {
-                owner: post_owner,
-                kind: BKind::Panic,
-            });
-        if defer_panics && scope_panics {
-            let defer_panic = extract_witness(
+        if defer_panics {
+            let witness = extract_witness(
                 program,
                 BFact {
                     owner: defer_owner,
@@ -538,38 +541,10 @@ pub fn analyze(program: &TypedProgram, analysis: &Analysis) -> BehaviorAnalysis 
                 &collector.origins,
                 &derived_by,
             );
-            let (scope_panic_span, scope_panic_detail) = if nested_in_defer {
-                (None, Some("nested inside outer defer cleanup".into()))
-            } else {
-                let post_steps = extract_witness(
-                    program,
-                    BFact {
-                        owner: post_owner,
-                        kind: BKind::Panic,
-                    },
-                    &collector.rules,
-                    &collector.origins,
-                    &derived_by,
-                );
-                let first = post_steps.first();
-                let span = first.and_then(|s| s.at);
-                let detail = first.map(|s| {
-                    if let Some(call) = &s.call {
-                        format!("enclosing scope may panic here via `{call}`")
-                    } else if let Some(cause) = s.cause {
-                        format!("enclosing scope may panic here ({})", cause.as_str())
-                    } else {
-                        "enclosing scope may panic here".into()
-                    }
-                });
-                (span, detail)
-            };
-            out.defer_warnings.push(DeferDoublePanicWarning {
+            out.defer_panics.push(DeferPanicSite {
                 defer_span,
                 enclosing_fn,
-                defer_panic,
-                scope_panic_span,
-                scope_panic_detail,
+                witness,
             });
         }
     }
@@ -697,43 +672,9 @@ impl<'a> Collector<'a> {
                         );
                     }
                     Intrinsic::ArrayInsert => {
-                        self.seed(
-                            owner,
-                            BKind::Panic,
-                            RuleOrigin {
-                                at: None,
-                                call: Some(name),
-                                cause: Some(WitnessCause::IndexOob),
-                                detail: None,
-                                follow_premise: None,
-                            },
-                        );
+                        // Call sites check `program.proved_ops`; unproved calls fail E0362.
                     }
-                    Intrinsic::Print => {
-                        self.seed(
-                            owner,
-                            BKind::Panic,
-                            RuleOrigin {
-                                at: None,
-                                call: Some(name.clone()),
-                                cause: Some(WitnessCause::IoTrap),
-                                detail: None,
-                                follow_premise: None,
-                            },
-                        );
-                        self.seed(
-                            owner,
-                            BKind::Diverge,
-                            RuleOrigin {
-                                at: None,
-                                call: Some(name),
-                                cause: Some(WitnessCause::Ffi),
-                                detail: None,
-                                follow_premise: None,
-                            },
-                        );
-                    }
-                    Intrinsic::FileRead | Intrinsic::FileWrite => {
+                    Intrinsic::Print | Intrinsic::FileRead | Intrinsic::FileWrite => {
                         self.seed(
                             owner,
                             BKind::Diverge,
@@ -776,7 +717,9 @@ impl<'a> Collector<'a> {
         };
 
         for &guard in &function.signature.guards {
-            self.walk_expr(&mut ctx, guard, all_fns);
+            if !self.program.hir.is_static_proof_guard(ctx.file, guard) {
+                self.walk_expr(&mut ctx, guard, all_fns);
+            }
         }
         if let Some(body) = function.body {
             self.walk_expr(&mut ctx, body, all_fns);
@@ -1045,19 +988,22 @@ impl<'a> Collector<'a> {
                     {
                         self.walk_expr(ctx, *base, all_fns);
                         self.walk_expr(ctx, *index, all_fns);
+                        let left_span = self.ast(ctx.file).expr(*left).span;
                         let base_ty = self.program.types.get(&self.ast(ctx.file).expr(*base).span);
                         if !matches!(base_ty, Some(Ty::Map(..))) {
-                            self.seed_in_ctx(
-                                ctx,
-                                BKind::Panic,
-                                RuleOrigin {
-                                    at: Some(self.ast(ctx.file).expr(*left).span),
-                                    call: None,
-                                    cause: Some(WitnessCause::IndexOob),
-                                    detail: None,
-                                    follow_premise: None,
-                                },
-                            );
+                            if !self.program.proved_ops.contains(&left_span) {
+                                self.seed_in_ctx(
+                                    ctx,
+                                    BKind::Panic,
+                                    RuleOrigin {
+                                        at: Some(left_span),
+                                        call: None,
+                                        cause: Some(WitnessCause::IndexOob),
+                                        detail: None,
+                                        follow_premise: None,
+                                    },
+                                );
+                            }
                         } else if ctx.in_loop {
                             self.seed_in_ctx(
                                 ctx,
@@ -1082,7 +1028,7 @@ impl<'a> Collector<'a> {
                 let left_ty = self.program.types.get(&self.ast(ctx.file).expr(*left).span);
                 match op_str {
                     "/" | "%" | "/=" | "%=" if matches!(left_ty, Some(Ty::Int) | None) => {
-                        if !self.is_nonzero_expr(ctx, *right) {
+                        if !self.program.proved_ops.contains(&span) {
                             self.seed_in_ctx(
                                 ctx,
                                 BKind::Panic,
@@ -1096,21 +1042,23 @@ impl<'a> Collector<'a> {
                             );
                         }
                     }
-                    "<<" | ">>" | "<<=" | ">>="
-                        if !self.is_small_nonneg_int_literal(ctx, *right) =>
-                    {
-                        self.seed_in_ctx(
-                            ctx,
-                            BKind::Panic,
-                            RuleOrigin {
-                                at: Some(span),
-                                call: None,
-                                cause: Some(WitnessCause::ShiftBounds),
-                                detail: None,
-                                follow_premise: None,
-                            },
-                        );
-                        if matches!(op_str, "<<" | "<<=") {
+                    "<<" | ">>" | "<<=" | ">>=" => {
+                        if !self.program.proved_ops.contains(&span) {
+                            self.seed_in_ctx(
+                                ctx,
+                                BKind::Panic,
+                                RuleOrigin {
+                                    at: Some(span),
+                                    call: None,
+                                    cause: Some(WitnessCause::ShiftBounds),
+                                    detail: None,
+                                    follow_premise: None,
+                                },
+                            );
+                        }
+                        if matches!(op_str, "<<" | "<<=")
+                            && !self.is_small_nonneg_int_literal(ctx, *right)
+                        {
                             self.seed_in_ctx(
                                 ctx,
                                 BKind::Abort,
@@ -1156,7 +1104,7 @@ impl<'a> Collector<'a> {
             Expr::Index { base, index, safe } => {
                 self.walk_expr(ctx, *base, all_fns);
                 self.walk_expr(ctx, *index, all_fns);
-                if !*safe {
+                if !*safe && !self.program.proved_ops.contains(&span) {
                     self.seed_in_ctx(
                         ctx,
                         BKind::Panic,
@@ -1259,20 +1207,10 @@ impl<'a> Collector<'a> {
                     return;
                 }
                 self.walk_condition(ctx, condition, all_fns);
-                let (yes_nz, no_nz) = self.zero_guard_locals(ctx, condition);
-                let saved = ctx.non_zero_locals.clone();
-                if let Some(id) = yes_nz {
-                    ctx.non_zero_locals.insert(id);
-                }
                 self.walk_expr(ctx, *yes, all_fns);
-                ctx.non_zero_locals = saved.clone();
                 if let Some(no_expr) = no {
-                    if let Some(id) = no_nz {
-                        ctx.non_zero_locals.insert(id);
-                    }
                     self.walk_expr(ctx, *no_expr, all_fns);
                 }
-                ctx.non_zero_locals = saved;
             }
             Expr::While { condition, body } => {
                 self.seed_in_ctx(
@@ -1776,20 +1714,6 @@ impl<'a> Collector<'a> {
         );
     }
 
-    fn is_nonzero_expr(&self, ctx: &WalkCtx, expr_id: ExprId) -> bool {
-        let node = self.ast(ctx.file).expr(expr_id);
-        match &node.value {
-            Expr::Literal(lit) if lit.kind == LiteralKind::Int => {
-                parse_int_literal(&lit.text).is_some_and(|n| n != 0)
-            }
-            Expr::Unary { op, value } if op.value == "-" => self.is_nonzero_expr(ctx, *value),
-            Expr::Path(path) => self
-                .resolve_def(path.span)
-                .is_some_and(|id| ctx.non_zero_locals.contains(&id)),
-            _ => false,
-        }
-    }
-
     fn is_small_nonneg_int_literal(&self, ctx: &WalkCtx, expr_id: ExprId) -> bool {
         let node = self.ast(ctx.file).expr(expr_id);
         matches!(
@@ -1798,43 +1722,6 @@ impl<'a> Collector<'a> {
                 if lit.kind == LiteralKind::Int
                     && parse_int_literal(&lit.text).is_some_and(|n| (0..=64).contains(&n))
         )
-    }
-
-    /// Recognizes simple `x == 0` / `x != 0` guards so `checked_div`/`checked_rem` are total.
-    fn zero_guard_locals(
-        &self,
-        ctx: &WalkCtx,
-        condition: &Condition,
-    ) -> (Option<DefinitionId>, Option<DefinitionId>) {
-        let Condition::Expr(expr_id) = condition else {
-            return (None, None);
-        };
-        let Expr::Binary { op, left, right } = &self.ast(ctx.file).expr(*expr_id).value else {
-            return (None, None);
-        };
-        let is_zero = |id: ExprId| {
-            matches!(
-                &self.ast(ctx.file).expr(id).value,
-                Expr::Literal(lit)
-                    if lit.kind == LiteralKind::Int && parse_int_literal(&lit.text) == Some(0)
-            )
-        };
-        let local_id = |id: ExprId| match &self.ast(ctx.file).expr(id).value {
-            Expr::Path(path) => self.resolve_def(path.span),
-            _ => None,
-        };
-        let target = if is_zero(*right) {
-            local_id(*left)
-        } else if is_zero(*left) {
-            local_id(*right)
-        } else {
-            None
-        };
-        match op.value.as_str() {
-            "==" => (None, target),
-            "!=" => (target, None),
-            _ => (None, None),
-        }
     }
 
     fn collect_closure_captures(&self, closure_span: Span) -> Vec<String> {

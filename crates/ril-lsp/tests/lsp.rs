@@ -851,16 +851,20 @@ fn main() -> () {
 }
 
 #[test]
-fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), String> {
+fn lsp_hover_inlay_and_e0627_surface_implicit_behavior_and_provenance() -> Result<(), String> {
     let uri = "file:///workspace/provenance.ril";
     let source = concat!(
         "use ril/io\n",
         "fn clamp(x: int, lo: int, hi: int) -> int {\n",
         "    if x < lo { lo } else if x > hi { hi } else { x }\n",
         "}\n",
+        "fn strict_rec(n: int) -> int {\n",
+        "    if n < 0 { panic(\"neg\") }\n",
+        "    if n == 0 { 0 } else { 1 + strict_rec(n - 1) }\n",
+        "}\n",
         "fn flush_batch(mut buf: []int, idx: int) &mut -> int {\n",
         "    defer assert(len(ref buf) == 0, \"unflushed\")\n",
-        "    let head = buf[idx]\n",
+        "    let head = buf?[idx] ?? 0\n",
         "    Array::clear(mut buf)\n",
         "    head\n",
         "}\n",
@@ -871,6 +875,7 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
         "        Array::push(mut out, x)\n",
         "    }\n",
         "    log_push(clamp(3, 0, 5))\n",
+        "    let _ = strict_rec(2)\n",
         "    let _ = flush_batch(mut out, 0)\n",
         "}\n",
     );
@@ -896,7 +901,7 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
         "method": "textDocument/hover",
         "params": { "textDocument": { "uri": uri }, "position": { "line": 1, "character": 4 } }
     })));
-    // id 3: hover on `flush_batch` (&mut(buf) + May panic + May abort process)
+    // id 3: hover on `strict_rec` (implicit @panic, @abort, @div)
     input.extend(frame_lsp(&json!({
         "jsonrpc": "2.0",
         "id": 3,
@@ -910,7 +915,7 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
         "method": "textDocument/inlayHint",
         "params": {
             "textDocument": { "uri": uri },
-            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 19, "character": 0 } }
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 25, "character": 0 } }
         }
     })));
     input.extend(frame_lsp(
@@ -922,7 +927,7 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
     ril_lsp::handle_session(Cursor::new(input), &mut output)?;
     let frames = parse_lsp_frames(&output)?;
 
-    // W0601 warning published for `defer assert(...)` in `flush_batch`
+    // Hard error E0627 published for `defer assert(...)` in `flush_batch`
     let diags = frames
         .get(1)
         .and_then(|v| v.pointer("/params/diagnostics"))
@@ -931,12 +936,12 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
     assert!(
         diags
             .iter()
-            .any(|d| d.get("code").and_then(Value::as_str) == Some("W0601")
-                && d.get("severity").and_then(Value::as_u64) == Some(2)),
-        "expected W0601 warning diagnostic, got: {diags:?}"
+            .any(|d| d.get("code").and_then(Value::as_str) == Some("E0627")
+                && d.get("severity").and_then(Value::as_u64) == Some(1)),
+        "expected E0627 error diagnostic for panicking defer, got: {diags:?}"
     );
 
-    // Hover on `clamp` shows `pure` and `total`, and no panic noise
+    // Hover on `clamp` shows `pure` and `total`, and no implicit @panic/@abort/@diverge noise
     let clamp_hover = frames
         .get(2)
         .and_then(|v| v.pointer("/result/contents/value"))
@@ -945,24 +950,30 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
     assert!(
         clamp_hover.contains("`pure`")
             && clamp_hover.contains("`total`")
-            && !clamp_hover.contains("May panic"),
+            && !clamp_hover.contains("@panic")
+            && !clamp_hover.contains("@abort")
+            && !clamp_hover.contains("@diverge"),
         "unexpected clamp hover: {clamp_hover}"
     );
 
-    // Hover on `flush_batch` expands `&mut(buf)`, shows May panic and May abort process
-    let flush_hover = frames
+    // Hover on `strict_rec` shows implicit `@panic`, `@abort`, and `@diverge` badges & witness sections
+    let rec_hover = frames
         .get(3)
         .and_then(|v| v.pointer("/result/contents/value"))
         .and_then(Value::as_str)
         .unwrap_or("");
     assert!(
-        flush_hover.contains("&mut(buf)")
-            && flush_hover.contains("May panic")
-            && flush_hover.contains("May abort process"),
-        "unexpected flush_batch hover: {flush_hover}"
+        rec_hover.contains("`@panic`")
+            && rec_hover.contains("`@abort`")
+            && rec_hover.contains("`@diverge`")
+            && rec_hover.contains("Implicit `@panic`")
+            && rec_hover.contains("Implicit `@abort`")
+            && rec_hover.contains("Implicit `@diverge`"),
+        "unexpected strict_rec hover: {rec_hover}"
     );
 
-    // Inlay hints expand `(buf)` after `&mut` and show `@io &up(mut out)` on closure
+    // Inlay hints show `(buf)` after `&mut`, implicit `@panic @abort @diverge ` on `strict_rec`,
+    // and `@io @diverge &up(mut out)` on `log_push` closure
     let hints = frames
         .get(4)
         .and_then(|v| v.get("result"))
@@ -975,6 +986,12 @@ fn lsp_hover_inlay_and_w0601_surface_behavior_and_provenance() -> Result<(), Str
     assert!(
         labels.contains(&"(buf)"),
         "expected `(buf)` &mut expansion hint, got: {labels:?}"
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.contains("@panic") && l.contains("@abort") && l.contains("@diverge")),
+        "expected implicit `@panic @abort @diverge` function inlay hint, got: {labels:?}"
     );
     assert!(
         labels

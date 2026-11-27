@@ -87,6 +87,7 @@ impl Checker<'_> {
         {
             self.closure_exits(index).returns.push((span, actual));
         }
+        self.verify_fn_return_proofs(env, value, span);
     }
 
     fn infer_closure_result(
@@ -177,8 +178,20 @@ impl Checker<'_> {
         local.expected_return = expected_call.map(|sig| sig.result.clone());
         local.inferred_return = None;
         local.return_scope = Some(self.ast(env.file).expr(body).span);
+        local.return_proofs.clear();
+        local.checking_fn_tail = false;
+        local.active_defers.clear();
         let mut parameters = Vec::new();
         for (index, item) in params.iter().enumerate() {
+            for &guard in &item.guards {
+                if self.hir.is_static_proof_guard(env.file, guard) {
+                    self.error(
+                        Code::E0534,
+                        self.ast(env.file).expr(guard).span,
+                        "anonymous closure parameters cannot carry static proofs",
+                    );
+                }
+            }
             if item.is_meta {
                 self.declare_meta_key(&mut local, item);
             }
@@ -274,6 +287,7 @@ impl Checker<'_> {
     pub(super) fn call(
         &mut self,
         env: &mut Env,
+        call_expr: ExprId,
         callee_id: ExprId,
         args: &[Argument],
         expected: Option<&Ty>,
@@ -428,6 +442,7 @@ impl Checker<'_> {
             return self.normalize(&result);
         }
         let mut used = vec![false; call.parameters.len()];
+        let mut arg_by_formal: Vec<Option<ExprId>> = vec![None; call.parameters.len()];
         let mut metadata = BTreeMap::new();
         for arg in args {
             let location = if let Some(name) = &arg.name {
@@ -456,6 +471,9 @@ impl Checker<'_> {
             }
             if let Some(used) = used.get_mut(index) {
                 *used = true;
+            }
+            if let Some(slot) = arg_by_formal.get_mut(index) {
+                *slot = Some(arg.value);
             }
             let parameter = call
                 .parameters
@@ -545,6 +563,40 @@ impl Checker<'_> {
         {
             self.error(Code::E0314, span, "required argument is missing");
         }
+        let is_len_preserving = def_id.is_some_and(|id| self.is_length_preserving_callee(id));
+        let is_array_push_or_insert = def_id.is_some_and(|id| {
+            matches!(
+                self.hir.intrinsic(id),
+                Some(ril_hir::Intrinsic::ArrayPush | ril_hir::Intrinsic::ArrayInsert)
+            )
+        });
+        let is_array_pop_or_remove = def_id.is_some_and(|id| {
+            matches!(
+                self.hir.intrinsic(id),
+                Some(
+                    ril_hir::Intrinsic::ArrayPop
+                        | ril_hir::Intrinsic::ArrayPopFront
+                        | ril_hir::Intrinsic::ArrayRemove
+                )
+            )
+        });
+        let is_array_clear = def_id.is_some_and(|id| self.is_array_clear_callee(id));
+        // 1. Check static parameter proofs on pre-call DBM (mapped by formal index!).
+        if !env.shadow
+            && let Some(id) = def_id
+        {
+            self.check_call_param_proofs(env, id, &arg_by_formal, span);
+        }
+        if !env.shadow
+            && let Some(id) = def_id
+            && self.hir.is_stdlib_file(self.hir.definition(id).name.span.file)
+            && self.hir.primitive_module(id) == Some("Prelude")
+            && self.hir.definition(id).name.value == "assert"
+            && let Some(cond_arg) = args.first()
+        {
+            self.relate(env, cond_arg.value, true);
+        }
+        // 2. Sound call invalidation (including plain args containing writable/shared member schemas!).
         if call.open_effects
             || call.open_state
             || call.effects.iter().any(|eff| eff != "io")
@@ -559,26 +611,57 @@ impl Checker<'_> {
                 span,
                 crate::ty::NarrowDropCause::OpenStateCall,
             );
+            for argument in args {
+                if matches!(argument.mode, Mode::Mut | Mode::Shared) {
+                    self.writes_place(env, argument.value, span);
+                }
+            }
         } else if call
             .state
             .iter()
             .any(|clause| clause == "mut" || clause == "^mut")
         {
-            for argument in args
-                .iter()
-                .filter(|arg| matches!(arg.mode, Mode::Mut | Mode::Shared))
-            {
-                if argument.mode == Mode::Shared {
+            for argument in args {
+                let arg_ty = self
+                    .types
+                    .get(&ast.expr(argument.value).span)
+                    .cloned()
+                    .map(|t| self.normalize(&t));
+                let has_shared_schema = arg_ty
+                    .as_ref()
+                    .is_some_and(Ty::contains_shared_member_schema);
+                let has_writable_schema = arg_ty
+                    .as_ref()
+                    .is_some_and(Ty::contains_writable_member_schema);
+                if argument.mode == Mode::Shared || (argument.mode == Mode::Plain && has_shared_schema) {
                     self.invalidate_live(
                         env,
                         Code::E0310,
                         span,
                         crate::ty::NarrowDropCause::AliasingMut,
                     );
-                } else {
+                } else if argument.mode == Mode::Mut {
+                    if is_array_push_or_insert {
+                        self.note_array_push(env, argument.value, span);
+                    } else if is_array_pop_or_remove {
+                        self.note_array_pop(env, argument.value, span);
+                    } else if is_array_clear {
+                        self.note_array_clear(env, argument.value, span);
+                    } else if is_len_preserving {
+                        self.writes_place_preserving_len(env, argument.value, span);
+                    } else {
+                        self.writes_place(env, argument.value, span);
+                    }
+                } else if argument.mode == Mode::Plain && has_writable_schema {
                     self.writes_place(env, argument.value, span);
                 }
             }
+        }
+        // 3. Seed return static proofs AFTER call invalidation!
+        if !env.shadow
+            && let Some(id) = def_id
+        {
+            self.seed_call_return_proofs(env, id, &arg_by_formal, call_expr);
         }
         let effects = if !call.effects.is_empty()
             && let Some(id) = def_id

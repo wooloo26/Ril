@@ -1,6 +1,7 @@
 mod captures;
 mod check;
 mod coverage;
+pub(crate) mod dbm;
 mod effects;
 mod eval;
 mod expr;
@@ -8,6 +9,7 @@ mod forms;
 mod inspect;
 mod narrowing;
 mod pattern;
+pub(crate) mod proofs;
 pub(crate) mod reception;
 mod staging;
 mod value;
@@ -67,6 +69,34 @@ impl Ty {
             Self::Array(member) | Self::Map(_, member) => has_via(member),
             Self::Tuple(members) => members.iter().any(has_via),
             Self::Record(fields, _) => fields.values().any(has_via),
+            _ => false,
+        }
+    }
+
+    pub(super) fn contains_live_member_schema(&self) -> bool {
+        let is_live = |item: &Member| {
+            item.mode.variable
+                || item.mode.mode != Mode::Plain
+                || item.ty.contains_live_member_schema()
+        };
+        match self {
+            Self::Array(member) | Self::Map(_, member) => is_live(member),
+            Self::Tuple(members) => members.iter().any(is_live),
+            Self::Record(fields, _) => fields.values().any(is_live),
+            Self::Draft(_) => true,
+            _ => false,
+        }
+    }
+
+    pub(super) fn contains_shared_member_schema(&self) -> bool {
+        let is_s = |item: &Member| {
+            matches!(item.mode.mode, Mode::Shared | Mode::Via)
+                || item.ty.contains_shared_member_schema()
+        };
+        match self {
+            Self::Array(member) | Self::Map(_, member) => is_s(member),
+            Self::Tuple(members) => members.iter().any(is_s),
+            Self::Record(fields, _) => fields.values().any(is_s),
             _ => false,
         }
     }
@@ -367,6 +397,7 @@ pub struct TypedProgram {
     pub(crate) meta_parameters: HashSet<DefinitionId>,
     inspection_scopes: HashMap<Span, ScopeId>,
     pub narrowings: HashMap<Span, usize>,
+    pub proved_ops: HashSet<Span>,
     pub navigation_values: HashMap<Span, Ty>,
     pub(crate) propagation_inputs: HashMap<Span, Ty>,
     nominal_layouts: HashMap<DefinitionId, Ty>,
@@ -378,6 +409,8 @@ pub struct TypedProgram {
     pub(crate) operation_effects: HashMap<Span, String>,
     pub(crate) operation_instances: HashMap<Span, effects::Instance>,
     pub(crate) effect_applications: HashMap<Span, Vec<String>>,
+    pub(crate) exported_param_proofs: BTreeMap<DefinitionId, Vec<proofs::ExportProof>>,
+    pub(crate) exported_return_proofs: BTreeMap<DefinitionId, Vec<proofs::ExportProof>>,
     pub boxed_var_captures: BTreeSet<DefinitionId>,
 }
 

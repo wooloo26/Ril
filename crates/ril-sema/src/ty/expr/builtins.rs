@@ -176,9 +176,9 @@ impl Checker<'_> {
         span: Span,
     ) -> Ty {
         if name == "derive"
-            && let [base, update] = args
+            && let [base_arg, update] = args
         {
-            let base = self.expr(env, base.value, expected);
+            let base = self.expr(env, base_arg.value, expected);
             self.check_derive_root(env, &base, span);
             let callback = Ty::Callable(Arc::new(Callable {
                 parameters: vec![Parameter {
@@ -194,7 +194,19 @@ impl Checker<'_> {
                 open_effects: true,
                 ..unknown_callable()
             }));
-            self.expect(env, update.value, &callback);
+            let mut cb_env = env.clone();
+            if let syntax::Expr::Closure { params, .. } = &self.ast(env.file).expr(update.value).value
+                && let Some(first_param) = params.first()
+                && let Some(param_name) = &first_param.name
+                && let Some(draft_id) = self.resolve(param_name.span)
+            {
+                let mut dbm = cb_env.refinements.dbm.clone();
+                let target = crate::ty::dbm::Atom::Len(crate::ty::dbm::Place::local(draft_id));
+                self.constrain_len_expr(env, &mut dbm, &target, base_arg.value);
+                cb_env.refinements.dbm = dbm;
+            }
+            self.expect(&mut cb_env, update.value, &callback);
+            env.effects_seen.extend(cb_env.effects_seen);
             return base;
         }
         let context_arg = if name == "clone" { expected } else { None };

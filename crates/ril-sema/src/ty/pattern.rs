@@ -586,6 +586,7 @@ impl Checker<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn check_match(
         &mut self,
         env: &mut Env,
@@ -594,6 +595,7 @@ impl Checker<'_> {
         (value, input): (ExprId, &Ty),
         expected: Option<&Ty>,
         span: Span,
+        check_tail: bool,
     ) -> Ty {
         let normalized_input = self.normalize(input);
         if is_meta {
@@ -679,6 +681,9 @@ impl Checker<'_> {
                             }
                             self.expect(&mut guard_env, guard, &Ty::Bool);
                         }
+                        if check_tail {
+                            local.checking_fn_tail = true;
+                        }
                         let found = self.expr(&mut local, arm.body, expected);
                         env.effects_seen.extend(local.effects_seen);
                         return found;
@@ -716,8 +721,10 @@ impl Checker<'_> {
         let mut covered = HashSet::new();
         let mut result = Ty::Never;
         let staged = is_meta && self.stage_match(env, span, value, arms);
+        let mut remaining_env = env.clone();
+        let mut merged_dbm: Option<super::dbm::Dbm> = None;
         for (index, arm) in arms.iter().enumerate() {
-            let mut local = env.clone();
+            let mut local = remaining_env.clone();
             if staged {
                 local.staging_gates.push(super::staging::StaticGate::Match {
                     span,
@@ -725,6 +732,7 @@ impl Checker<'_> {
                 });
             }
             self.pattern(&mut local, arm.pattern, input);
+            self.seed_pattern_proofs(&mut local, arm.pattern, value);
             if is_meta || env.phase != super::check::Phase::Runtime {
                 self.refine_type_arm(&mut local, arm.pattern, input, &covered);
             }
@@ -752,14 +760,28 @@ impl Checker<'_> {
                     self.expect(&mut guard_env, guard, &Ty::Bool);
                 } else {
                     self.expect(&mut local, guard, &Ty::Bool);
+                    self.relate(&mut local, guard, true);
                 }
             } else {
                 covered.extend(pattern_tags);
                 prior.push(shape);
+                self.negate_pattern_proofs(&mut remaining_env, arm.pattern, value);
+            }
+            if check_tail {
+                local.checking_fn_tail = true;
             }
             let found = self.expr(&mut local, arm.body, expected);
+            if found != Ty::Never {
+                merged_dbm = Some(match merged_dbm {
+                    None => local.refinements.dbm,
+                    Some(cur) => super::dbm::Dbm::join(&cur, &local.refinements.dbm),
+                });
+            }
             result = self.join(env, span, result, found);
             env.effects_seen.extend(local.effects_seen);
+        }
+        if let Some(dbm) = merged_dbm {
+            env.refinements.dbm = dbm;
         }
         if self.useful(env, &prior, super::coverage::Shape::Any, input)
             && !matches!(input, Ty::Unknown | Ty::Never | Ty::Infer(_))

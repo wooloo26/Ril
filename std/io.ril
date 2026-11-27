@@ -1,6 +1,7 @@
 -- Standard Io module: synchronous standard-output primitive plus println helper.
 
--- Writes `text` directly to standard output without a trailing newline (`@io`).
+-- Writes `text` to standard output without a trailing newline (`@io`).
+-- Best-effort output: broken stdout pipes do not panic.
 pub fn print(text: str) @io -> ()
 
 -- Writes `text` followed by a newline (`\n`) to standard output (`@io`).

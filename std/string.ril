@@ -9,12 +9,11 @@ use ril/array
 -- ```
 pub fn inspect<T>(via value: T) -> str
 
--- Returns the Unicode scalar code point (`int`) at 0-based scalar `index` of `text`,
--- or `None` if `index` is out of bounds.
-pub fn scalar_at(text: str, index: int) -> new ?int
+-- Returns the Unicode scalar code point (`int`) at 0-based scalar `index` of `text`.
+pub fn scalar_at(text: str, index: int |> InBounds(text)) -> int
 
 -- Returns all Unicode scalar code points of `text` as a new `[]int`.
-pub fn scalars(text: str) -> new []int
+pub fn scalars(text: str) -> new []int |> SameLen(text)
 
 -- Builds a `str` from an array of Unicode scalar code points, returning `None` if any
 -- entry is not a valid Unicode scalar value (`0..=0x10FFFF` excluding surrogates).
@@ -41,16 +40,14 @@ pub fn join(via parts: []str, separator: str) -> str {
 }
 
 -- Splits `text` on every non-overlapping occurrence of `separator`.
-pub fn split(text: str, separator: str) -> new []str {
+pub fn split(text: str, separator: str) -> new []str |> NonEmpty {
     let mut out: []str = []
     let n = len(text)
     let m = len(separator)
     if m == 0 {
         Array::push(mut out, "")
-        var i = 0
-        while i < n {
+        for 0..n as i {
             Array::push(mut out, text[i..i + 1])
-            i += 1
         }
         Array::push(mut out, "")
         return out

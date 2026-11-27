@@ -318,7 +318,21 @@ impl Parser<'_> {
             Vec::new()
         };
         let body = if self.is("{") && !operation {
-            Some(self.block()?)
+            let block = self.block()?;
+            if !meta
+                && self.kind == FileKind::Interface
+                && matches!(
+                    &self.ast.expr(block).value,
+                    crate::syntax::Expr::Block {
+                        statements,
+                        helpers
+                    } if statements.is_empty() && helpers.is_empty()
+                )
+            {
+                None
+            } else {
+                Some(block)
+            }
         } else {
             None
         };

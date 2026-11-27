@@ -24,6 +24,8 @@ impl Checker<'_> {
     }
 
     pub(super) fn expr(&mut self, env: &mut Env, id: ExprId, expected: Option<&Ty>) -> Ty {
+        let check_tail = std::mem::replace(&mut env.checking_fn_tail, false);
+        let mut tail_checked_inside = false;
         let node = self.ast(env.file).expr(id);
         let known = expected.map(|ty| self.normalize(ty));
         let expected = known.as_ref();
@@ -31,6 +33,9 @@ impl Checker<'_> {
         if let Some((base, steps)) = self.ast(env.file).navigation_chain(id) {
             let ty = self.navigation(env, base, &steps);
             self.types.insert(span, ty.clone());
+            if check_tail {
+                self.verify_fn_return_proofs(env, Some(id), span);
+            }
             return ty;
         }
         let ty = match &node.value {
@@ -59,6 +64,7 @@ impl Checker<'_> {
                 statements,
                 helpers,
             } => {
+                let saved_defers = env.active_defers.len();
                 for &helper in helpers {
                     if !matches!(
                         &self.ast(env.file).stmt(helper).value.kind,
@@ -95,6 +101,10 @@ impl Checker<'_> {
                     } else if last
                         && let StmtKind::Expr(expr) = self.ast(env.file).stmt(item).value.kind
                     {
+                        if check_tail {
+                            env.checking_fn_tail = true;
+                            tail_checked_inside = true;
+                        }
                         self.expr(env, expr, ctl_answer.as_ref().or(expected))
                     } else {
                         self.statement(env, item, last)
@@ -103,6 +113,7 @@ impl Checker<'_> {
                         result = right;
                     }
                 }
+                env.active_defers.truncate(saved_defers);
                 for arm_res in ctl_arm_results {
                     result = self.join(env, span, result, arm_res);
                 }
@@ -148,12 +159,17 @@ impl Checker<'_> {
                         self.statement(env, helper, false);
                     }
                 }
+                let saved_defers = env.active_defers.len();
                 let mut result = Ty::Unit;
                 for (index, &item) in statements.iter().enumerate() {
                     let last = index + 1 == statements.len();
                     let right = if last
                         && let StmtKind::Expr(expr) = self.ast(env.file).stmt(item).value.kind
                     {
+                        if check_tail {
+                            env.checking_fn_tail = true;
+                            tail_checked_inside = true;
+                        }
                         self.expr(env, expr, answer_ty.as_ref().or(expected))
                     } else {
                         self.statement(env, item, last)
@@ -162,6 +178,7 @@ impl Checker<'_> {
                         result = right;
                     }
                 }
+                env.active_defers.truncate(saved_defers);
                 for arm_res in arm_results {
                     result = self.join(env, span, result, arm_res);
                 }
@@ -182,7 +199,7 @@ impl Checker<'_> {
                 }
             }
             Expr::Unary { op, value } => self.unary(env, op, *value),
-            Expr::Binary { op, left, right } => self.binary(env, op, *left, *right, expected),
+            Expr::Binary { op, left, right } => self.binary(env, op, *left, *right, expected, span),
             Expr::Cast { value, target } => {
                 let actual = self.expr(env, *value, None);
                 let target = self.type_expr(env, *target);
@@ -207,7 +224,7 @@ impl Checker<'_> {
                     let arguments = std::iter::once(argument)
                         .chain(args.iter().cloned())
                         .collect::<Vec<_>>();
-                    self.call(env, *callee, &arguments, expected, span)
+                    self.call(env, id, *callee, &arguments, expected, span)
                 } else if matches!(target_node.value, Expr::Wrap { .. }) {
                     self.expr(env, *value, None);
                     self.error(
@@ -217,7 +234,7 @@ impl Checker<'_> {
                     );
                     Ty::Unknown
                 } else {
-                    self.call(env, *target, &[argument], expected, span)
+                    self.call(env, id, *target, &[argument], expected, span)
                 };
                 if *propagate {
                     self.propagate(env, result, span)
@@ -246,8 +263,8 @@ impl Checker<'_> {
                 self.project(env, member, &receiver, span, false)
             }
             Expr::Index { base, index, .. } => {
-                let base = self.expr(env, *base, None);
-                self.index(env, base, *index, false, span)
+                let base_ty = self.expr(env, *base, None);
+                self.index(env, Some(*base), base_ty, *index, false, span)
             }
             Expr::Range { start, end, .. } => {
                 for &value in start.iter().chain(end) {
@@ -255,7 +272,7 @@ impl Checker<'_> {
                 }
                 Ty::Range
             }
-            Expr::Call { callee, args } => self.call(env, *callee, args, expected, span),
+            Expr::Call { callee, args } => self.call(env, id, *callee, args, expected, span),
             Expr::Wrap { path, args } => self.wrap(env, path, args, expected, span),
             Expr::Record { name, fields } => {
                 self.record(env, name.as_ref(), fields, expected, span)
@@ -492,6 +509,11 @@ impl Checker<'_> {
                     }
                     self.assumption(&mut yes_env, condition, true);
                     self.assumption(&mut no_env, condition, false);
+                    if check_tail && no.is_some() {
+                        yes_env.checking_fn_tail = true;
+                        no_env.checking_fn_tail = true;
+                        tail_checked_inside = true;
+                    }
                     let yes = self.expr(&mut yes_env, *yes, expected);
                     let no = no
                         .map(|no| self.expr(&mut no_env, no, expected))
@@ -509,6 +531,11 @@ impl Checker<'_> {
                     }
                     self.assumption(&mut yes_env, condition, true);
                     self.assumption(&mut no_env, condition, false);
+                    if check_tail && no.is_some() {
+                        yes_env.checking_fn_tail = true;
+                        no_env.checking_fn_tail = true;
+                        tail_checked_inside = true;
+                    }
                     let yes = self.expr(&mut yes_env, *yes, expected);
                     let no = no
                         .map(|no| self.expr(&mut no_env, no, expected))
@@ -520,7 +547,10 @@ impl Checker<'_> {
                 }
             }
             Expr::While { condition, body } => {
+                // Compute sound inductive DBM invariant via pure DBM widening fixpoint!
+                let loop_inv = self.compute_while_invariant(env, condition, *body);
                 let mut body_env = env.clone();
+                body_env.refinements.dbm = loop_inv.clone();
                 self.condition(&mut body_env, condition);
                 if let Condition::Expr(test) = condition
                     && let Some(span) = self.stage_condition(env, *test, false)
@@ -536,7 +566,21 @@ impl Checker<'_> {
                 let body_result = self.expr(&mut body_env, *body, Some(&Ty::Unit));
                 let body_span = self.ast(env.file).expr(*body).span;
                 self.require(&body_env, body_span, &body_result, &Ty::Unit);
-                env.refinements = self.merge_refinements(env, &body_env, &Ty::Unit, &body_result);
+                let mut exit_env = env.clone();
+                exit_env.refinements = self.merge_refinements(env, &body_env, &Ty::Unit, &body_result);
+                // Normal loop exit satisfies `loop_inv && !cond` (joined with any `break` exits)!
+                let mut post_dbm = loop_inv;
+                if let Condition::Expr(test) = condition {
+                    let mut neg_env = env.clone();
+                    neg_env.refinements.dbm = post_dbm;
+                    self.relate_proofs(&mut neg_env, *test, false);
+                    post_dbm = neg_env.refinements.dbm;
+                }
+                if self.has_break(env, *body) {
+                    post_dbm = super::dbm::Dbm::join(&post_dbm, &exit_env.refinements.dbm);
+                }
+                exit_env.refinements.dbm = post_dbm;
+                env.refinements = exit_env.refinements;
                 env.effects_seen.extend(body_env.effects_seen);
                 if matches!(condition, Condition::Expr(test) if matches!(&self.ast(env.file).expr(*test).value,
                     Expr::Literal(value) if matches!(literal(value), Ok(Value::Bool(true)))))
@@ -586,10 +630,18 @@ impl Checker<'_> {
                         );
                     }
                 }
-                self.pattern(env, *pattern, &item);
-                let body_ty = self.expr(env, *body, Some(&Ty::Unit));
+                let mut body_env = env.clone();
+                self.pattern(&mut body_env, *pattern, &item);
+                let (for_body_dbm, for_exit_dbm) =
+                    self.compute_for_invariant(env, *iterable, *pattern, *body);
+                body_env.refinements.dbm = for_body_dbm;
+                let body_ty = self.expr(&mut body_env, *body, Some(&Ty::Unit));
                 let body_span = self.ast(env.file).expr(*body).span;
-                self.require(env, body_span, &body_ty, &Ty::Unit);
+                self.require(&body_env, body_span, &body_ty, &Ty::Unit);
+                let mut merged = self.merge_refinements(env, &body_env, &Ty::Unit, &body_ty);
+                merged.dbm = for_exit_dbm;
+                env.refinements = merged;
+                env.effects_seen.extend(body_env.effects_seen);
                 Ty::Unit
             }
             Expr::Match {
@@ -608,7 +660,10 @@ impl Checker<'_> {
                 } else {
                     self.expr(env, *value, None)
                 };
-                self.check_match(env, *is_meta, arms, (*value, &input), expected, span)
+                if check_tail {
+                    tail_checked_inside = true;
+                }
+                self.check_match(env, *is_meta, arms, (*value, &input), expected, span, check_tail)
             }
             Expr::Closure {
                 params,
@@ -673,6 +728,9 @@ impl Checker<'_> {
         };
         let ty = self.apply_refinement(env, id, ty);
         self.types.insert(span, ty.clone());
+        if check_tail && !tail_checked_inside {
+            self.verify_fn_return_proofs(env, Some(id), span);
+        }
         ty
     }
 
@@ -785,6 +843,7 @@ impl Checker<'_> {
         left: ExprId,
         right: ExprId,
         expected: Option<&Ty>,
+        span: Span,
     ) -> Ty {
         let name = op.value.as_str();
         let assignment = matches!(
@@ -995,19 +1054,40 @@ impl Checker<'_> {
             }
             _ => {}
         }
-        if matches!(base, "/" | "%" | "<<" | ">>")
-            && let Some(integer) = self.literal_integer(env, right)
-            && (matches!(base, "/" | "%") && integer.is_zero()
-                || matches!(base, "<<" | ">>") && integer.is_negative())
-        {
-            self.error(
-                Code::E0361,
-                self.ast(env.file).expr(right).span,
-                "invalid literal divisor or shift count",
-            );
+        if matches!(base, "/" | "%" | "<<" | ">>") {
+            if let Some(integer) = self.literal_integer(env, right)
+                && (matches!(base, "/" | "%") && integer.is_zero()
+                    || matches!(base, "<<" | ">>") && integer.is_negative())
+            {
+                self.error(
+                    Code::E0361,
+                    self.ast(env.file).expr(right).span,
+                    "invalid literal divisor or shift count",
+                );
+            } else if !env.shadow && a == Ty::Int && b == Ty::Int {
+                if matches!(base, "/" | "%") {
+                    if self.is_proved_nonzero(env, right) {
+                        self.proved_ops.insert(span);
+                    } else {
+                        self.error(
+                            Code::E0361,
+                            self.ast(env.file).expr(right).span,
+                            "divisor is not statically proved non-zero; guard with 'if d != 0' or require '|> NonZero'",
+                        );
+                    }
+                } else if self.is_proved_nonneg(env, right) {
+                    self.proved_ops.insert(span);
+                } else {
+                    self.error(
+                        Code::E0361,
+                        self.ast(env.file).expr(right).span,
+                        "shift count is not statically proved non-negative; guard with 'if k >= 0' or require '|> Nat'",
+                    );
+                }
+            }
         }
         if assignment {
-            self.writes_place(env, left, ast.expr(left).span);
+            self.assign_place(env, &name, left, right, ast.expr(left).span);
             Ty::Unit
         } else if comparison {
             Ty::Bool
@@ -1050,7 +1130,7 @@ impl Checker<'_> {
         }
     }
 
-    fn literal_integer(&self, env: &Env, id: ExprId) -> Option<num_bigint::BigInt> {
+    pub(super) fn literal_integer(&self, env: &Env, id: ExprId) -> Option<num_bigint::BigInt> {
         let ast = self.ast(env.file);
         match &ast.expr(id).value {
             Expr::Literal(number) => match literal(number).ok()? {

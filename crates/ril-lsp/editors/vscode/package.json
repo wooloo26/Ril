@@ -136,7 +136,7 @@
         "ril.inlayHints.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Show inferred type inlay hints on unannotated `let`/`var` bindings and closure parameters."
+          "description": "Show inferred type inlay hints on bindings/closures and implicit @panic/@abort/@div behavior effects on functions and closures."
         },
         "ril.docExamples.subtleHighlight": {
           "type": "boolean",

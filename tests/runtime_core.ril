@@ -41,7 +41,10 @@ fn main() -> () {
     assert(out_val(section[0](Shelf.{ item: ^mut live })) == 42)
     assert(out_val(middle[0](Shelf.{ item: ^mut live })) == 42)
     match actions?[1..=1] {
-        Some(selected) -> assert(out_val(selected[0](Shelf.{ item: ^mut live })) == 42)
+        Some(selected) -> {
+            assert(len(selected) > 0)
+            assert(out_val(selected[0](Shelf.{ item: ^mut live })) == 42)
+        }
         None -> panic("missing section")
     }
     live.count += 1
@@ -229,7 +232,8 @@ fn main() -> () {
     assert(out_val(second[0](Shelf.{ item: ^mut live })) == 42)
     assert(out_val(second[1](Shelf.{ item: ^mut live })) == 42)
     assert(out_val(second[2](Shelf.{ item: ^mut Cell.{ count: 3 } })) == 103)
-    assert(out_val(forward(base, append_count)[1](Shelf.{ item: ^mut live })) == 42)
+    let next = forward(base, append_count)
+    assert(len(next) == 2 && out_val(next[1](Shelf.{ item: ^mut live })) == 42)
 }
 
 -- @case derive_updates_captured_fields_and_bindings run-pass backend=both
@@ -806,8 +810,8 @@ fn main() -> () {
     assert((min << 62) >> 62 == min)
     assert(min >> 500 == -1 && max >> 500 == 0)
     assert(~min == max && (high | 3) ^ high == 3)
-    assert(Numeric::div(min, -1) == Some(high))
-    assert(Numeric::rem(min, 0) == None)
+    assert(Numeric::abs(min) == high && Numeric::min(min, max) == min && Numeric::max(min, max) == max)
+    assert(Numeric::clamp(high, min, max) == max)
     assert(Numeric::to_f64(max) == Numeric::to_f64(high))
     assert(Numeric::to_int_trunc(-3.5) == Some(-3))
     let keys = [max: "small", high: "large"]
@@ -827,8 +831,8 @@ fn main() -> new !<(), str> { Err("message on stderr") }
 use ril/io
 fn main() @io -> () {
     let text = "αβ"
-    assert(Bytes::at(bytes"\xFF\0", 0) == Some(255))
-    assert(String::scalar_at(text, 1) == Some(946))
+    assert(bytes"\xFF\0"[0] == 255 && bytes"\xFF\0"?[5] == None)
+    assert(String::scalar_at(text, 1) == 946)
     Io::println("{len(text)}:{text[1..2]}")
 }
 
@@ -867,7 +871,7 @@ use ril/io
 meta fn values(scale: int) -> []int { [scale, scale * 2, scale * 3] }
 fn main() @io -> () {
     let vector = meta values(2)
-    Io::println("{vector[2]}")
+    Io::println("{vector?[2] ?? 0}")
 }
 
 -- @case generic_clone_copies_a_specialized_shared_object run-pass backend=both
@@ -930,7 +934,7 @@ type Action = fn() -> int
 fn twice(actions: []Action) -> new []Action { clone(clone(actions)) }
 fn main() -> () {
     let copied = twice([\-> 42])
-    assert(copied[0]() == 42)
+    assert(len(copied) == 1 && copied[0]() == 42)
 }
 
 -- @case narrowing_and_generalized_callable run-pass backend=both
@@ -1031,12 +1035,11 @@ fn main() -> () {
     assert(String::encode_utf8(text) == ENCODED)
     assert(String::decode_utf8(ENCODED) == DECODED)
     assert(String::decode_utf8(bytes"\xC0\xAF") == None)
-    assert(String::scalar_at(text, 0) == Some(65) && String::scalar_at(text, 1) == Some(128512))
-    assert(String::scalar_at(text, -1) == None && String::scalar_at(text, 2) == None)
+    assert(String::scalar_at(text, 0) == 65 && String::scalar_at(text, 1) == 128512)
     assert(String::scalars(text) == SCALARS)
     assert(String::from_scalars(SCALARS) == Some(text))
     assert(String::from_scalars([55296]) == None)
-    assert(Bytes::at(ENCODED, 1) == Some(240))
+    assert(ENCODED[1] == 240 && ENCODED?[99] == None)
     assert(Bytes::from_array(Bytes::to_array(ENCODED)) == Some(ENCODED))
     assert(Bytes::from_array([256]) == None)
 }
@@ -1364,7 +1367,7 @@ fn main() -> () {
         _ -> ""
     }
     assert(inner(Marker) == () && id1 == 1 && name1 == "anon" && id2 == 2 && name2 == "ada")
-    assert(mapped[0].id == 3 && mapped[1].name == "cat")
+    assert(len(mapped) == 2 && mapped[0].id == 3 && mapped[1].name == "cat")
     assert(p1 == p2 && px == 3 && py == 4 && raw_id == 7)
     assert(tag == "ok" && count == 5 && tok.code == 9 && matched == "ada")
 }

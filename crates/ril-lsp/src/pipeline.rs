@@ -732,43 +732,60 @@ fn format_pipe_signature(
     cand: &PipeCandidate,
 ) -> (Vec<ParamBrief>, String, String) {
     let def = typed.hir.definition(cand.def_id);
+    let ast_fun = ast_function_for(&typed.hir, cand.def_id);
     if let Some(callable) = typed.callables.get(&cand.def_id) {
         let remaining: Vec<ParamBrief> = callable
             .parameters
             .iter()
-            .skip(1)
             .enumerate()
+            .skip(1)
             .filter(|(_, p)| !p.optional)
             .map(|(i, p)| {
                 let spec_ty = p.ty.specialize(&cand.subst);
                 let mode_str = mode_prefix_str(p.mode);
-                let name = p.label.clone().unwrap_or_else(|| format!("arg{}", i + 2));
+                let name = p.label.clone().unwrap_or_else(|| format!("arg{}", i + 1));
                 let placeholder = if mode_str.is_empty() {
                     name.clone()
                 } else {
                     format!("{mode_str}{name}")
                 };
+                let mut display = format!("{mode_str}{name}: {}", spec_ty.display(&typed.hir));
+                if let Some((file, fun)) = ast_fun
+                    && let Some(ast_param) = fun.signature.params.get(i)
+                {
+                    append_guards_str(&mut display, file, &ast_param.guards);
+                }
                 ParamBrief {
                     snippet_placeholder: placeholder,
-                    display: format!("{mode_str}{name}: {}", spec_ty.display(&typed.hir)),
+                    display,
                 }
             })
             .collect();
         let ret_ty = callable.result.specialize(&cand.subst);
         let ret_mode = mode_prefix_str(callable.result_mode);
-        let ret_display = format!("{ret_mode}{}", ret_ty.display(&typed.hir));
-        let full_ty = Ty::Callable(callable.clone())
-            .display(&typed.hir)
-            .to_string();
-        let full_sig = full_ty.strip_prefix("fn").map_or_else(
-            || full_ty.clone(),
-            |rest| format!("fn {}{rest}", cand.call_path),
-        );
+        let mut ret_display = format!("{ret_mode}{}", ret_ty.display(&typed.hir));
+        if let Some((file, fun)) = ast_fun {
+            append_guards_str(&mut ret_display, file, &fun.signature.guards);
+        }
+        let full_sig = ril_driver::inspect::format_expanded_signature(typed, None, cand.def_id)
+            .map(|sig| {
+                sig.strip_prefix(&format!("fn {}", def.name.value))
+                    .map_or_else(|| sig.clone(), |rest| format!("fn {}{rest}", cand.call_path))
+            })
+            .unwrap_or_else(|| {
+                let full_ty = Ty::Callable(callable.clone())
+                    .display(&typed.hir)
+                    .to_string();
+                full_ty.strip_prefix("fn").map_or_else(
+                    || full_ty.clone(),
+                    |rest| format!("fn {}{rest}", cand.call_path),
+                )
+            });
         return (remaining, ret_display, full_sig);
     }
 
     // Fallback for bodyless primitives not in `typed.callables`: read AST signature directly.
-    if let Some((file, fun)) = ast_function_for(&typed.hir, cand.def_id) {
+    if let Some((file, fun)) = ast_fun {
         let remaining: Vec<ParamBrief> = fun
             .signature
             .params
@@ -788,13 +805,15 @@ fn format_pipe_signature(
                             .get(file.ast.ty(t).span.start..file.ast.ty(t).span.end)
                     })
                     .unwrap_or("_");
+                let mut display = format!("{mode_str}{name}: {ty_text}");
+                append_guards_str(&mut display, file, &p.guards);
                 ParamBrief {
                     snippet_placeholder: if mode_str.is_empty() {
                         name.clone()
                     } else {
                         format!("{mode_str}{name}")
                     },
-                    display: format!("{mode_str}{name}: {ty_text}"),
+                    display,
                 }
             })
             .collect();
@@ -803,7 +822,8 @@ fn format_pipe_signature(
             .source_text()
             .get(ret_span.start..ret_span.end)
             .unwrap_or("_");
-        let ret_display = format!("{}{ret_text}", mode_prefix_str(fun.signature.result_mode));
+        let mut ret_display = format!("{}{ret_text}", mode_prefix_str(fun.signature.result_mode));
+        append_guards_str(&mut ret_display, file, &fun.signature.guards);
         let stmt_span = def
             .stmt
             .map(|s| file.ast.stmt(s).span)
@@ -821,6 +841,23 @@ fn format_pipe_signature(
     }
 
     (Vec::new(), "_".into(), format!("fn {}", cand.call_path))
+}
+
+fn append_guards_str(
+    out: &mut String,
+    file: &ril_hir::File,
+    guards: &[ril_syntax::syntax::ExprId],
+) {
+    for &guard in guards {
+        let span = file.ast.expr(guard).span;
+        if let Some(raw) = file.source_text().get(span.start..span.end) {
+            let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !compact.is_empty() {
+                out.push_str(" |> ");
+                out.push_str(&compact);
+            }
+        }
+    }
 }
 
 fn mode_prefix_str(mode: Mode) -> &'static str {
@@ -1152,6 +1189,7 @@ pub(crate) fn callable_params_for_sig_help(
     def_id: DefinitionId,
 ) -> Option<(String, Vec<String>, String)> {
     let def = typed.hir.definition(def_id);
+    let ast_fun = ast_function_for(&typed.hir, def_id);
     if let Some(callable) = typed.callables.get(&def_id) {
         let params: Vec<String> = callable
             .parameters
@@ -1160,24 +1198,36 @@ pub(crate) fn callable_params_for_sig_help(
             .map(|(i, p)| {
                 let mode = mode_prefix_str(p.mode);
                 let name = p.label.clone().unwrap_or_else(|| format!("arg{}", i + 1));
-                format!("{mode}{name}: {}", p.ty.display(&typed.hir))
+                let mut s = format!("{mode}{name}: {}", p.ty.display(&typed.hir));
+                if let Some((file, fun)) = ast_fun
+                    && let Some(ast_param) = fun.signature.params.get(i)
+                {
+                    append_guards_str(&mut s, file, &ast_param.guards);
+                }
+                s
             })
             .collect();
-        let ret = format!(
+        let mut ret = format!(
             "{}{}",
             mode_prefix_str(callable.result_mode),
             callable.result.display(&typed.hir)
         );
-        let full = Ty::Callable(callable.clone())
-            .display(&typed.hir)
-            .to_string();
-        let label = full.strip_prefix("fn").map_or_else(
-            || full.clone(),
-            |rest| format!("fn {}{rest}", def.name.value),
-        );
+        if let Some((file, fun)) = ast_fun {
+            append_guards_str(&mut ret, file, &fun.signature.guards);
+        }
+        let label = ril_driver::inspect::format_expanded_signature(typed, None, def_id)
+            .unwrap_or_else(|| {
+                let full = Ty::Callable(callable.clone())
+                    .display(&typed.hir)
+                    .to_string();
+                full.strip_prefix("fn").map_or_else(
+                    || full.clone(),
+                    |rest| format!("fn {}{rest}", def.name.value),
+                )
+            });
         return Some((label, params, ret));
     }
-    let (file, fun) = ast_function_for(&typed.hir, def_id)?;
+    let (file, fun) = ast_fun?;
     let params: Vec<String> = fun
         .signature
         .params
@@ -1195,7 +1245,9 @@ pub(crate) fn callable_params_for_sig_help(
                         .get(file.ast.ty(t).span.start..file.ast.ty(t).span.end)
                 })
                 .unwrap_or("_");
-            format!("{mode}{name}: {ty_text}")
+            let mut s = format!("{mode}{name}: {ty_text}");
+            append_guards_str(&mut s, file, &p.guards);
+            s
         })
         .collect();
     let ret_span = file.ast.ty(fun.signature.result).span;
@@ -1203,7 +1255,8 @@ pub(crate) fn callable_params_for_sig_help(
         .source_text()
         .get(ret_span.start..ret_span.end)
         .unwrap_or("_");
-    let ret = format!("{}{ret_text}", mode_prefix_str(fun.signature.result_mode));
+    let mut ret = format!("{}{ret_text}", mode_prefix_str(fun.signature.result_mode));
+    append_guards_str(&mut ret, file, &fun.signature.guards);
     let label = format!("fn {}({}) -> {ret}", def.name.value, params.join(", "));
     Some((label, params, ret))
 }

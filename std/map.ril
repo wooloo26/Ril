@@ -23,10 +23,10 @@ pub fn contains<K, V>(via map: [K: via V], key: K) -> bool
 
 -- Returns a new array of all keys in `map` in insertion order.
 -- Supports maps holding must-consume values without copying or projecting entries.
-pub fn keys<K, V>(via map: [K: via V]) &return(map) -> new []K
+pub fn keys<K, V>(via map: [K: via V]) &return(map) -> new []K |> SameLen(map)
 
 -- Returns a new array of all values in `map` in insertion order.
-pub fn values<K, V>(via map: [K: V]) &return(map) -> new []V {
+pub fn values<K, V>(via map: [K: V]) &return(map) -> new []V |> SameLen(map) {
     let mut out: []V = []
     for map as (_, v) {
         Array::push(mut out, v)

@@ -357,9 +357,35 @@ impl Walk<'_> {
     }
 
     fn guard(&mut self, expression: ExprId) {
-        let previous = std::mem::replace(&mut self.exposure, Visibility::Private);
-        self.expr(expression);
-        self.exposure = previous;
+        let is_pascal_head = {
+            let mut node = self.ast.expr(expression);
+            if let Expr::Unary { op, value } = &node.value
+                && op.value == "ref"
+            {
+                node = self.ast.expr(*value);
+            }
+            if let Expr::Call { callee, .. } = &node.value {
+                node = self.ast.expr(*callee);
+            }
+            if let Expr::Path(path) = &node.value {
+                path.segments.last().is_some_and(|seg| {
+                    seg.name
+                        .value
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_uppercase())
+                })
+            } else {
+                false
+            }
+        };
+        if is_pascal_head {
+            self.expr(expression);
+        } else {
+            let previous = std::mem::replace(&mut self.exposure, Visibility::Private);
+            self.expr(expression);
+            self.exposure = previous;
+        }
     }
 
     fn generics(&mut self, parameters: &[GenericParam]) {

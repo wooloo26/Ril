@@ -33,14 +33,14 @@ eff Clock { fn now_ms() -> int }
 -- Access modes flow through generic calls ('via' / 'infer') and '&return(...)'.
 fn relay<T>(via x: T) -> infer T { let via y = x; y }
 fn bump(mut c: Cell) &mut -> () { c.count += 1 }
-fn share_in_list(^mut c: Cell) &^mut &return(^mut c) -> new [^mut]Cell { [^mut c] }
+fn share_in_list(^mut c: Cell) &^mut &return(^mut c) -> new [^mut]Cell |> HasLen(1) { [^mut c] }
 fn stamp(ref c: Cell) @Clock -> str { "{Clock::now_ms()}:{c.count}" }
 
 fn demo() -> str {
     let mut cell = Cell.{ count: 1 }           -- Unshared writable 'new'-qualified local
     bump(mut cell)                             -- Call-scoped write; explicit 'mut' marker
     let mut shared = share_in_list(^mut cell)  -- Unshared 'new' list holding shared '^mut' cell
-    shared[0].count += 1                       -- Updates 'cell.count' to 3
+    shared[0].count += 1                       -- Proved in-bounds by 'HasLen(1)'; updates 'cell.count' to 3
 
     let snap = clone(ref cell)                 -- Isolated deeply immutable snapshot
     let mut next = relay({
@@ -211,8 +211,11 @@ This specification defines static validity and observable abstract-machine behav
 ```ril
 let valid_unused = 1                   -- OK
 -- let bad_type: str = 1               -- Error [E0301]
--- let bad_div = 1 / 0                 -- Error [E0361]: constant zero divisor
-meta fn static_ratio(d: int) -> int { 1 / d }
+-- let bad_div = 1 / 0                 -- Error [E0361]: zero or unproved divisor
+meta fn static_ratio(d: int) -> int {
+    if d == 0 { panic("division by zero") }
+    1 / d                              -- Proved non-zero by preceding guard
+}
 -- meta let Q = static_ratio(0)        -- Error [E0831]: panic during static evaluation
 ```
 
@@ -250,19 +253,18 @@ fn connect_port(raw: str) -> new !<int, str> {
 ```
 
 1. **Fallible results (`!<T, E>` / `Result<T, E>` and `?T` / `Option<T>`)**: Expected domain failures are values. Every `Result` must be inspected, propagated via `?`, or handled via `??` (`E0720`).
-2. **Defects (`panic` / `assert`)**: Trigger deterministic LIFO unwinding of active `defer` statements without requiring signature annotations. `Panic::recover` (`use ril/panic`) isolates panics as `!<T, Panic::Error>`.
-3. **Purity**: A callable with no writable parameters (`mut`/`^mut`), empty outward effects, and empty outward state obligations after local containment is observationally pure (deterministic, free of host I/O and external mutation). Immutable return-source clauses (`&return(x)`) add no state effect. `never` denotes computations that never complete normally.
+2. **Defects (`panic` / `assert`)**: Trigger deterministic LIFO unwinding of active `defer` statements without requiring explicit source-level signature annotations. `Panic::recover` (`use ril/panic`) isolates panics as `!<T, Panic::Error>`. Panicking inside a `defer` body is statically rejected (`E0627`).
+3. **Purity & Implicit Behavioral Analysis**: A callable with no writable parameters (`mut`/`^mut`), empty outward effects, and empty outward state obligations after local containment is observationally pure (deterministic, free of host I/O and external mutation). Immutable return-source clauses (`&return(x)`) add no state effect. `never` denotes computations that never complete normally. Interprocedural static analysis tracks implicit `@panic` (reachable panics), `@abort` (unrecoverable resource/runtime aborts such as unbounded stack recursion, loop allocation, or huge shifts), and `@diverge` (potential non-termination via `while` loops, recursion, or indirect calls); these implicit facts are surfaced in tooling (`ril inspect`, LSP inlay hints and hover) and are not written in source signatures.
 
 ### Runtime Failure Conditions
 
 | Condition | Outcome |
 | :--- | :--- |
-| Non-constant integer `/ 0` or `% 0` | LIFO panic unwinding (`"division by zero"`) |
-| Non-constant bit shift `x << k` or `x >> k` with `k < 0` | LIFO panic unwinding (`"negative shift count"`) |
-| Out-of-bounds array/byte index `xs[i]` or slice `xs[a..b]` | LIFO panic unwinding |
-| `panic(msg)` or false `assert(cond)` | LIFO panic unwinding |
-| Panic inside `defer` during active panic unwinding | Uncatchable process **abort** (bypasses `Panic::recover`). A panic inside `defer` during normal exit or `unwind_ctl` is a normal catchable panic |
-| Unrecoverable execution-resource exhaustion (host memory or call depth) | Uncatchable process **abort** |
+| Integer `/` or `%` without static `b != 0` proof, or `<<`/`>>` without static `k >= 0` proof | Compile-time error `E0361` (prove via `NonZero` / `Nat` static proofs, `if`/`while`/`match` narrowing, or runtime guards) |
+| Array/bytes/slice `xs[i]`, `b[i]`, `xs[i] = v`, `s[a..b]`, `Array::{swap,insert,remove}`, or `String::scalar_at` without static bounds proof | Compile-time error `E0362` (prove via `InBounds`/`Between`/`HasLen`/`NonEmpty`, `if`/`while`/`for` narrowing, or use boundary `xs?[i]`/`b?[i]`/`s?[a..b]`/`Array::{first,last}`) |
+| `panic(msg)` or false `assert(cond)` | LIFO panic unwinding (`E0830`/`E0831` in static evaluation) |
+| Panicking operation or callee inside `defer` | Compile-time error `E0627` (statically eliminates `defer` double-panic abort) |
+| Unrecoverable execution-resource exhaustion (host memory, call depth, or huge shift allocation) | Uncatchable process **abort** (tracked as implicit `@abort`) |
 
 ---
 
@@ -840,7 +842,9 @@ assert(plain.count == 1 && live.count == 3 && fresh.count == 13)
 
 ```ril
 type Cell = .{ var v: int }
-fn first_val(via xs: [via]Cell) -> int { xs[0].v }
+fn first_val(via xs: [via]Cell) -> int {
+    if len(xs) > 0 { xs[0].v } else { 0 }
+}
 
 let snap: []Cell = [Cell.{ v: 1 }]
 let mut live: [mut]Cell = [Cell.{ v: 2 }]
@@ -1189,16 +1193,16 @@ meta fn build_lookup(scale: int) -> []int {
 }
 -- meta let BAD_FN = \x: int -> x      -- Error [E0816]: callable cannot escape 'meta let'
 
-fn sample(i: int) -> int {
+fn sample(i: int) -> new ?int {
     let table = meta build_lookup(10)      -- OK: compile-time evaluated immutable []int snapshot
     -- let bare = build_lookup(10)         -- Error [E0810]: calling 'meta fn' in runtime code requires 'meta'
     -- let mut bad = meta build_lookup(10) -- Error [E0520]: compile-time 'meta' strips 'new' qualification
     -- let fn_ref = build_lookup           -- Error [E0810]: 'meta fn' is not a runtime function value
-    table[i]
+    table?[i]
 }
-type SampleOut = typeof(sample(0))     -- int (unevaluated)
+type SampleOut = typeof(sample(0))     -- ?int (unevaluated)
 -- fn ghost(mut xs: []int) -> int { let _: typeof({ Array::push(mut xs, 1); 0 }) = 0; len(ref xs) } -- Error [E0527]
-assert(sample(1) == 20 && <SampleOut> == <int>)
+assert(sample(1) == Some(20) && <SampleOut> == <?int>)
 ```
 
 ### Semantic Interfaces and Diagnostic Boundaries
@@ -1443,6 +1447,7 @@ assert(run_with_cleanup(\-> ()) == ["body", "cleanup"])
 -- defer \-> close(mut conn)           -- Error [E0301]: 'defer' body must have type '()'
 -- defer { return 1 }                  -- Error [E0707]: control transfer cannot escape 'defer'
 -- defer Yield::emit(1)                -- Error [E0616]: unhandled 'ctl' prohibited inside 'defer'
+-- defer panic("fail")                 -- Error [E0627]: panicking operation prohibited inside 'defer'
 -- fn bad_loop(k: ctl() -> int) -> () { for 0..2 as _ { defer unwind_ctl(k) } } -- Error [E0549]: outer linear 'k' in loop
 -- fn missing_io() -> () { let mut c = DbConn::(.{ open: true, log: [] }); defer close(mut c) } -- Error [E0612]
 ```
@@ -1451,9 +1456,9 @@ assert(run_with_cleanup(\-> ()) == ["body", "cleanup"])
 | :--- | :--- |
 | Syntax & type (`E0120`, `E0301`, `E0720`) | Statement only (not an expression); body checks against `()` and must inspect any `Result`. Nested `defer { ...; defer ... }` runs inner `defer`s LIFO when the outer `defer` finishes |
 | Registration & evaluation | Flow-sensitively armed when reached (early exits before `defer` skip it); evaluated lazily at exit (observing final `var` values) **after** any block/return/`?` result expression |
-| Control flow & effects (`E0707`, `E0616`, `E0612`) | Forbids outer `return`/`?`/`break`/`continue` (`E0707`) and unhandled `ctl` (`E0616`; locally handled `with { ctl ... }` is allowed). Synchronous `@io`, `fn` ops, and `unwind_ctl(k)` are charged at the `defer` site (`E0612`); invoking an open `@` callback constrains it to `no_ctl` (`E0616`) |
+| Control flow, effects & panic ban (`E0707`, `E0616`, `E0612`, `E0627`) | Forbids outer `return`/`?`/`break`/`continue` (`E0707`), unhandled `ctl` (`E0616`; locally handled `with { ctl ... }` is allowed), and any operation or callee with implicit `@panic` (`E0627: DeferPanicProhibitedError`, statically preventing double-panic abort). Synchronous `@io`, `fn` ops, and `unwind_ctl(k)` are charged at the `defer` site (`E0612`); invoking an open `@` callback constrains it to `no_ctl` (`E0616`) |
 | Provenance & LIFO checking (`E0549`, `E0535`, `E0532`, `E0604`, `E0527`) | Checked in reverse (LIFO) order at every exit edge. Does not lock sequential `ref`/`mut` uses in the body; `defer close(mut conn)` satisfies `E0527`. Once armed, the body and later `defer`s cannot consume a linear `ctl(...)` reserved by `defer` (`E0549`), freeze (`E0535`), escape (`E0604`), share via `^mut` (`E0510`/`E0604`), or reassign a `var mut` slot (`E0532`) |
-| Unwinding & `with` stacking | Shares one block LIFO stack with statement `with` (`with` above `defer` covers it). Runs once per reached registration on normal exit, `return`, `break`, `continue`, `?`, panic unwinding, and `unwind_ctl`. A panic inside `defer` during normal exit or `unwind_ctl` is catchable; during active panic unwinding it triggers uncatchable **abort** |
+| Unwinding & `with` stacking | Shares one block LIFO stack with statement `with` (`with` above `defer` covers it). Runs once per reached registration on normal exit, `return`, `break`, `continue`, `?`, panic unwinding, and `unwind_ctl`. Because `E0627` bans panicking `defer` bodies, cleanup cannot trigger a double-panic abort |
 
 ```ebnf
 DeferStatement ::= "defer" ( Block | Expression )
@@ -1598,24 +1603,27 @@ Ril operators are strictly typed with no implicit numeric or string coercions:
 ```ril
 assert(7 / 3 == 2 && -7 / 3 == -2 && -7 % 3 == -1)
 assert((~0 == -1) && ((-8 >> 2) == -2) && ((1 << 100) > 0))
+fn safe_div_shift(a: int, d |> NonZero, k |> Nat) -> int { (a / d) >> k }
+assert(safe_div_shift(40, 5, 1) == 4)
 ```
 
 ```ril
 -- Rejected operator uses:
 -- let bad_str_add = "a" + "b"          -- Error [E0327]: '+' is numeric only; write '"{a}{b}"'
--- let bad_div = 10 / 0                 -- Error [E0361]: constant zero divisor
--- let bad_shl = 1 << -3                -- Error [E0361]: constant negative shift count
+-- let bad_div = 10 / 0                 -- Error [E0361]: zero or unproved divisor
+-- fn bad_dyn_div(a: int, b: int) -> int { a / b } -- Error [E0361]: divisor not proved non-zero
+-- let bad_shl = 1 << -3                -- Error [E0361]: negative or unproved shift count
 -- let bad_bit = true & false           -- Error [E0327]: bitwise '&' requires 'int'
 ```
 
 - **Arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`)**:
   - Defined exclusively on `(int, int) -> int` and `(f64, f64) -> f64` (`E0327` on `str`, `bytes`, or `bool`; strings combine via interpolation `"{a}{b}"`).
   - Integer `/` truncates toward zero and `%` satisfies `(a / b) * b + (a % b) == a`.
-  - Syntactic literal `0` divisors fail `E0361` at check time; non-literal `/ 0` or `% 0` panics (`E0831` in static evaluation; `Numeric::div` / `Numeric::rem` return `?int`).
-  - Explicit numeric conversions use `Numeric::to_f64(n: int) -> f64`, `Numeric::to_int_exact(x: f64) -> new ?int` (exact integral conversion; `None` if fractional, NaN, or infinite), and `Numeric::to_int_trunc(x: f64) -> new ?int` (truncates finite `f64` toward zero; `None` if NaN or infinite).
+  - Integer `/` and `%` require a static proof that the divisor is non-zero (`E0361: DivisionOrShiftDomainError` otherwise), satisfied by non-zero literals/`meta let` constants, static proof Type Functions (`d |> NonZero`, `d |> Positive`), `if`/`while`/`match` narrowing (`d != 0`, `d > 0`, `d < 0`), or runtime signature guards.
+  - Explicit numeric conversions and proved integer helpers live in `Numeric`: `Numeric::to_f64(n: int) -> f64`, `Numeric::to_int_exact(x: f64) -> new ?int`, `Numeric::to_int_trunc(x: f64) -> new ?int`, `Numeric::abs(x: int) -> int |> Nat`, `Numeric::min(a: int, b: int) -> int |> AtMost(a) |> AtMost(b)`, `Numeric::max(a: int, b: int) -> int |> AtLeast(a) |> AtLeast(b)`, and `Numeric::clamp(x: int, lo: int, hi: int |> AtLeast(lo)) -> int |> Between(lo, hi)`. (`ril/math` provides `PI`, `EULER`, and `f64`-specialized `abs`/`min`/`max`/`clamp`.)
 - **Bitwise & Shifts (`~`, `&`, `|`, `^`, `<<`, `>>`)**:
   - Defined exclusively on `int` (`E0327` elsewhere) with infinite-width two's-complement semantics (`~x == -x - 1`, `x >> k` arithmetic floor shift).
-  - Syntactic negative literal shift counts (`-k`) fail `E0361`; non-literal `k < 0` panics (`E0831` in static evaluation).
+  - Bit shifts `<<` and `>>` require a static proof that the shift count is non-negative (`k >= 0`, `E0361` otherwise), satisfied by non-negative literals/`meta let` constants, `k |> Nat`, `len(...)`, `Numeric::abs(...)`, or narrowing guards.
 - **Equality & Ordering (`==`, `!=`, `<`, `<=`, `>`, `>=`)**:
   - `==` / `!=` require same-type operands (`E0301`, `E0305` on distinct nominals) recursively excluding callables, `ctl(...)` continuations, and `Derived<T>` (`E0327`). Structural equality over cyclic shared-object graphs is coinductive and terminates.
   - `f64` follows IEEE-754 (`NaN != NaN`, `-0.0 == 0.0`); `?T == None` / `!= None` tests the option tag even when `T` lacks equality.
@@ -1648,8 +1656,8 @@ cells |> mut Array::push(Cell.{ v: 2 }) -- OK: 'elem' last use has ended
 -- let ref elem = cells[0]; cells |> mut Array::push(Cell.{ v: 2 }); assert(elem.v == 1) -- Error [E0537]
 ```
 
-- **Arrays `[M]T`**: Accept `int` element indices (`xs[i]` panics out of bounds; `xs?[i] -> ?T` returns `None`). Single-element bracket indexing on `str` or `bytes` fails `E0352` (use `String::scalar_at` / `Bytes::at`); dynamic bracket indexing on records fails `E0324`.
-- **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
+- **Arrays `[M]T`, `bytes`, and Proof-by-Narrowing (`E0362`)**: Direct indexing `xs[i]` / `b[i]`, indexed assignment `xs[i] = v`, `Array::swap(mut xs, i, j)`, `Array::remove(mut xs, i)`, `String::scalar_at(text, i)`, and `Array::insert(mut xs, i, v)` require a static bounds proof (`0 <= i < len(xs)` via `InBounds(xs)`, or `0 <= i <= len(xs)` via `Between(0, len(xs))` for `Array::insert`; `E0362: UnprovedBoundsError` otherwise). Boundary-checked alternatives require no proof: `xs?[i] -> ?T`, `b?[i] -> ?int`, `Array::first`, `Array::last`, `Array::pop`, and `Array::pop_front`. Single-element bracket indexing on `str` fails `E0352` (use `String::scalar_at` with an `InBounds` proof); dynamic bracket indexing on records fails `E0324`.
+- **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Direct slicing `s[a..b]` requires static local bounds proof (`0 <= a <= b <= len(s)`, `E0362` otherwise); safe slicing `s?[a..b]` returns `?T`. Slicing produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
 - **Maps `[K: M V]`**: Reads require safe lookup `m?[k] -> ?V` (`E0352` on `m[k]` reads or `m[k] += v`); direct slot assignment `m[k] = v` inserts or updates key `k`.
 - **Container Element Holds (`E0537`, `E0526`)**: On live `[M]T` and `[K: M V]` containers, `xs[i]`, `xs?[i]`, and `m?[k]` establish scoped element holds bounded by the container; mutating or resizing the container while a `ref`/`mut` hold is active or during `for` iteration fails `E0537` / `E0526`.
 - **Tuple & static field projection (`t.0`, `r.(key)`)**: `t.0` projects tuple elements (`E0312` out of bounds; `E0337` on sums, records, collections, or primitives). `r.(key)` projects an accessible record field or tuple slot using a compile-time `meta` key validated by `KeyOf<T>`.
@@ -1672,8 +1680,8 @@ assert(String::decode_utf8(bytes"\xC0\xAF") == None)
 - **`String::inspect<T>(via value: T) -> str`**: Pure dual-phase diagnostic formatter accepting plain values/snapshots or `ref` shared-object views (`E0401` on `ref` value types; `mut`/`^mut`/`new` markers rejected).
   - Formats primitives, escaped `str`/`bytes` literals, tuples, collections (`Set([...])` for `Set<T>`, deterministic insertion order for maps and sets), transparent records/sums, and accessible `.ril` nominals / in-scope `opaque` wrappers transparently as their underlying representation (rendering runtime reference cycles as `"..."`).
   - Formats sealed `opaque` types outside their defining scope, callables, `ctl(...)` continuations, and `Derived<T>` handles as `"<TypeName>"` (or `"<fn>"` / `"<ctl>"`).
-- **String helpers**: `String::join(via parts: []str, separator: str) -> str` joins parts in array order and returns an empty string for an empty array. `String::starts_with(text: str, prefix: str) -> bool`, `String::ends_with(text: str, suffix: str) -> bool`, `String::scalar_at(text: str, index: int) -> new ?int`, `String::scalars(text: str) -> new []int`, `String::from_scalars(via values: []int) -> new ?str`.
-- **UTF-8 & Bytes helpers**: `String::encode_utf8(text: str) -> bytes`, `String::decode_utf8(data: bytes) -> new ?str` (`None` on ill-formed UTF-8), `Bytes::at(data: bytes, index: int) -> new ?int`, `Bytes::to_array(data: bytes) -> new []int`, `Bytes::from_array(via values: []int) -> new ?bytes` (`None` outside `0..=255`).
+- **String helpers**: `String::join(via parts: []str, separator: str) -> str` joins parts in array order and returns an empty string for an empty array. `String::split(text: str, separator: str) -> new []str |> NonEmpty`, `String::starts_with(text: str, prefix: str) -> bool`, `String::ends_with(text: str, suffix: str) -> bool`, `String::scalar_at(text: str, index: int |> InBounds(text)) -> int`, `String::scalars(text: str) -> new []int |> SameLen(text)`, `String::from_scalars(via values: []int) -> new ?str`.
+- **UTF-8 & Bytes helpers**: `String::encode_utf8(text: str) -> bytes`, `String::decode_utf8(data: bytes) -> new ?str` (`None` on ill-formed UTF-8), `Bytes::to_array(data: bytes) -> new []int |> SameLen(data)`, `Bytes::from_array(via values: []int) -> new ?bytes` (`None` outside `0..=255`). Direct byte reads use proved `b[i] -> int` (`E0362`) or boundary `b?[i] -> ?int`.
 
 ### Pipeline and Fallible Operators
 
@@ -2000,6 +2008,7 @@ fn check_narrowing(mut cell: Cell, via hook: fn() & -> (), eff_cb: fn() @ -> (),
 - **Contradictory test (`E0311`)**: Testing `== None` or `!= None` when disjoint from the active optional state of a single-layer `?T` fails `E0311: ContradictoryNarrowingError` (nested `??T` unwraps one layer at a time).
 - **Write invalidation (`E0310`)**: Immutable `let` paths through immutable fields narrow without depth limit. Reassigning `var`, writing an overlapping mutable path, or calling an `@Eff` whose enclosing `with` arm writes that path invalidates the narrowing (`E0310: InvalidatedNarrowingAccessError`).
 - **Unknown alias / handler hazard (`E0533`)**: Across an open-state (`&`, `@&`), open-effect (`@`), or unhandled `@Eff` / `ctl` call—or a `^mut` write not proved disjoint from a live path (`ref` does not prove independence; `clone` into `let` does)—reading the prior live narrowing fails `E0533: AliasedNarrowingHazardError`. An uncaptured local `var x: ?T` preserves its narrowing across one-shot `ctl` suspension, whereas captured `var` and live `mut`/`ref`/`^mut` paths invalidate (`E0310` / `E0533`).
+- **DBM value & bounds prover (`E0361`, `E0362`, `E0323`)**: The flow-sensitive narrowing engine maintains a decidable Difference-Bound Matrix (DBM) over `int` values, nested field paths (`s.rows`), and collection/string/bytes lengths (`len(xs) >= 0`), augmented with canonical disequality propagation (`a - b != k`), $O(1)$ integer arithmetic lemmas (convex midpoints `lo + (hi - lo) / k` and `(lo + hi) / 2`, non-negative modulo `a % b`, sliding-window `a + b <= c`), `match` arm/guard narrowing with fallthrough negation, and a pure read-only Cousot-Cousot widening fixpoint for `while`/`for` loops. It discharges `/`, `%`, `<<`, `>>` (`E0361`), `xs[i]`, `b[i]`, `xs[i] = v`, `s[a..b]`, `Array::{swap,insert,remove}`, `String::scalar_at` (`E0362`), and user-defined Type-Function static proofs (`E0323`). Built-in length transfer tracks exact `+1` (`Array::push`/`insert`), length preservation (`Array::swap`/`sort`, `xs[i] = v`, `clone`, `inner`), `-1` / `<= old` (`Array::pop`/`pop_front`/`remove`), and `== 0` (`Array::clear`); all other writes, container-resizing calls, active `defer` mutations before exit, and open-state/open-effect calls soundly invalidate affected facts (while preserving uncaptured confined `let mut` / value `var` locals).
 
 ---
 
@@ -2045,7 +2054,10 @@ where
 
 #### Signature Guards
 
-`SignatureGuard` (`|> [ref] guard(args)`) attaches pure fallible entry and exit guards to `RegularParam` and declaration `ReturnSpec` (`FunctionDecl`, `MetaFnDecl`):
+`SignatureGuard` (`|> [ref] guard(args)`) unifies two lexically distinct forms on `RegularParam` and declaration `ReturnSpec` (`FunctionDecl`, `MetaFnDecl`):
+
+- **Type-Function Static Proofs (`|> PascalCase`, zero runtime cost)**: When `guard` resolves to a Type Function returning `<()>` (accept) or `<never>` (reject) (`E0306` otherwise), the check is erased completely in MIR/codegen and verified statically at call sites (parameters, `E0323` or `E0362` on bounds intrinsics) and function exits (returns, after applying active `defer` mutations, `E0323`). Leading generic type parameters of the Type Function are deduced automatically from the subject and arguments (e.g., `i |> InBounds(xs)`, `-> new []U |> SameLen(xs)`), and static proof arguments admit pure `len(x)`, field paths, and linear `±` (e.g., `Between(0, len(xs))`). All-constant call sites run the full static evaluator; symbolic runtime arguments are lowered to NNF difference logic and discharged by the DBM prover (`E0306` if outside the decidable fragment). On `?T` / `!<T, E>` returns, a static proof whose subject matches `T` applies to `Some(v)` / `Ok(v)` payloads and propagates on `?` / `if let` / `match`. Functions with static parameter proofs cannot decay to first-class `CallableType` values (`E0534`; return-only proofs may decay), anonymous closures forbid static proofs (`E0534`), public signatures cannot leak private proof Type Functions (`E0910`), and `.rili` interfaces verify contravariant parameter / covariant return proof compatibility (`E0552`).
+- **Runtime Signature Guards (`|> snake_case`)**: When `guard` resolves to an ordinary pure fallible `fn`, it executes at runtime on entry/exit and returns `Err` / `None` on failure:
 
 ```ril
 pub type Span = .{ lo: int, hi: int }
@@ -2219,16 +2231,20 @@ type Node = .{ var val: int }
 fn pick_ref(cond: bool, ref a: Node, ref b: Node) -> ref(a | b) Node {
     if cond { a } else { b }
 }
-fn make_nodes() -> new []Node { [Node.{ val: 1 }, Node.{ val: 2 }] }
-fn make_staged() -> new []Node {
+fn make_nodes() -> new []Node |> HasLen(2) { [Node.{ val: 1 }, Node.{ val: 2 }] }
+fn make_staged() -> new []Node |> HasLen(2) {
     let mut xs: []Node = [Node.{ val: 1 }]
     Array::push(mut xs, Node.{ val: 2 })
     xs
 }
 fn edit_factory(factory: fn() -> new []Node) -> int {
     let mut xs: [mut]Node = factory()         -- OK: 'new' qualification survives callable storage
-    xs[0].val += 1
-    xs[0].val
+    if len(ref xs) > 0 {
+        xs[0].val += 1
+        xs[0].val
+    } else {
+        0
+    }
 }
 
 fn test_returns() -> () {
@@ -2247,11 +2263,12 @@ test_returns()
 ```ril
 type Cell = .{ var value: int }
 type Shelf = .{ mut rows: [^mut]Cell }
+type HasRows = \s: Shelf -> if len(s.rows) > 0 { <()> } else { <never> }
 
-fn shared_shelf(^mut cell: Cell) &^mut &return(^mut cell) -> new Shelf {
+fn shared_shelf(^mut cell: Cell) &^mut &return(^mut cell) -> new Shelf |> HasRows {
     Shelf.{ rows: [^mut cell] }
 }
-fn wrap_snapshot(cell: Cell) &return(cell) -> new []Cell { [cell] }
+fn wrap_snapshot(cell: Cell) &return(cell) -> new []Cell |> HasLen(1) { [cell] }
 fn wrap_view(ref cell: Cell) &return(ref cell) -> new [ref]Cell { [cell] }
 fn wrap_option(cell: Cell) &return(cell) -> new ?Cell { Some(cell) }
 fn id_new(new xs: []Cell) -> new []Cell { xs }
@@ -2463,7 +2480,7 @@ fn reset_node(new c: Node) -> int {
     c.val
 }
 fn bump_shelf(new s: .{ mut rows: [^mut]Node }) &mut -> () {
-    s.rows[0].val += 1                     -- OK: mutates caller-surviving '^mut' constituent
+    if len(ref s.rows) > 0 { s.rows[0].val += 1 } -- OK: mutates caller-surviving '^mut' constituent
 }
 assert(reset_node(Node.{ val: 9 }) == 0)
 -- fn excess_new(new c: Node) &mut -> int { c.val = 0; c.val } -- Error [E0529]
@@ -2540,14 +2557,18 @@ fn swap_add(mut a: Box, mut b: Box) &mut -> () { a.n += b.n; b.n += 1 }
 fn observe_mut(mut a: Box, ref b: Box) &mut -> int { a.n += 1; b.n }
 fn bump(mut a: Box) &mut -> () { a.n += 1 }
 fn bump_eff(mut a: Box) @Tick &mut -> () { Tick::step(); a.n += 1 }
-fn pair_shared(^mut a: Box, ^mut b: Box) &mut &^mut &return(^mut a, ^mut b) -> new [^mut]Box {
+fn pair_shared(^mut a: Box, ^mut b: Box) &mut &^mut &return(^mut a, ^mut b) -> new [^mut]Box |> HasLen(2) {
     bump(mut a)                            -- OK: nested 'mut' call has no overlapping live participants
     [^mut a, ^mut b]
 }
 fn take_shared(mut a: Box, new xs: [^mut]Box) &mut -> int {
     a.n += 1
-    xs[0].n += a.n
-    xs[0].n
+    if len(ref xs) > 0 {
+        xs[0].n += a.n
+        xs[0].n
+    } else {
+        a.n
+    }
 }
 
 fn test_exclusivity() -> () {
@@ -2817,7 +2838,9 @@ pub fn message(report: Report) -> str
 ```ril
 use ril/panic
 
-fn parse_header(parts: []str) -> str { parts[1] }
+fn parse_header(parts: []str) -> str {
+    parts?[1] ?? panic("missing header value")
+}
 
 fn isolated_parse(parts: []str) -> new !<str, Panic::Error> {
     Panic::recover \-> parse_header(parts)
@@ -2836,7 +2859,7 @@ test_recover_panic()
 
 - **Panic boundary (`E0608`)**: `action` must not observe or mutate outer `var`/`mut`/`^mut`/`ref` state, capture outer `ctl(...)` continuations, emit unhandled effects, invoke any outer `ctl` handler or stateful outer `fn` handler, or leak mutable captures. Confined local state, local `with` handlers, and stateless outer `fn` handlers are allowed.
 - **Sealed `Panic::Report` (`E0301`, `E0308`, `E0810`)**: Direct construction fails `E0301`, representation access fails `E0308`, and `Panic::message(info)` is runtime-only (`E0810` in static evaluation).
-- **Double panic**: A panic inside `defer` while unwinding an earlier panic triggers uncatchable **abort**.
+- **Double panic**: Statically eliminated for user `defer` bodies by `E0627: DeferPanicProhibitedError` (panicking operations or callees are prohibited inside `defer`).
 
 ---
 
@@ -2949,7 +2972,7 @@ type Model = .{ id: int, var title: str, mut rows: []int }
 type Patch = Select<Model, ["title", "rows"]> -- .{ var title: str, mut rows: []int }
 type Args(.{ query: str, limit: int = 10 })
 meta let _ = assert(Reflect::has_default(<Args>, "limit") && !Reflect::has_default(<Args>, "query"))
-meta let _ = assert(len(Reflect::fields(<Args>)) == 2 && Reflect::fields(<(int, str)>)[0] == (FieldMode::Let, 0))
+meta let _ = assert(len(Reflect::fields(<Args>)) == 2 && Reflect::fields(<(int, str)>)?[0] == Some((FieldMode::Let, 0)))
 
 fn read_field<T: .{ .. }>(via rec: T, meta key: str |> KeyOf<T>) -> infer T.(key) {
     rec.(key)
@@ -3163,15 +3186,15 @@ fn main() @io -> new !<(), str> {
 
 The implicit prelude encloses every compilation unit and inline `sub`:
 - **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `FieldMode`, `Derived<T>`, and `@io`.
-- **Static checks, patterns & type helpers**: `SharedObject`, `LenTarget`, `InnerTarget`, `Inner`, `KeyOf`, and the static-only type pattern `Nominal<pat>`.
-- **Core modules**: `Array` (including destructive extractors `Array::pop`, `Array::pop_front`, `Array::remove` returning `new ?T`), `Map` (including destructive extractors `Map::replace`, `Map::remove` returning `new ?V`, `Map::pop_entry` returning `new ?(K, V)`, plus linear-safe `Map::contains` and `Map::keys`), `Set`, `String`, `Bytes`, `Numeric`, and `Reflect` (providing `TypeKind`, `FieldKey`, `type_name`, `type_kind`, `fields`, `sum_tags`, `attrs`, `field_attrs`, `variant_attrs`, `has_default`).
+- **Static checks, proofs, patterns & type helpers**: `SharedObject`, `LenTarget`, `InnerTarget`, `Inner`, `KeyOf`, the static-only type pattern `Nominal<pat>`, and 10 orthogonal static proof Type Functions: `NonZero`, `Nat`, `Positive`, `AtLeast`, `AtMost`, `Between`, `NonEmpty`, `HasLen`, `SameLen`, and `InBounds`.
+- **Core modules**: `Array` (including boundary accessors `Array::first`, `Array::last`, proved mutators/extractors `Array::swap`, `Array::insert`, `Array::remove`, `Array::repeat`, `Array::map`, and destructive extractors `Array::pop`, `Array::pop_front` returning `new ?T`), `Map` (including destructive extractors `Map::replace`, `Map::remove` returning `new ?V`, `Map::pop_entry` returning `new ?(K, V)`, plus linear-safe `Map::contains`, `Map::keys`, and `Map::values`), `Set`, `String`, `Bytes`, `Numeric` (`to_f64`, `to_int_trunc`, `to_int_exact`, and proved `int` `abs`/`min`/`max`/`clamp`), and `Reflect` (providing `TypeKind`, `FieldKey`, `type_name`, `type_kind`, `fields`, `sum_tags`, `attrs`, `field_attrs`, `variant_attrs`, `has_default`).
 - **Explicit standard imports**: `use ril/panic`, `use ril/io`, `use ril/file`, `use ril/platform`, and `use ril/math`.
 
 #### Built-in Foundational Operations
 
 | Built-in | Canonical signature | Phase & specification |
 | :--- | :--- | :--- |
-| `len` | `pub fn len<T \|> LenTarget>(via item: T) -> int` | Dual-phase: scalar count of `str`, byte count of `bytes`, element/entry count of `[]T`, `[K: V]`, `Set<T>` (and `Derived` wrappers thereof; admits `ref` on collections at runtime; `E0401` on `ref str`) |
+| `len` | `pub fn len<T \|> LenTarget>(via item: T) -> int \|> Nat` | Dual-phase: scalar count of `str`, byte count of `bytes`, element/entry count of `[]T`, `[K: V]`, `Set<T>` (and `Derived` wrappers thereof; admits `ref` on collections at runtime; `E0401` on `ref str`) |
 | `inner` | `pub fn inner<W \|> InnerTarget>(via wrapper: W) -> infer Inner<W>` | Dual-phase: unwraps accessible nominal wrapper (or `Derived<W>`, lifting `InnerTarget`/`Inner`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Derived<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0308` on sealed `opaque`, `E0301` on non-nominals) |
 | `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `ctl(...)` or `Derived` handles, `E0530` on live callable environments) |
 | `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> ()) -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`) |
@@ -3185,7 +3208,7 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | `compile_error` | `pub meta fn compile_error(message: str) -> never` | Static only: emits compile-time diagnostic `E0832` with `message`, anchored at the enclosing type/meta instantiation site |
 | `panic` | `pub fn panic(message: str) -> never` | Dual-phase: LIFO panic unwinding at runtime; `E0831` in static eval |
 | `assert` | `pub fn assert(condition: bool, message: str = "assertion failed") -> ()` | Dual-phase: panics with `message` when `false` at runtime; `E0830` when `false` in static eval |
-| `Io::print` / `Io::println` (`ril/io`) | `pub fn print(text: str) @io -> ()`<br>`pub fn println(text: str) @io -> ()` | Runtime (`@io`): writes UTF-8 text (plus `\n` for `println`) to stdout; requires explicit `use ril/io` (not exported by prelude) |
+| `Io::print` / `Io::println` (`ril/io`) | `pub fn print(text: str) @io -> ()`<br>`pub fn println(text: str) @io -> ()` | Runtime (`@io`): best-effort non-panicking UTF-8 writes to stdout (safe inside `defer`); requires explicit `use ril/io` (not exported by prelude) |
 
 ### Mandatory Inspection of Fallible Results
 
@@ -3369,6 +3392,7 @@ fn scoped_linear_demo() -> new !<str, str> {
 | **`E0359`** | [`InvalidFieldDefaultPlacementError`](#record-types-and-open-record-tails) |
 | **`E0360`** | [`UnfinishedExpressionHoleError`](#expression-grammar-and-precedence) |
 | **`E0361`** | [`DivisionOrShiftDomainError`](#arithmetic-bitwise-relational-and-logical-operators) |
+| **`E0362`** | [`UnprovedBoundsError`](#indexing-slicing-and-static-field-projection) |
 
 ### Parameters, Argument Modes, and Defaults
 
@@ -3441,6 +3465,7 @@ fn scoped_linear_demo() -> new !<str, str> {
 | **`E0623`** | [`EffectOperationKindMismatchError`](#effect-declarations-and-handlers) |
 | **`E0625`** | [`UnconsumedLinearValueError`](#mandatory-inspection-of-fallible-results); [Effect Declarations and Handlers](#effect-declarations-and-handlers) |
 | **`E0626`** | [`UnusedEffectError`](#effect-declarations-and-handlers) |
+| **`E0627`** | [`DeferPanicProhibitedError`](#deferred-cleanup-statements-defer) |
 
 ### Declaration Contexts, Control Flow, and Fallible Values
 

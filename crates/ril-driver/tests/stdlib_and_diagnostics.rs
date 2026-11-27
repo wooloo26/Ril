@@ -46,10 +46,10 @@ fn self_hosted_stdlib_combinators_execute_under_gc_stress() -> Result<(), String
     let source = r#"
         use ril/io
         fn main() @io -> () {
-            assert(Numeric::div(42, 6) == Some(7))
-            assert(Numeric::div(42, 0) == None)
-            assert(Numeric::rem(43, 6) == Some(1))
-            assert(Numeric::rem(43, 0) == None)
+            assert(Numeric::abs(-42) == 42)
+            assert(Numeric::min(42, 6) == 6)
+            assert(Numeric::max(42, 6) == 42)
+            assert(Numeric::clamp(43, 0, 40) == 40)
 
             let xs = [10, 20, 30, 40]
             assert(xs?[2] == Some(30))
@@ -240,11 +240,11 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
             assert(len(Platform::ARCH) > 0)
             assert(Platform::HAS_OPENAT || !Platform::HAS_OPENAT)
 
-            assert(Math::abs(-9) == 9)
+            assert(Numeric::abs(-9) == 9)
             assert(Math::abs(-2.5) == 2.5)
-            assert(Math::min(3, 7) == 3)
-            assert(Math::max(3, 7) == 7)
-            assert(Math::clamp(15, 0, 10) == 10)
+            assert(Numeric::min(3, 7) == 3 && Math::min(3.0, 7.0) == 3.0)
+            assert(Numeric::max(3, 7) == 7 && Math::max(3.0, 7.0) == 7.0)
+            assert(Numeric::clamp(15, 0, 10) == 10 && Math::clamp(15.0, 0.0, 10.0) == 10.0)
             assert(Math::PI > 3.14 && Math::EULER > 2.71)
             assert(len(String::encode_utf8("ab")) == 2)
             let _ = check_set_sig
@@ -288,7 +288,7 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             assert(xs == [10, 20, 30])
             Array::insert(mut xs, 1, 15)
             assert(xs == [10, 15, 20, 30])
-            assert(Array::remove(mut xs, 2) == Some(20))
+            assert(Array::remove(mut xs, 2) == 20)
             assert(Array::pop(mut xs) == Some(30))
             assert(len(ref xs) == 2)
             Array::clear(mut xs)
@@ -417,7 +417,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
         fn break_from_let_else(xs: []?int) -> int {
             var i = 0
             while true {
-                let Some(v) = xs[i] else { break }
+                let Some(Some(v)) = xs?[i] else { break }
                 i += 1
                 let _ = v
             }
@@ -427,7 +427,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
         fn main() @io -> () {
             -- Nominal wrap inside closure
             let ids = Array::map([1, 2, 3], \x -> UserId::(x))
-            assert(inner(ids[0]) == 1 && inner(ids[2]) == 3)
+            assert(len(ids) == 3 && inner(ids[0]) == 1 && inner(ids[2]) == 3)
 
             -- Prelude static checks & helpers
             assert(inner(inner_only(UserId::(4))) == 4)
@@ -456,7 +456,7 @@ fn wave_c_soundness_static_checks_narrowing_patterns_and_nominals() -> Result<()
 
     for (src, code) in [
         ("fn main() -> () { let _ = \"abc\"[0] }\n", Code::E0352),
-        ("fn main() -> () { let _ = bytes\"abc\"[0] }\n", Code::E0352),
+        ("fn main() -> () { let _ = bytes\"abc\"[5] }\n", Code::E0362),
         (
             "fn main() -> () { for \"abc\" as c { let _ = c } }\n",
             Code::E0355,

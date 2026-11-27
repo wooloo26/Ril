@@ -41,6 +41,6 @@ pub fn clear<T>(mut set: Set<T>) &mut -> () {
 }
 
 -- Returns a new array containing all elements of `set` in insertion order.
-pub fn to_array<T>(via set: Set<T>) &return(set) -> new []T {
+pub fn to_array<T>(via set: Set<T>) &return(set) -> new []T |> SameLen(set) {
     Map::keys(inner(set))
 }

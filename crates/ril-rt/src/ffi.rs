@@ -210,8 +210,11 @@ runtime_functions! {
         rt.checked(test)
     }
     fn ril_rt_str_at(rt, value: Value, index: Value) -> Value {
-        let item = text::str_at(&rt.gc, value, index).map(|item| rt.gc.int_i64(i64::from(item)));
-        text::option(&mut rt.gc, item)
+        let Some(item) = text::str_at(&rt.gc, value, index) else {
+            rt.raise("index out of bounds");
+            return Value::UNIT;
+        };
+        rt.gc.int_i64(i64::from(item))
     }
     fn ril_rt_str_scalars(rt, value: Value) -> Value {
         let codes: Vec<i64> = match rt.gc.object(value) {
@@ -224,10 +227,6 @@ runtime_functions! {
         };
         let items: Vec<Value> = codes.into_iter().map(|code| rt.gc.int_i64(code)).collect();
         rt.gc.alloc(Object::Array(items))
-    }
-    fn ril_rt_bytes_at(rt, value: Value, index: Value) -> Value {
-        let item = text::byte_at(&rt.gc, value, index).map(|item| rt.gc.int_i64(i64::from(item)));
-        text::option(&mut rt.gc, item)
     }
     fn ril_rt_str_from_scalars(rt, values: Value) -> Value {
         let result = text::scalars(&rt.gc, values).map(|text| rt.gc.alloc(Object::Str(RilStr::new(text))));
@@ -277,6 +276,24 @@ runtime_functions! {
         };
         text::option(&mut rt.gc, item)
     }
+    fn ril_rt_array_swap(rt, target: Value, i: Value, j: Value) -> Value {
+        let target = rt.gc.draft_read(target).unwrap_or(target);
+        let (Some(i), Some(j)) = (
+            rt.gc.integer(i).and_then(|n| n.to_usize()),
+            rt.gc.integer(j).and_then(|n| n.to_usize()),
+        ) else {
+            rt.raise("index out of bounds");
+            return Value::UNIT;
+        };
+        match rt.gc.object_mut(target) {
+            Some(Object::Array(values)) if i < values.len() && j < values.len() => {
+                values.swap(i, j);
+            }
+            Some(Object::Array(_)) => rt.raise("index out of bounds"),
+            _ => rt.raise("Array::swap requires an array"),
+        }
+        Value::UNIT
+    }
     fn ril_rt_array_insert(rt, target: Value, index: Value, value: Value) -> Value {
         let target = rt.gc.draft_read(target).unwrap_or(target);
         let value = match rt.gc.draft_insertion(target, value) {
@@ -296,14 +313,18 @@ runtime_functions! {
     }
     fn ril_rt_array_remove(rt, target: Value, index: Value) -> Value {
         let target = rt.gc.draft_read(target).unwrap_or(target);
-        let index = rt.gc.integer(index).and_then(|n| n.to_usize());
-        let item = match rt.gc.object_mut(target) {
-            Some(Object::Array(values)) => {
-                index.and_then(|i| (i < values.len()).then(|| values.remove(i)))
-            }
-            _ => return rt.checked(Err("Array::remove requires an array")),
+        let Some(index) = rt.gc.integer(index).and_then(|n| n.to_usize()) else {
+            rt.raise("index out of bounds");
+            return Value::UNIT;
         };
-        text::option(&mut rt.gc, item)
+        match rt.gc.object_mut(target) {
+            Some(Object::Array(values)) if index < values.len() => values.remove(index),
+            Some(Object::Array(_)) => {
+                rt.raise("index out of bounds");
+                Value::UNIT
+            }
+            _ => rt.checked(Err("Array::remove requires an array")),
+        }
     }
     fn ril_rt_map_insert(rt, target: Value, key: Value, value: Value) -> Value {
         let target = rt.gc.draft_read(target).unwrap_or(target);
@@ -546,17 +567,11 @@ fn unary(rt: &mut Runtime, op: &str, a: Value) -> Value {
 }
 
 fn print(rt: &mut Runtime, value: Value) -> Value {
-    match read_text(rt, value) {
-        Ok(text) => {
-            let mut stdout = std::io::stdout().lock();
-            let result = stdout
-                .write_all(text.as_bytes())
-                .and_then(|()| stdout.flush());
-            if let Err(err) = result {
-                rt.raise(err.to_string());
-            }
-        }
-        Err(error) => rt.raise(error),
+    if let Ok(text) = read_text(rt, value) {
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout
+            .write_all(text.as_bytes())
+            .and_then(|()| stdout.flush());
     }
     Value::UNIT
 }

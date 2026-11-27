@@ -98,6 +98,7 @@ pub(crate) fn hover(state: &mut LspState, params: &Value) -> Option<Value> {
             &typed,
             &closure.witnesses.may_panic,
             &closure.witnesses.may_abort,
+            &closure.witnesses.may_diverge,
         );
     }
     let range = span_to_file_range(file.source(), *span);
@@ -137,10 +138,19 @@ pub(crate) fn render_definition_hover(
             }
             if is_total(callable, &summary, &behavior) {
                 badges.push("`total`");
-            } else if summary.nonreturning {
-                badges.push("`never`");
-            } else if behavior.may_diverge {
-                badges.push("`may diverge`");
+            } else {
+                if summary.nonreturning {
+                    badges.push("`never`");
+                }
+                if behavior.may_panic {
+                    badges.push("`@panic`");
+                }
+                if behavior.may_abort {
+                    badges.push("`@abort`");
+                }
+                if behavior.may_diverge {
+                    badges.push("`@diverge`");
+                }
             }
             if !badges.is_empty() {
                 extra_sections.push(badges.join(" · "));
@@ -200,6 +210,7 @@ pub(crate) fn render_definition_hover(
                     typed,
                     &witnesses.may_panic,
                     &witnesses.may_abort,
+                    &witnesses.may_diverge,
                 );
                 let trimmed = fail_md.trim();
                 if !trimmed.is_empty() {
@@ -303,14 +314,19 @@ fn append_failure_sections(
     typed: &TypedProgram,
     may_panic: &[WitnessStep],
     may_abort: &[WitnessStep],
+    may_diverge: &[WitnessStep],
 ) {
     if !may_panic.is_empty() {
-        out.push_str("\n\n⚠ **May panic**\n");
+        out.push_str("\n\n⚠ **Implicit `@panic`**\n");
         out.push_str(&format_witness_chain(typed, may_panic));
     }
     if !may_abort.is_empty() {
-        out.push_str("\n\n🛑 **May abort process** *(uncatchable, bypasses `Panic::recover`)*\n");
+        out.push_str("\n\n🛑 **Implicit `@abort`** *(uncatchable, bypasses `Panic::recover`)*\n");
         out.push_str(&format_witness_chain(typed, may_abort));
+    }
+    if !may_diverge.is_empty() {
+        out.push_str("\n\n⏳ **Implicit `@diverge`** *(may not terminate)*\n");
+        out.push_str(&format_witness_chain(typed, may_diverge));
     }
 }
 

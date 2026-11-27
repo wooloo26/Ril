@@ -30,8 +30,8 @@ fn map_plus_one(xs: []int) -> new []int {
     Array::map(xs, \x -> x + 1)
 }
 
-fn safe_div(a: int, b: int) -> new ?int {
-    Numeric::div(a, b)
+fn safe_div(a: int, b |> NonZero) -> int {
+    a / b
 }
 
 fn main() -> () {
@@ -77,7 +77,10 @@ fn panic_propagation_defer_double_panic_and_recover_panic_sealing() {
 use ril/panic
 
 fn read_head(xs: []int) -> int {
-    xs[0]
+    match xs?[0] {
+        Some(v) -> v
+        None -> panic("empty")
+    }
 }
 
 fn caller_panics(xs: []int) -> int {
@@ -88,11 +91,9 @@ fn sealed_panic(xs: []int) -> new !<int, Panic::Error> {
     Panic::recover(\-> read_head(xs))
 }
 
-fn dangerous_defer(mut buf: []int, idx: int) &mut -> int {
-    defer assert(len(ref buf) == 0, "not empty")
-    let v = buf[idx]
-    Array::clear(mut buf)
-    v
+fn safe_defer(mut buf: []int, idx: int) &mut -> int {
+    defer Array::clear(mut buf)
+    buf?[idx] ?? 0
 }
 
 fn recursive_boom(n: int) -> int {
@@ -106,56 +107,67 @@ fn main() -> () {
         Ok(_) -> ()
         Err(_) -> ()
     }
-    let _ = dangerous_defer(mut a, 0)
+    let _ = safe_defer(mut a, 0)
     let _ = recursive_boom(3)
 }
 "#;
     let out = inspect_src(src, Unit::Bin, &InspectQuery::default());
-    assert_eq!(out["ok"], true, "warnings must keep ok=true: {out}");
-
-    // W0601 DOUBLE_PANIC warning emitted on `dangerous_defer`'s defer
-    let diags = out["diagnostics"].as_array().expect("diagnostics");
-    assert!(
-        diags
-            .iter()
-            .any(|d| d["sev"] == "warning" && d["code"] == "W0601"),
-        "expected W0601 DOUBLE_PANIC warning, got {diags:?}"
-    );
+    assert_eq!(out["ok"], true, "unexpected diagnostics: {out}");
 
     let syms = out["symbols"].as_array().expect("symbols");
     let find = |name: &str| syms.iter().find(|s| s["sym"] == name).unwrap();
 
-    // Multi-hop shortest panic chain: caller_panics -> read_head -> index_oob
+    // Multi-hop shortest panic chain: caller_panics -> read_head -> panic -> cause: panic
     let caller = find("caller_panics");
     assert_eq!(caller["pure"], true);
     assert!(caller.get("total").is_none());
     let panic_chain = caller["may_panic"].as_array().expect("may_panic witness");
     assert_eq!(
         panic_chain.len(),
-        2,
-        "expected 2-hop chain: {panic_chain:?}"
+        3,
+        "expected 3-hop chain: {panic_chain:?}"
     );
     assert_eq!(panic_chain[0]["call"], "read_head");
-    assert_eq!(panic_chain[1]["cause"], "index_oob");
+    assert_eq!(panic_chain[2]["cause"], "panic");
 
-    // `recover_panic` seals panic outside `defer`
+    // `Panic::recover` seals implicit `@panic` outside `defer`
     let sealed = find("sealed_panic");
     assert_eq!(sealed["pure"], true);
     assert_eq!(sealed["total"], true);
     assert!(sealed.get("may_panic").is_none());
 
-    // `dangerous_defer` expands `&mut(buf)`, has `may_panic` and `may_abort` (`defer_double_panic`)
-    let dd = find("dangerous_defer");
-    assert_eq!(dd["mut"], serde_json::json!(["buf"]));
-    assert!(dd["sig"].as_str().unwrap().contains("&mut(buf)"));
-    assert!(dd.get("may_panic").is_some());
-    let abort_chain = dd["may_abort"].as_array().expect("may_abort witness");
-    assert_eq!(abort_chain[0]["cause"], "defer_double_panic");
+    // `safe_defer` expands `&mut(buf)`, has no `may_panic` and no `defer_double_panic`
+    let sd = find("safe_defer");
+    assert_eq!(sd["mut"], serde_json::json!(["buf"]));
+    assert!(sd["sig"].as_str().unwrap().contains("&mut(buf)"));
+    assert!(sd.get("may_panic").is_none());
+    assert!(sd.get("may_abort").is_none());
 
     // Recursive SCC -> `may_diverge` (recursion) AND `may_abort` (stack_overflow)
     let rec = find("recursive_boom");
     assert_eq!(rec["may_diverge"][0]["cause"], "recursion");
     assert_eq!(rec["may_abort"][0]["cause"], "stack_overflow");
+
+    // Hard error E0627 statically prevents panic inside `defer` (eliminating double-panic abort)
+    let bad_defer_src = r#"
+fn dangerous_defer(mut buf: []int) &mut -> () {
+    defer assert(len(ref buf) == 0, "not empty")
+    Array::clear(mut buf)
+}
+fn main() -> () {
+    let mut a = [1, 2]
+    dangerous_defer(mut a)
+}
+"#;
+    let bad_out = inspect_src(bad_defer_src, Unit::Bin, &InspectQuery::default());
+    assert_eq!(bad_out["ok"], false, "defer panic must be hard error E0627: {bad_out}");
+    let diags = bad_out["diagnostics"].as_array().expect("diagnostics");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d["sev"] == "error" && d["code"] == "E0627"),
+        "expected E0627 hard error on panicking defer, got {diags:?}"
+    );
 }
 
 #[test]
@@ -165,8 +177,8 @@ eff Emit {
     ctl send(v: int) -> ()
 }
 
-fn pick<T>(via xs: []T) -> infer T {
-    xs[0]
+fn pick<T>(via xs: []T) -> infer ?T {
+    xs?[0]
 }
 
 fn run(mut items: []int) &mut -> int {
@@ -176,7 +188,7 @@ fn run(mut items: []int) &mut -> int {
             total += v
             if total < 10 { k() } else { unwind_ctl(k); total }
         }
-        let h = pick(ref items)
+        let h = pick(ref items) ?? 0
         Array::push(mut items, h)
         Emit::send(h)
         total
@@ -267,7 +279,8 @@ fn cross_package_behavior_propagates_via_rili_without_changing_abi_hash() {
     lib_v2.entry = Path::new("pkg/math.ril").into();
     lib_v2.insert(
         Path::new("pkg/math.ril").into(),
-        b"pub fn compute(a: int, b: int) -> int { a / b }\n".to_vec(),
+        b"pub fn compute(a: int, b: int) -> int { if b == 0 { panic(\"zero\") } else { a / b } }\n"
+            .to_vec(),
     );
     let iface_v2 = compiler.interface(&lib_v2).expect("iface v2");
     assert_eq!(

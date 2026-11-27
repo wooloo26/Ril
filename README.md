@@ -13,7 +13,7 @@ fn relay<T>(via value: T) -> infer T {
     item
 }
 
-fn make_cells() -> new []Cell { [Cell.{ value: 1 }] }
+fn make_cells() -> new []Cell |> HasLen(1) { [Cell.{ value: 1 }] }
 
 fn receive_cells() -> () {
     let mut cells: [mut]Cell = make_cells() -- New elements receive writable access.
@@ -30,14 +30,16 @@ fn receive_cells() -> () {
 -- New containers preserve the sources of nested shared objects.
 type Cell = .{ var value: int }
 type Shelf = .{ mut rows: [^mut]Cell }
-fn shared_shelf(^mut cell: Cell) &^mut &return(^mut cell) -> new Shelf {
+type HasRows = \s: Shelf -> if len(s.rows) > 0 { <()> } else { <never> }
+
+fn shared_shelf(^mut cell: Cell) &^mut &return(^mut cell) -> new Shelf |> HasRows {
     Shelf.{ rows: [^mut cell] }
 }
 
 fn nested_sources() -> () {
     let mut cell = Cell.{ value: 0 }
     let mut shelf = shared_shelf(^mut cell)
-    shelf.rows[0].value += 1
+    shelf.rows[0].value += 1                -- Proved in-bounds by 'HasRows'.
     assert(cell.value == 1)                 -- The nested Cell still shares its source.
     -- let frozen = shared_shelf(^mut cell) -- E0535: surviving outside writer.
 }

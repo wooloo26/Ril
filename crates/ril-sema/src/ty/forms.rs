@@ -3,7 +3,7 @@ mod resolve;
 
 use std::collections::HashSet;
 
-use ril_hir::{DefinitionId, DefinitionKind};
+use ril_hir::{DefinitionId, DefinitionKind, GuardKind};
 use ril_source::{diag::Code, span::Span};
 use ril_syntax::syntax::{
     self, GenericArg, GenericParam, Member as Coordinate, Mode, StateKind, StmtKind, Type,
@@ -14,6 +14,43 @@ use super::{
     AdtKind, Callable, GenericValue, Member, Parameter, Ty, Value,
     check::{Checker, Env, Phase, path_name, transform},
 };
+
+pub(in crate::ty) fn is_value_generic_param(param: &GenericParam) -> bool {
+    param
+        .name
+        .value
+        .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+}
+
+pub(in crate::ty) fn partition_type_fn_params(
+    params: &[GenericParam],
+) -> (&[GenericParam], Option<&GenericParam>, &[GenericParam]) {
+    let k = params
+        .iter()
+        .take_while(|p| !is_value_generic_param(p))
+        .count();
+    let type_params = &params[..k];
+    let Some((subject, trailing)) = params[k..].split_first() else {
+        return (type_params, None, &[]);
+    };
+    (type_params, Some(subject), trailing)
+}
+
+fn ty_mentions_any_param(ty: &Ty, params: &HashSet<DefinitionId>) -> bool {
+    if params.is_empty() {
+        return false;
+    }
+    let mut found = false;
+    let _ = transform(ty, &mut |node| {
+        if let Ty::Param(id) = node
+            && params.contains(id)
+        {
+            found = true;
+        }
+        None
+    });
+    found
+}
 
 impl Checker<'_> {
     pub(super) fn nominal_fields(&self, env: &mut Env, declaration: &TypeDecl) {
@@ -80,6 +117,385 @@ impl Checker<'_> {
         subject: &Ty,
         output: &Ty,
     ) {
+        let original_span = self.ast(env.file).expr(guard).span;
+        match self.hir.classify_guard(env.file, guard) {
+            GuardKind::StaticProof(id) => {
+                self.check_static_proof_guard(env, guard, id, subject);
+            }
+            GuardKind::StaticProofPrimitive(_) => {}
+            GuardKind::RuntimeFn(id) => {
+                self.check_runtime_fn_guard(env, guard, id, subject, output);
+            }
+            GuardKind::Invalid => {
+                self.error(
+                    Code::E0306,
+                    original_span,
+                    "signature guard must be a function or proof type function",
+                );
+            }
+        }
+    }
+
+    fn check_static_proof_guard(
+        &mut self,
+        env: &mut Env,
+        guard: syntax::ExprId,
+        id: DefinitionId,
+        subject: &Ty,
+    ) {
+        let ast = self.ast(env.file);
+        let original = ast.expr(guard);
+        let span = original.span;
+        let mut node = original;
+        let mut pipe_ref = false;
+        if let syntax::Expr::Unary { op, value } = &node.value
+            && op.value == "ref"
+        {
+            pipe_ref = true;
+            node = ast.expr(*value);
+        }
+        if pipe_ref {
+            self.error(
+                Code::E0406,
+                span,
+                "static proof guard does not take 'ref' mode prefix",
+            );
+        }
+        let mut extra_args: Vec<syntax::Argument> = Vec::new();
+        if let syntax::Expr::Call { callee, args } = &node.value {
+            extra_args = args.clone();
+            node = ast.expr(*callee);
+        }
+        let syntax::Expr::Path(path) = &node.value else {
+            return;
+        };
+        let angle_args: Vec<GenericArg> = path
+            .segments
+            .last()
+            .map(|s| s.arguments.clone())
+            .unwrap_or_default();
+
+        let def = self.hir.definition(id);
+        let Some(stmt) = def.stmt else { return };
+        let def_file = def.name.span.file;
+        let def_scope = def.scope;
+        let StmtKind::Type(decl) = &self.ast(def_file).stmt(stmt).value.kind else {
+            self.error(Code::E0306, span, "static proof requires a type function");
+            return;
+        };
+        let TypeDefinition::Function(tf_params, tf_body) = &decl.definition else {
+            self.error(Code::E0306, span, "static proof requires a type function");
+            return;
+        };
+        let tf_params = tf_params.clone();
+        let tf_body = *tf_body;
+        let (type_params, Some(subject_param), trailing_params) =
+            partition_type_fn_params(&tf_params)
+        else {
+            self.error(
+                Code::E0306,
+                span,
+                "static value proof requires a type function with a value subject parameter",
+            );
+            return;
+        };
+        let mut tf_env = Env::new(def_file, def_scope);
+        tf_env.phase = Phase::TypeEval;
+        tf_env.caller_scope = Some(env.effective_scope());
+        tf_env.error_span = Some(span);
+
+        if angle_args.len() > type_params.len() {
+            self.error(
+                Code::E0340,
+                span,
+                "too many type arguments for static proof",
+            );
+        }
+        let mut subst = std::collections::HashMap::new();
+        let mut type_param_ids = Vec::new();
+        for (idx, tp) in type_params.iter().enumerate() {
+            let Some(pid) = self.resolve(tp.name.span) else {
+                continue;
+            };
+            let gv = if let Some(arg) = angle_args.get(idx) {
+                self.generic_argument(env, tp, arg, span)
+            } else {
+                GenericValue::Type(self.fresh())
+            };
+            subst.insert(pid, gv.clone());
+            tf_env.generics.insert(pid, gv);
+            type_param_ids.push((idx, pid));
+        }
+
+        // Bind subject type.
+        let subject_param_ty = subject_param
+            .bound
+            .first()
+            .map(|&ty| self.type_expr(&mut tf_env, ty))
+            .unwrap_or(Ty::Unknown);
+        let expected_subject = super::check::substitute(&subject_param_ty, &subst);
+        self.require(env, span, subject, &expected_subject);
+
+        // Bind extra paren arguments (positional + named).
+        let mut bound_args: Vec<Option<syntax::Argument>> = vec![None; trailing_params.len()];
+        let mut positional_idx = 0usize;
+        for arg in &extra_args {
+            if let Some(label) = &arg.name {
+                let Some(pos) = trailing_params
+                    .iter()
+                    .position(|p| p.name.value == label.value)
+                else {
+                    self.error(Code::E0339, label.span, "unknown named static proof argument");
+                    continue;
+                };
+                if bound_args[pos].is_some() {
+                    self.error(
+                        Code::E0325,
+                        label.span,
+                        "duplicate named static proof argument",
+                    );
+                    continue;
+                }
+                bound_args[pos] = Some(arg.clone());
+            } else {
+                while positional_idx < bound_args.len() && bound_args[positional_idx].is_some() {
+                    positional_idx += 1;
+                }
+                if positional_idx < bound_args.len() {
+                    bound_args[positional_idx] = Some(arg.clone());
+                    positional_idx += 1;
+                } else {
+                    self.error(
+                        Code::E0314,
+                        self.ast(env.file).expr(arg.value).span,
+                        "too many static proof arguments",
+                    );
+                }
+            }
+        }
+        for (idx, param) in trailing_params.iter().enumerate() {
+            if let Some(arg) = &bound_args[idx] {
+                let arg_span = self.ast(env.file).expr(arg.value).span;
+                if matches!(arg.mode, Mode::Mut | Mode::Shared) {
+                    self.error(
+                        Code::E0406,
+                        arg_span,
+                        "static proof argument cannot use 'mut' or '^mut'",
+                    );
+                }
+                let param_ty = param
+                    .bound
+                    .first()
+                    .map(|&ty| self.type_expr(&mut tf_env, ty))
+                    .unwrap_or(Ty::Unknown);
+                let expected_arg = super::check::substitute(&param_ty, &subst);
+                let mut arg_env = env.clone();
+                arg_env.shadow = true;
+                arg_env.effects_seen.clear();
+                let actual_arg = self.expect(&mut arg_env, arg.value, &expected_arg);
+                if !arg_env.effects_seen.is_empty() {
+                    self.error(
+                        Code::E0409,
+                        arg_span,
+                        "static proof argument expression must be pure",
+                    );
+                }
+                if arg.mode == Mode::Ref && self.is_value_ty(env, &actual_arg) {
+                    self.error(
+                        Code::E0402,
+                        arg_span,
+                        "cannot take 'ref' of a value type",
+                    );
+                }
+            } else if param.default.is_none() {
+                self.error(
+                    Code::E0314,
+                    span,
+                    "missing required static proof argument",
+                );
+            }
+        }
+
+        // Validate deduced type parameters (domain bounds & static checks like `T |> LenTarget`).
+        for (idx, pid) in type_param_ids {
+            let tp = &type_params[idx];
+            if let Some(GenericValue::Type(actual)) = subst.get(&pid) {
+                let actual = self.normalize(actual);
+                tf_env.generics.insert(pid, GenericValue::Type(actual.clone()));
+                if matches!(actual, Ty::Infer(_)) {
+                    self.error(
+                        Code::E0344,
+                        span,
+                        format!(
+                            "could not infer type parameter {} of static proof {}",
+                            tp.name.value, def.name.value
+                        ),
+                    );
+                    continue;
+                }
+                let prev_open = tf_env.allow_open_record;
+                tf_env.allow_open_record = true;
+                let domain: Vec<_> = tp
+                    .bound
+                    .iter()
+                    .map(|&ty| self.type_expr(&mut tf_env, ty))
+                    .collect();
+                tf_env.allow_open_record = prev_open;
+                let allowed = domain.is_empty()
+                    || domain
+                        .iter()
+                        .any(|ty| matches!(ty, Ty::Unknown | Ty::Mode | Ty::TypeValue(None)))
+                    || match &actual {
+                        Ty::Param(actual_id) => env.domains.get(actual_id).is_some_and(|ad| {
+                            ad.iter()
+                                .all(|a| domain.iter().any(|ok| self.fits(env, a, ok)))
+                        }),
+                        _ => domain.iter().any(|ok| self.fits(env, &actual, ok)),
+                    };
+                if !allowed {
+                    self.error(
+                        Code::E0306,
+                        span,
+                        format!(
+                            "{} does not satisfy the domain of {}",
+                            actual.display(self.hir),
+                            tp.name.value
+                        ),
+                    );
+                }
+                self.validate_static_checks(&mut tf_env, tp, &GenericValue::Type(actual), span);
+            }
+        }
+
+        // Validate that the Type Function body returns only `<()>` / `<never>`.
+        let mut seen = HashSet::new();
+        self.check_static_proof_shape(id, def_file, tf_body, span, &mut seen);
+    }
+
+    fn check_static_proof_shape(
+        &mut self,
+        tf_id: DefinitionId,
+        file: ril_source::span::FileId,
+        expr: syntax::ExprId,
+        report_span: Span,
+        seen: &mut HashSet<DefinitionId>,
+    ) {
+        if !seen.insert(tf_id) {
+            return;
+        }
+        // Ensure the type function's statement has been typechecked so `self.types` is populated.
+        if let Some(stmt) = self.hir.definition(tf_id).stmt {
+            let body_span = self.ast(file).expr(expr).span;
+            if !self.types.contains_key(&body_span) {
+                let def = self.hir.definition(tf_id);
+                let mut check_env = Env::new(def.name.span.file, def.scope);
+                self.statement(&mut check_env, stmt, false);
+            }
+        }
+        self.check_proof_return_branches(file, expr, report_span, seen);
+    }
+
+    fn check_proof_return_branches(
+        &mut self,
+        file: ril_source::span::FileId,
+        expr: syntax::ExprId,
+        report_span: Span,
+        seen: &mut HashSet<DefinitionId>,
+    ) {
+        let ast = self.ast(file);
+        let node = ast.expr(expr);
+        match &node.value {
+            syntax::Expr::Block { statements, .. } => {
+                if let Some(&last) = statements.last()
+                    && let StmtKind::Expr(tail) = ast.stmt(last).value.kind
+                {
+                    self.check_proof_return_branches(file, tail, report_span, seen);
+                }
+            }
+            syntax::Expr::If { yes, no, .. } => {
+                let then_b = *yes;
+                let else_b = *no;
+                self.check_proof_return_branches(file, then_b, report_span, seen);
+                if let Some(eb) = else_b {
+                    self.check_proof_return_branches(file, eb, report_span, seen);
+                }
+            }
+            syntax::Expr::Match { arms, .. } => {
+                let bodies: Vec<_> = arms.iter().map(|a| a.body).collect();
+                for body in bodies {
+                    self.check_proof_return_branches(file, body, report_span, seen);
+                }
+            }
+            syntax::Expr::Quote(ty_id) => match &ast.ty(*ty_id).value {
+                Type::Unit => {}
+                Type::Named(path)
+                    if path.segments.len() == 1
+                        && path.segments[0].name.value == "never"
+                        && path.segments[0].arguments.is_empty() => {}
+                Type::Named(path) => {
+                    if let Some(target_id) = self.resolve(path.span)
+                        && let Some(stmt) = self.hir.definition(target_id).stmt
+                        && let StmtKind::Type(decl) = &self
+                            .ast(self.hir.definition(target_id).name.span.file)
+                            .stmt(stmt)
+                            .value
+                            .kind
+                        && let TypeDefinition::Function(_, target_body) = decl.definition
+                    {
+                        let target_file = self.hir.definition(target_id).name.span.file;
+                        self.check_static_proof_shape(
+                            target_id,
+                            target_file,
+                            target_body,
+                            report_span,
+                            seen,
+                        );
+                    } else {
+                        self.error(
+                            Code::E0306,
+                            report_span,
+                            "static value proof must return <()> or <never>",
+                        );
+                    }
+                }
+                _ => {
+                    self.error(
+                        Code::E0306,
+                        report_span,
+                        "static value proof must return <()> or <never>",
+                    );
+                }
+            },
+            _ => {
+                let ty = self
+                    .types
+                    .get(&node.span)
+                    .cloned()
+                    .map(|t| self.normalize(&t));
+                match ty {
+                    Some(Ty::Never | Ty::Unknown | Ty::TypeValue(None)) => {}
+                    Some(Ty::TypeValue(Some(inner)))
+                        if matches!(*inner, Ty::Unit | Ty::Never | Ty::Unknown) => {}
+                    _ => {
+                        self.error(
+                            Code::E0306,
+                            report_span,
+                            "static value proof must return <()> or <never>",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_runtime_fn_guard(
+        &mut self,
+        env: &mut Env,
+        guard: syntax::ExprId,
+        id: DefinitionId,
+        subject: &Ty,
+        output: &Ty,
+    ) {
         let ast = self.ast(env.file);
         let original = ast.expr(guard);
         let mut node = original;
@@ -93,12 +509,7 @@ impl Checker<'_> {
             extra_args = args.clone();
             node = ast.expr(*callee);
         }
-        let syntax::Expr::Path(path) = &node.value else {
-            return;
-        };
-        let Some(id) = self.resolve(path.span) else {
-            return;
-        };
+        let _ = node;
         let signature = self.declare_function(id);
         let mut fresh_generics = std::collections::HashMap::new();
         if let Some(stmt) = self.hir.definition(id).stmt
@@ -456,20 +867,89 @@ impl Checker<'_> {
         if let syntax::Expr::Call { callee, .. } = node.value {
             node = ast.expr(callee);
         }
-        if let syntax::Expr::Path(path) = &node.value
-            && let Some(id) = self.resolve(path.span)
-        {
-            let call = self.declare_function(id);
-            if let Some(param) = call.parameters.first() {
-                return param.ty.clone();
+        let node_span = node.span;
+        match self.hir.classify_guard(env.file, guard) {
+            GuardKind::RuntimeFn(id) => {
+                let call = self.declare_function(id);
+                if let Some(param) = call.parameters.first() {
+                    return param.ty.clone();
+                }
             }
+            GuardKind::StaticProof(id) => {
+                let angle_args: Vec<GenericArg> = match &node.value {
+                    syntax::Expr::Path(path) => path
+                        .segments
+                        .last()
+                        .map(|s| s.arguments.clone())
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                if let Some(inferred) = self.static_proof_subject_type(env, id, &angle_args, node_span) {
+                    return inferred;
+                }
+            }
+            _ => {}
         }
         self.error(
             Code::E0544,
-            node.span,
+            node_span,
             "first guard does not determine the parameter type",
         );
         Ty::Unknown
+    }
+
+    fn static_proof_subject_type(
+        &mut self,
+        env: &Env,
+        id: DefinitionId,
+        angle_args: &[GenericArg],
+        span: Span,
+    ) -> Option<Ty> {
+        if !self.resolving.insert(id) {
+            return None;
+        }
+        let result = (|| {
+            let def = self.hir.definition(id);
+            let stmt = def.stmt?;
+            let def_file = def.name.span.file;
+            let StmtKind::Type(decl) = &self.ast(def_file).stmt(stmt).value.kind else {
+                return None;
+            };
+            let TypeDefinition::Function(tf_params, _) = &decl.definition else {
+                return None;
+            };
+            let tf_params = tf_params.clone();
+            let (type_params, Some(subject_param), _) = partition_type_fn_params(&tf_params) else {
+                return None;
+            };
+            let mut tf_env = Env::new(def_file, def.scope);
+            tf_env.caller_scope = Some(env.effective_scope());
+            let mut caller_env = env.clone();
+            let mut unbound = HashSet::new();
+            for (idx, tp) in type_params.iter().enumerate() {
+                let Some(pid) = self.resolve(tp.name.span) else {
+                    continue;
+                };
+                if let Some(arg) = angle_args.get(idx) {
+                    let gv = self.generic_argument(&mut caller_env, tp, arg, span);
+                    tf_env.generics.insert(pid, gv);
+                } else {
+                    unbound.insert(pid);
+                }
+            }
+            let ty = subject_param
+                .bound
+                .first()
+                .map(|&t| self.type_expr(&mut tf_env, t))?;
+            let ty = self.normalize(&ty);
+            if ty == Ty::Unknown || ty_mentions_any_param(&ty, &unbound) {
+                None
+            } else {
+                Some(ty)
+            }
+        })();
+        self.resolving.remove(&id);
+        result
     }
 
     pub(super) fn project(

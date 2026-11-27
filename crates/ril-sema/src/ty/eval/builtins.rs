@@ -16,23 +16,15 @@ pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Opt
         value.map_or_else(none, |value| Value::Tag("Some".into(), vec![value]))
     };
     Some(match (intrinsic, args) {
-        (StringAt, [Value::Str(text), Value::Int(index)]) => Ok(option(
-            index
-                .to_usize()
-                .and_then(|index| text.chars().nth(index))
-                .map(|scalar| Value::Int(u32::from(scalar).into())),
-        )),
+        (StringAt, [Value::Str(text), Value::Int(index)]) => index
+            .to_usize()
+            .and_then(|index| text.chars().nth(index))
+            .map(|scalar| Value::Int(u32::from(scalar).into()))
+            .ok_or_else(|| defect(span, "static String::scalar_at index is out of bounds")),
         (StringScalars, [Value::Str(text)]) => Ok(Value::Array(
             text.chars()
                 .map(|scalar| Value::Int(u32::from(scalar).into()))
                 .collect(),
-        )),
-        (BytesAt, [Value::Bytes(bytes), Value::Int(index)]) => Ok(option(
-            index
-                .to_usize()
-                .and_then(|index| bytes.get(index))
-                .copied()
-                .map(|byte| Value::Int(byte.into())),
         )),
         (StringFromScalars, [Value::Array(items)]) => {
             let text = items
@@ -61,8 +53,8 @@ pub(super) fn eval_text(intrinsic: Intrinsic, args: &[Value], span: Span) -> Opt
                 .map(|text| Value::Str(text.to_owned())),
         )),
         (
-            StringAt | StringScalars | BytesAt | StringFromScalars | BytesFromArray
-            | StringEncodeUtf8 | StringDecodeUtf8,
+            StringAt | StringScalars | StringFromScalars | BytesFromArray | StringEncodeUtf8
+            | StringDecodeUtf8,
             _,
         ) => Err(nonstatic(span)),
         _ => return None,

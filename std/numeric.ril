@@ -1,4 +1,4 @@
--- Standard Numeric module: conversion primitives plus self-hosted checked division.
+-- Standard Numeric module: integer conversions and proved integer helpers.
 
 -- Converts an arbitrary-precision `int` to IEEE-754 binary64 `f64` (saturating to `±inf` on overflow).
 pub fn to_f64(n: int) -> f64
@@ -20,20 +20,40 @@ pub fn to_int_exact(x: f64) -> new ?int {
     }
 }
 
--- Divides `a` by `b`, returning `None` when `b == 0` instead of panicking.
-pub fn div(a: int, b: int) -> new ?int {
-    if b == 0 {
-        None
+-- Returns the non-negative absolute value of `x`.
+pub fn abs(x: int) -> int |> Nat {
+    if x < 0 {
+        -x
     } else {
-        Some(a / b)
+        x
     }
 }
 
--- Computes `a % b`, returning `None` when `b == 0` instead of panicking.
-pub fn rem(a: int, b: int) -> new ?int {
-    if b == 0 {
-        None
+-- Returns the smaller of `a` and `b`.
+pub fn min(a: int, b: int) -> int |> AtMost(a) |> AtMost(b) {
+    if a < b {
+        a
     } else {
-        Some(a % b)
+        b
+    }
+}
+
+-- Returns the larger of `a` and `b`.
+pub fn max(a: int, b: int) -> int |> AtLeast(a) |> AtLeast(b) {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+-- Restricts `x` to the inclusive range `[lo, hi]`.
+pub fn clamp(x: int, lo: int, hi: int |> AtLeast(lo)) -> int |> Between(lo, hi) {
+    if x < lo {
+        lo
+    } else if x > hi {
+        hi
+    } else {
+        x
     }
 }

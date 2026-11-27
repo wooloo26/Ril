@@ -175,7 +175,8 @@ impl Checker<'_> {
                 if p.is_meta {
                     self.declare_meta_key(&mut local, p);
                 }
-                if p.mode != Mode::Plain
+                let param_norm = self.normalize(&ty.ty);
+                if (p.mode != Mode::Plain || param_norm.contains_live_member_schema())
                     && let Some(id) = self.resolve(name.span)
                 {
                     self.live.insert(id);
@@ -226,13 +227,23 @@ impl Checker<'_> {
             let mut helper_env = env.clone();
             self.statement(&mut helper_env, helper, false);
         }
-        for (p, ty) in fun.signature.params.iter().zip(&call.parameters) {
+        for (index, (p, ty)) in fun
+            .signature
+            .params
+            .iter()
+            .zip(&call.parameters)
+            .enumerate()
+        {
             if !p.is_meta {
                 for &guard in &p.guards {
                     self.check_guard(&mut local, guard, &ty.ty, &call.result);
                 }
+                if let Some(default) = p.default {
+                    self.check_default_param_proofs(&mut local, fun, index, default);
+                }
             }
         }
+        self.seed_fn_param_proofs(&mut local, fun);
         let normalized = self.normalize(&call.result);
         let return_subject = if let Some(inner) = normalized.as_option(self.hir) {
             inner.clone()
@@ -241,12 +252,179 @@ impl Checker<'_> {
         } else {
             normalized
         };
+        local.return_proofs.clear();
         for &guard in &fun.signature.guards {
             self.check_guard(&mut local, guard, &return_subject, &call.result);
+            if self.hir.is_static_proof_guard(local.file, guard) {
+                local.return_proofs.push(guard);
+            }
         }
+        self.collect_export_proofs(local.file, id, fun);
         if let Some(body) = fun.body {
+            let prev_captured = std::mem::take(&mut self.captured_locals);
+            self.collect_captured_locals(local.file, body);
             local.return_scope = Some(self.ast(local.file).expr(body).span);
+            local.checking_fn_tail = !local.return_proofs.is_empty();
             self.expect(&mut local, body, &call.result);
+            local.checking_fn_tail = false;
+            self.captured_locals = prev_captured;
+        }
+    }
+
+    fn collect_captured_locals(&mut self, file: ril_source::span::FileId, expr: syntax::ExprId) {
+        let ast = self.ast(file);
+        match &ast.expr(expr).value {
+            syntax::Expr::Closure { body, .. } => {
+                let span = ast.expr(*body).span;
+                for (_, id) in self.hir.references_within(span) {
+                    self.captured_locals.insert(id);
+                }
+            }
+            syntax::Expr::Block {
+                statements,
+                helpers,
+            } => {
+                self.collect_captured_block(file, statements, helpers);
+            }
+            syntax::Expr::If {
+                condition, yes, no, ..
+            } => {
+                let (syntax::Condition::Expr(e) | syntax::Condition::Binding { value: e, .. }) =
+                    condition;
+                self.collect_captured_locals(file, *e);
+                self.collect_captured_locals(file, *yes);
+                if let Some(n) = no {
+                    self.collect_captured_locals(file, *n);
+                }
+            }
+            syntax::Expr::While {
+                condition, body, ..
+            } => {
+                let (syntax::Condition::Expr(e) | syntax::Condition::Binding { value: e, .. }) =
+                    condition;
+                self.collect_captured_locals(file, *e);
+                self.collect_captured_locals(file, *body);
+            }
+            syntax::Expr::For {
+                iterable, body, ..
+            } => {
+                self.collect_captured_locals(file, *iterable);
+                self.collect_captured_locals(file, *body);
+            }
+            syntax::Expr::Match { value, arms, .. } => {
+                self.collect_captured_locals(file, *value);
+                for arm in arms {
+                    if let Some(g) = arm.guard {
+                        self.collect_captured_locals(file, g);
+                    }
+                    self.collect_captured_locals(file, arm.body);
+                }
+            }
+            syntax::Expr::With {
+                handlers,
+                statements,
+                helpers,
+            } => {
+                for h in handlers {
+                    let span = ast.expr(h.value).span;
+                    for (_, id) in self.hir.references_within(span) {
+                        self.captured_locals.insert(id);
+                    }
+                }
+                self.collect_captured_block(file, statements, helpers);
+            }
+            syntax::Expr::Call { callee, args } => {
+                self.collect_captured_locals(file, *callee);
+                for arg in args {
+                    self.collect_captured_locals(file, arg.value);
+                }
+            }
+            syntax::Expr::Pipeline { value, target, .. } => {
+                self.collect_captured_locals(file, *value);
+                self.collect_captured_locals(file, *target);
+            }
+            syntax::Expr::Binary { left, right, .. } => {
+                self.collect_captured_locals(file, *left);
+                self.collect_captured_locals(file, *right);
+            }
+            syntax::Expr::Unary { value, .. }
+            | syntax::Expr::Cast { value, .. } => {
+                self.collect_captured_locals(file, *value);
+            }
+            syntax::Expr::Transfer { value: Some(v), .. } => {
+                self.collect_captured_locals(file, *v);
+            }
+            syntax::Expr::Array(items) | syntax::Expr::Tuple(items) => {
+                for &item in items {
+                    self.collect_captured_locals(file, item);
+                }
+            }
+            syntax::Expr::Record { fields, .. } => {
+                for field in fields {
+                    if let Some(v) = field.value {
+                        self.collect_captured_locals(file, v);
+                    }
+                }
+            }
+            syntax::Expr::Map(entries) => {
+                for (k, v) in entries {
+                    self.collect_captured_locals(file, *k);
+                    self.collect_captured_locals(file, *v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_captured_block(
+        &mut self,
+        file: ril_source::span::FileId,
+        statements: &[StmtId],
+        helpers: &[StmtId],
+    ) {
+        let ast = self.ast(file);
+        for &stmt_id in statements {
+            let stmt = ast.stmt(stmt_id);
+            match &stmt.value.kind {
+                syntax::StmtKind::Binding {
+                    value, fallback, ..
+                } => {
+                    if let Some(v) = value {
+                        self.collect_captured_locals(file, *v);
+                    }
+                    if let Some(f) = fallback {
+                        self.collect_captured_locals(file, *f);
+                    }
+                }
+                syntax::StmtKind::Expr(e) | syntax::StmtKind::Defer(e) => {
+                    self.collect_captured_locals(file, *e);
+                }
+                syntax::StmtKind::With(h) => {
+                    let span = ast.expr(h.value).span;
+                    for (_, id) in self.hir.references_within(span) {
+                        self.captured_locals.insert(id);
+                    }
+                }
+                syntax::StmtKind::Function(nested) => {
+                    if let Some(b) = nested.body {
+                        let span = ast.expr(b).span;
+                        for (_, id) in self.hir.references_within(span) {
+                            self.captured_locals.insert(id);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for &helper_id in helpers {
+            if let syntax::StmtKind::Function(nested) = &ast.stmt(helper_id).value.kind
+                && let Some(b) = nested.body
+            {
+                let span = ast.expr(b).span;
+                for (_, id) in self.hir.references_within(span) {
+                    self.captured_locals.insert(id);
+                }
+            }
         }
     }
 
@@ -332,12 +510,31 @@ impl Checker<'_> {
                     self.eval_root(local, *value, true);
                 }
                 self.pattern(local, *pattern, &inferred);
-                if (storage.variable || storage.mode != Mode::Plain)
-                    && let syntax::Pattern::Binding(_, name) =
-                        &self.ast(local.file).pattern(*pattern).value
-                    && let Some(id) = self.resolve(name.span)
-                {
-                    self.live.insert(id);
+                self.seed_binding_proofs(local, *pattern, *value, storage.variable);
+                let norm_inferred = self.normalize(&inferred);
+                let force_live =
+                    storage.variable || storage.mode != Mode::Plain || norm_inferred.contains_live_member_schema();
+                let mut bound_ids = Vec::new();
+                self.collect_pattern_defs(local, *pattern, &mut bound_ids);
+                for id in bound_ids {
+                    let bound_live = force_live
+                        || self
+                            .bindings
+                            .get(&id)
+                            .cloned()
+                            .is_some_and(|t| self.normalize(&t).contains_live_member_schema());
+                    if bound_live {
+                        self.live.insert(id);
+                        let is_confined = self.hir.definition(id).kind == DefinitionKind::Local
+                            && !self.captured_locals.contains(&id)
+                            && ((storage.mode == Mode::Mut && !storage.variable)
+                                || (storage.variable
+                                    && storage.mode == Mode::Plain
+                                    && self.is_value_ty(local, &norm_inferred)));
+                        if is_confined {
+                            self.confined_locals.insert(id);
+                        }
+                    }
                 }
                 if !storage.variable
                     && storage.mode == Mode::Plain
@@ -491,6 +688,7 @@ impl Checker<'_> {
             }
             StmtKind::Defer(expr) => {
                 self.expect(env, *expr, &Ty::Unit);
+                env.active_defers.push(*expr);
             }
             StmtKind::With(handler) => {
                 let answer = env.expected_return.clone();
@@ -649,6 +847,12 @@ impl Checker<'_> {
                         span,
                         "meta fn requires direct saturated application",
                     );
+                } else if !callee && self.hir.has_static_param_proof(id) {
+                    self.error(
+                        Code::E0534,
+                        span,
+                        "function with static parameter proof cannot be used as a first-class callable; call directly or wrap in a closure",
+                    );
                 }
                 Ty::Callable(call)
             }
@@ -725,12 +929,60 @@ impl Checker<'_> {
                             span,
                             "meta fn requires direct saturated application",
                         );
+                    } else if !callee && self.hir.has_static_param_proof(id) {
+                        self.error(
+                            Code::E0534,
+                            span,
+                            "function with static parameter proof cannot be used as a first-class callable; call directly or wrap in a closure",
+                        );
                     }
                     return Ty::Callable(call);
                 }
                 self.primitive_type(env, &def.name.value, span, callee)
             }
             _ => Ty::Unknown,
+        }
+    }
+
+    fn collect_pattern_defs(
+        &self,
+        env: &Env,
+        pattern: syntax::PatternId,
+        out: &mut Vec<DefinitionId>,
+    ) {
+        let ast = self.ast(env.file);
+        match &ast.pattern(pattern).value {
+            syntax::Pattern::Binding(_, name) | syntax::Pattern::Rest(Some(name)) => {
+                if let Some(id) = self.resolve(name.span) {
+                    out.push(id);
+                }
+            }
+            syntax::Pattern::Tuple(items)
+            | syntax::Pattern::Or(items)
+            | syntax::Pattern::Slice { elements: items, .. }
+            | syntax::Pattern::Wrap(_, items) => {
+                for &item in items {
+                    self.collect_pattern_defs(env, item, out);
+                }
+            }
+            syntax::Pattern::Constructor(_, Some(items)) => {
+                for &item in items {
+                    self.collect_pattern_defs(env, item, out);
+                }
+            }
+            syntax::Pattern::Record { fields, .. } => {
+                for field in fields {
+                    if let Some(pat) = field.pattern {
+                        self.collect_pattern_defs(env, pat, out);
+                    } else if let Some(id) = self.resolve(field.name.span) {
+                        out.push(id);
+                    }
+                }
+            }
+            syntax::Pattern::Subset {
+                binding: Some(pat), ..
+            } => self.collect_pattern_defs(env, *pat, out),
+            _ => {}
         }
     }
 

@@ -500,17 +500,19 @@ pub fn read_either(mut slot: Slot, install: fn(mut Slot) &mut -> (), flag: bool)
 }
 pub fn array_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
     install(mut actions)
-    actions[1]
+    if len(ref actions) > 1 { actions[1] } else { count }
 }
 pub fn slice_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
     install(mut actions)
-    let selected = actions[1..2]
-    selected[0]
+    if len(ref actions) >= 2 {
+        let selected = actions[1..2]
+        selected[0]
+    } else { count }
 }
 pub fn rest_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
     install(mut actions)
     let [_, ..selected] = actions else { panic("missing first") }
-    selected[0]
+    if len(selected) > 0 { selected[0] } else { count }
 }
 pub fn make_reader() -> ReadAfter {
     \mut slot: Slot, install: fn(mut Slot) &mut -> () -> { install(mut slot); slot.action }
@@ -531,8 +533,12 @@ pub fn build_array() -> []Leaf {
     }
     fixed
 }
-pub fn section(actions: []Leaf) &return(actions) -> new []Leaf { actions[1..] }
-pub fn one(actions: []Leaf) &return(actions) -> new []Leaf { actions[1..2] }
+pub fn section(actions: []Leaf) &return(actions) -> new []Leaf {
+    if len(actions) >= 1 { actions[1..] } else { [] }
+}
+pub fn one(actions: []Leaf) &return(actions) -> new []Leaf {
+    if len(actions) >= 2 { actions[1..2] } else { [] }
+}
 pub fn stamp(base: Frame) -> Frame { derive(base) \mut d -> { d.stamp = 42 } }
 pub fn freeze_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = freeze } }
 pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = count } }
@@ -571,19 +577,19 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
             ("Snapshot::factory()()", true),
             ("Snapshot::factory_with()(keep)", true),
             ("Snapshot::read()", false),
-            ("Snapshot::nested().actions[0]", true),
-            ("Snapshot::build_array()[0]", false),
-            ("Snapshot::build_array()[1]", true),
-            ("Snapshot::section([count, freeze])[0]", true),
-            ("Snapshot::section([freeze, count])[0]", false),
-            ("Snapshot::one([freeze, count, freeze])[0]", false),
-            ("Snapshot::one([count, freeze, count])[0]", true),
+            ("{ let xs = Snapshot::nested().actions; if len(xs) > 0 { xs[0] } else { count } }", true),
+            ("{ let xs = Snapshot::build_array(); if len(xs) > 0 { xs[0] } else { count } }", false),
+            ("{ let xs = Snapshot::build_array(); if len(xs) > 1 { xs[1] } else { count } }", true),
+            ("{ let xs = Snapshot::section([count, freeze]); if len(xs) > 0 { xs[0] } else { count } }", true),
+            ("{ let xs = Snapshot::section([freeze, count]); if len(xs) > 0 { xs[0] } else { count } }", false),
+            ("{ let xs = Snapshot::one([freeze, count, freeze]); if len(xs) > 0 { xs[0] } else { count } }", false),
+            ("{ let xs = Snapshot::one([count, freeze, count]); if len(xs) > 0 { xs[0] } else { count } }", true),
             (
-                "{ let mut actions = [count]; let ^mut append = Snapshot::appender(^mut actions); append(); actions[0] }",
+                "{ let mut actions = [count]; let ^mut append = Snapshot::appender(^mut actions); append(); if len(ref actions) > 0 { actions[0] } else { count } }",
                 false,
             ),
             (
-                "{ let mut actions = [count]; let ^mut append = Snapshot::appender(^mut actions); append(); actions[1] }",
+                "{ let mut actions = [count]; let ^mut append = Snapshot::appender(^mut actions); append(); if len(ref actions) > 1 { actions[1] } else { count } }",
                 true,
             ),
             (
@@ -595,19 +601,19 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
                 true,
             ),
             (
-                "{ let mut actions = [count]; let ^mut append = Forwarding::appender(^mut actions); append(); actions[1] }",
+                "{ let mut actions = [count]; let ^mut append = Forwarding::appender(^mut actions); append(); if len(ref actions) > 1 { actions[1] } else { count } }",
                 true,
             ),
             (
-                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Forwarding::invoke(mut append); actions[1] }",
+                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Forwarding::invoke(mut append); if len(ref actions) > 1 { actions[1] } else { count } }",
                 true,
             ),
             (
-                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Snapshot::repeat(mut append, 1); actions[1] }",
+                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Snapshot::repeat(mut append, 1); if len(ref actions) > 1 { actions[1] } else { count } }",
                 true,
             ),
             (
-                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Snapshot::maybe_invoke(mut append, true); actions[1] }",
+                "{ let mut actions = [count]; let mut append = Snapshot::appender(^mut actions); Snapshot::maybe_invoke(mut append, true); if len(ref actions) > 1 { actions[1] } else { count } }",
                 true,
             ),
             (
@@ -683,11 +689,11 @@ pub fn controls(^mut slot: Snapshot::Slot, initial: Snapshot::Leaf, next: Snapsh
                 false,
             ),
             (
-                "{ let mut actions = [count]; Snapshot::append(mut actions); actions[0] }",
+                "{ let mut actions = [count]; Snapshot::append(mut actions); if len(ref actions) > 0 { actions[0] } else { count } }",
                 false,
             ),
             (
-                "{ let mut actions = [count]; Snapshot::append(mut actions); actions[1] }",
+                "{ let mut actions = [count]; Snapshot::append(mut actions); if len(ref actions) > 1 { actions[1] } else { count } }",
                 true,
             ),
             ("Snapshot::identity(freeze)", true),
@@ -816,7 +822,7 @@ pub fn append_pair(mut items: []Action) &mut -> () {
 }
 pub fn append_selected(mut items: []Action) &mut -> Action {
     append_pair(mut items)
-    items[1]
+    if len(ref items) > 1 { items[1] } else { count }
 }
 pub fn append_branch(mut items: []Action, flag: bool) &mut -> () {
     if flag { Array::push(mut items, count) } else { Array::push(mut items, freeze) }
@@ -962,7 +968,9 @@ fn observe() -> int {{
     {setup}
     let mut live = Storage::Cell.{{ count: 1 }}
     live.count += 1
-    let _ = {target}(Storage::Shelf.{{ item: ^mut live }})
+    if len(ref batch.items) > 3 {{
+        let _ = {target}(Storage::Shelf.{{ item: ^mut live }})
+    }}
     live.count
 }}"
             );
@@ -1039,7 +1047,9 @@ fn observe(times: int) -> int {{
     {setup}
     let mut live = Storage::Cell.{{ count: 1 }}
     live.count += 1
-    let _ = {target}(Storage::Shelf.{{ item: ^mut live }})
+    if len(ref items) > 3 {{
+        let _ = {target}(Storage::Shelf.{{ item: ^mut live }})
+    }}
     live.count
 }}"
             );
@@ -1293,7 +1303,9 @@ fn run() -> int {{
     let mut live = Copies::Cell.{{ count: 1 }}
     live.count += 1
     {copy}
-    let _ = copied[{index}](Copies::Shelf.{{ item: ^mut live }})
+    if len(copied) > {index} {{
+        let _ = copied[{index}](Copies::Shelf.{{ item: ^mut live }})
+    }}
     live.count
 }}"
                     )
@@ -1432,7 +1444,9 @@ fn observe() -> int {{
     let next = {update}
     let mut live = Updates::Cell.{{ count: len(base.left) }}
     live.count += 1
-    let _ = next.{target}(Updates::Shelf.{{ item: ^mut live }})
+    if len(next.left) > 3 && len(next.right) > 0 {{
+        let _ = next.{target}(Updates::Shelf.{{ item: ^mut live }})
+    }}
     live.count
 }}"
                 );

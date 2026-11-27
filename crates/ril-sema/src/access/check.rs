@@ -508,6 +508,27 @@ pub(super) fn analyze(program: &TypedProgram) -> (Analysis, Vec<Diagnostic>) {
     analyzer.restrict_mode_domains(&facts, &mut domains, &mut analysis);
     analysis.closure_captures = std::mem::take(&mut analyzer.closure_captures);
     analysis.behavior = crate::behavior::analyze(program, &analysis);
+    for site in &analysis.behavior.defer_panics {
+        let mut diag = Diagnostic::error(
+            Code::E0627,
+            site.defer_span,
+            "defer body may panic (risk of uncatchable double-panic abort)",
+        );
+        if let Some(step) = site.witness.first()
+            && let Some(at) = step.at
+        {
+            let detail = match (&step.call, step.cause) {
+                (Some(call), Some(cause)) => {
+                    format!("panic originates via `{call}` ({})", cause.as_str())
+                }
+                (Some(call), None) => format!("panic originates via `{call}`"),
+                (None, Some(cause)) => format!("panic originates here ({})", cause.as_str()),
+                (None, None) => "panic originates here".into(),
+            };
+            diag = diag.with_label(at, detail);
+        }
+        analyzer.error_diag(diag);
+    }
     (analysis, analyzer.diagnostics)
 }
 
