@@ -13,7 +13,7 @@ fn relay<T>(via value: T) -> infer T {
     item
 }
 
-fn make_cells() -> new []Cell |> HasLen(1) { [Cell.{ value: 1 }] }
+fn make_cells() -> new []Cell |> Len(1) { [Cell.{ value: 1 }] }
 
 fn receive_cells() -> () {
     let mut cells: [mut]Cell = make_cells() -- New elements receive writable access.
@@ -126,6 +126,24 @@ fn log_and_close() -> new !<str, str> {
     defer { let _ = Fs::close(f) }          -- Consuming defer discharges 'f' on exit/unwind.
     Fs::write(mut f, 64)                    -- Call-scoped 'mut' mutates without consuming 'f'.
     Ok(Fs::path(ref f))                     -- Call-scoped 'ref' observes without consuming 'f'.
+}
+```
+
+```ril
+-- Zero-cost static proofs, immutable type-level invariants, proved map indexing,
+-- exact slice length conservation, and statically proved 'unreachable()'.
+type Port(int) |> Between(1, 65535)
+type MinLen = \T |> LenTarget, xs: T, n: int -> if len(xs) >= n { <()> } else { <never> }
+
+fn lookup_port(cfg: [str: Port], key: str |> In(cfg)) -> int |> Positive {
+    let p = cfg[key]                        -- Proved present by 'In(cfg)'
+    inner(p)                                -- Proved > 0 by 'Port' invariant
+}
+
+fn head_pair(xs: []int |> MinLen(2)) -> int {
+    let pair = xs[0..2]                     -- Exact slice length conservation: len(pair) == 2
+    if len(pair) != 2 { unreachable() }     -- Stays total (no @panic); proved dead by DBM
+    pair[0] + pair[1]
 }
 ```
 

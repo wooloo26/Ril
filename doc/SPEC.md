@@ -19,9 +19,9 @@ This specification defines Ril's syntax, static semantics, access modes, state a
 | Provenance & `new` | `new` marks unbound newly constructed `SharedObject` graphs (plus exiting-scope promotion of pinned `let mut` locals and `new` parameters at block/function exit); targets choose access modes for `new` subgraphs while nested existing sources retain their authority and aliases |
 | Value vs. shared object | `bool`, `int`, `f64`, `str`, `bytes`, `()`, `never`, unit nominals, and `.ril` nominal/opaque wrappers over value types copy by value; records, nonempty tuples, collections, sums, and wrappers over shared objects have automatically reclaimed object identity |
 | Records & constructors | Anonymous records and record type aliases attach `.{...}` (`Alias.{ id: 1 }`); sum variants are default-qualified (`Shape::Rect(10.0, 20.0)`; prelude `Ok(42)`, `Some(x)`) with tight `(...)`; payload nominal/opaque types wrap via tight `::(...)` (`UserId::(42)`, `User::(.{ id: 1 })`) |
-| Type forms | `type A = B` is a transparent type alias; `type A` / `type A(B)` is an erased nominal type; `opaque type A(B)` seals representation outside its defining file or `sub`; `[opaque] linear type` marks must-consume linear types |
+| Type forms | `type A = B` is a transparent type alias; `type A` / `type A(B)` is an erased nominal type; `opaque type A(B)` seals representation outside its defining file or `sub`; `[opaque] linear type` marks must-consume linear types; non-linear payload nominal/opaque types admit immutable static proof invariants (`type Port(int) \|> Between(1, 65535)`) |
 | Reachable authority use | `var` requires slot replacement, `mut` requires writable use, `^mut` parameters require surviving retention, and named effect/state clauses must be minimal (`E0527`, `E0529`, `E0626`) |
-| `where`, checks & guards | Braceless `where` hoists helper declarations (`type`, `fn`, `meta fn`, block `eff`); `\|>` runs compile-time static checks on generic parameters and pure fallible signature guards on runtime parameters/returns |
+| `where`, checks & guards | Braceless `where` hoists helper declarations (`type`, `fn`, `meta fn`, block `eff`); `\|>` runs compile-time static checks on generic parameters, zero-cost Type-Function static proofs (`\|> PascalCase`) on parameters/returns/nominal-opaque types, and pure fallible runtime signature guards (`\|> snake_case`) on parameters/returns |
 | Purity, effects & defects | Purity excludes outward effects and non-pure state obligations; `eff` separates direct `fn` ops from one-shot algebraic `ctl` ops, `@io` is the built-in system effect, and defects unwind active `defer` statements LIFO |
 
 ### Ril at a Glance
@@ -714,6 +714,7 @@ pub type Connected
 pub type UserId(int)
 pub type OrgId(int)
 pub type Point(int, int)
+pub type Port(int) |> Between(1, 65535)
 pub opaque type Conn<State>(.{ fd: int })
 
 pub fn open_raw() -> new Conn<Disconnected> { Conn::(.{ fd: -1 }) }
@@ -721,10 +722,12 @@ pub fn dial(new c: Conn<Disconnected>, fd: int) -> new Conn<Connected> {
     Conn::(.{ fd: c.fd + fd + 1 })
 }
 pub fn close_conn(new _c: Conn<Connected>) -> () {}
+pub fn port_div(n: int, p: Port) -> int { n / inner(p) } -- Proved non-zero by 'Port' invariant
 
 let uid = UserId::(42)
 let pt = Point::(3, 4)
-assert(inner(uid) == 42 && inner(pt) == (3, 4) && inner(Disconnected) == ())
+let port = Port::(8080)
+assert(inner(uid) == 42 && inner(pt) == (3, 4) && inner(Disconnected) == () && port_div(16160, port) == 2)
 close_conn(dial(open_raw(), 3))
 ```
 
@@ -738,6 +741,8 @@ close_conn(dial(open_raw(), 3))
 -- opaque type BadEq = int             -- Error [E0120]: opaque type does not use '='
 -- type Empty()                        -- Error [E0120]: use 'type Empty' for unit nominal or 'type Unit(())' for unit payload
 -- type BadMode(mut []int)             -- Error [E0356]: single-element nominal/parenthesized type forbids member modes
+-- type BadInv(.{ var n: int }) |> Positive -- Error [E0356]: type-level invariants require deeply immutable payloads
+-- let _ = Port::(0)                   -- Error [E0323]: fails 'Port' static invariant 'Between(1, 65535)'
 -- let _ = Conn.{ fd: 1 }              -- Error [E0338]: nominal record uses 'Conn::(.{ ... })', not 'Conn.{ ... }'
 -- type Cyc = Cyc                      -- Error [E0313]: cyclic transparent type alias
 -- type BadWrap(BadWrap)               -- Error [E0313]: cyclic nominal wrapper
@@ -1637,10 +1642,14 @@ assert(safe_div_shift(40, 5, 1) == 4)
 
 ```ril
 let xs = [10, 20, 30, 40]
+let part = xs[1..3]
 let text = "hello, 世界"
-assert(xs[1..3] == [20, 30] && xs?[9] == None && text[0..5] == "hello")
+assert(part[0] == 20 && part[1] == 30 && xs?[9] == None && text[0..5] == "hello")
 let m = ["port": 8080]
 assert(m?["port"] == Some(8080) && m?["host"] == None)
+if Map::contains(m, "port") {
+    assert(m["port"] == 8080)           -- Proved present via 'Map::contains'
+}
 
 type Cell = .{ var v: int }
 let mut cells = [Cell.{ v: 1 }]
@@ -1658,7 +1667,7 @@ cells |> mut Array::push(Cell.{ v: 2 }) -- OK: 'elem' last use has ended
 ```
 
 - **Arrays `[M]T`, `bytes`, and Proof-by-Narrowing (`E0362`)**: Direct indexing `xs[i]` / `b[i]`, indexed assignment `xs[i] = v`, `Array::swap(mut xs, i, j)`, `Array::remove(mut xs, i)`, `String::scalar_at(text, i)`, and `Array::insert(mut xs, i, v)` require a static bounds proof (`0 <= i < len(xs)` via `InBounds(xs)`, or `0 <= i <= len(xs)` via `Between(0, len(xs))` for `Array::insert`; `E0362: UnprovedBoundsError` otherwise). Boundary-checked alternatives require no proof: `xs?[i] -> ?T`, `b?[i] -> ?int`, `Array::first`, `Array::last`, `Array::pop`, and `Array::pop_front`. Single-element bracket indexing on `str` fails `E0352` (use `String::scalar_at` with an `InBounds` proof); dynamic bracket indexing on records fails `E0324`.
-- **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Direct slicing `s[a..b]` requires static local bounds proof (`0 <= a <= b <= len(s)`, `E0362` otherwise); safe slicing `s?[a..b]` returns `?T`. The static prover tracks exact slice length conservation (`len(s[a..b]) == b - a`, `len(s[a..=b]) == b - a + 1`, `len(s[..k]) == k`, `len(s[..k]) + len(s[k..]) == len(s)`, including on `Some(sub)` unwraps of `s?[a..b]`). Slicing produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
+- **Slicing (`s[a..b]`, `s[a..=b]`, `s?[a..b]`)**: Direct slicing `s[a..b]` requires static local bounds proof (`0 <= a <= b <= len(s)`, `E0362` otherwise); safe slicing `s?[a..b]` returns `?T`. The static prover tracks exact slice length conservation (`len(s[a..b]) == b - a`, `len(s[a..=b]) == b - a + 1`, `len(s[..k]) == k`, `len(s[..k]) + len(s[k..]) == len(s)`, including on `Some(part)` unwraps of `s?[a..b]`). Slicing produces a fresh `new`-qualified array on `[M]T` (preserving element modes; binding directly to `let ref` fails `E0543`), a Unicode-scalar sub-string on `str`, and a byte sub-sequence on `bytes`.
 - **Maps `[K: M V]`**: Direct map reads `m[k]` and compound assignments `m[k] += v` require a static key-membership proof (`k |> In(m)`, `if Map::contains(m, k)`, `if m?[k] != None`, `m[k] = v`, or `for` over `m` / `Map::keys(m)`; `E0362` otherwise). Boundary lookup `m?[k] -> ?V` requires no proof; direct slot assignment `m[k] = v` inserts or updates key `k`.
 - **Container Element Holds (`E0537`, `E0526`)**: On live `[M]T` and `[K: M V]` containers, `xs[i]`, `xs?[i]`, and `m?[k]` establish scoped element holds bounded by the container; mutating or resizing the container while a `ref`/`mut` hold is active or during `for` iteration fails `E0537` / `E0526`.
 - **Tuple & static field projection (`t.0`, `r.(key)`)**: `t.0` projects tuple elements (`E0312` out of bounds; `E0337` on sums, records, collections, or primitives). `r.(key)` projects an accessible record field or tuple slot using a compile-time `meta` key validated by `KeyOf<T>`.
@@ -2009,7 +2018,7 @@ fn check_narrowing(mut cell: Cell, via hook: fn() & -> (), eff_cb: fn() @ -> (),
 - **Contradictory test (`E0311`)**: Testing `== None` or `!= None` when disjoint from the active optional state of a single-layer `?T` fails `E0311: ContradictoryNarrowingError` (nested `??T` unwraps one layer at a time).
 - **Write invalidation (`E0310`)**: Immutable `let` paths through immutable fields narrow without depth limit. Reassigning `var`, writing an overlapping mutable path, or calling an `@Eff` whose enclosing `with` arm writes that path invalidates the narrowing (`E0310: InvalidatedNarrowingAccessError`).
 - **Unknown alias / handler hazard (`E0533`)**: Across an open-state (`&`, `@&`), open-effect (`@`), or unhandled `@Eff` / `ctl` call—or a `^mut` write not proved disjoint from a live path (`ref` does not prove independence; `clone` into `let` does)—reading the prior live narrowing fails `E0533: AliasedNarrowingHazardError`. An uncaptured local `var x: ?T` preserves its narrowing across one-shot `ctl` suspension, whereas captured `var` and live `mut`/`ref`/`^mut` paths invalidate (`E0310` / `E0533`).
-- **DBM value & bounds prover (`E0361`, `E0362`, `E0323`)**: The flow-sensitive narrowing engine maintains a decidable Difference-Bound Matrix (DBM) over `int` values, nested field paths (`s.rows`), and collection/string/bytes lengths (`len(xs) >= 0`), augmented with canonical disequality propagation (`a - b != k`), $O(1)$ integer arithmetic lemmas (convex midpoints `lo + (hi - lo) / k` and `(lo + hi) / 2`, non-negative modulo `a % b`, sliding-window `a + b <= c`), `match` arm/guard narrowing with fallthrough negation, and a pure read-only Cousot-Cousot widening fixpoint for `while`/`for` loops. It discharges `/`, `%`, `<<`, `>>` (`E0361`), `xs[i]`, `b[i]`, `xs[i] = v`, `s[a..b]`, `Array::{swap,insert,remove}`, `String::scalar_at` (`E0362`), and user-defined Type-Function static proofs (`E0323`). Built-in length transfer tracks exact `+1` (`Array::push`/`insert`), length preservation (`Array::swap`/`sort`, `xs[i] = v`, `clone`, `inner`), `-1` / `<= old` (`Array::pop`/`pop_front`/`remove`), and `== 0` (`Array::clear`); all other writes, container-resizing calls, active `defer` mutations before exit, and open-state/open-effect calls soundly invalidate affected facts (while preserving uncaptured confined `let mut` / value `var` locals).
+- **DBM value, bounds, membership & unreachability prover (`E0361`, `E0362`, `E0323`)**: The flow-sensitive narrowing engine maintains a decidable Difference-Bound Matrix (DBM) over `int` values, nested field paths (`s.rows`), and collection/string/bytes lengths (`len(xs) >= 0`), augmented with canonical disequality propagation (`a - b != k`), key-membership tracking (`In(c)` for maps and `Set`s established by `Map::contains`/`Set::contains`, `m?[k] != None`, `m[k] = v`, `Map::insert`/`replace`, `Set::insert`, `for` over `m`/`Map::keys(m)`, or `In(c)` proofs), exact slice length conservation (`len(s[a..b]) == b - a`, `len(s[a..=b]) == b - a + 1`, `len(s[..k]) == k`, `len(s[..k]) + len(s[k..]) == len(s)`, including on `Some(part)` of `s?[a..b]`), automatic seeding of immutable nominal/opaque type-level invariants, $O(1)$ integer arithmetic lemmas (convex midpoints `lo + (hi - lo) / k` and `(lo + hi) / 2`, non-negative modulo `a % b`, sliding-window `a + b <= c`), `match` arm/guard narrowing with fallthrough negation, and a pure read-only Cousot-Cousot widening fixpoint for `while`/`for` loops. It discharges `/`, `%`, `<<`, `>>` (`E0361`), `xs[i]`, `b[i]`, `xs[i] = v`, `s[a..b]`, `m[k]` reads and `m[k] += v`, `Array::{swap,insert,remove}`, `String::scalar_at` (`E0362`), static `unreachable()` via DBM contradiction (`E0323`; introduces no `@panic`/`@abort`/`@diverge` and is legal inside `defer`), and user-defined Type-Function static proofs (`E0323`). Built-in transfer tracks exact `+1` (`Array::push`/`insert`), length preservation (`Array::swap`/`sort`, `xs[i] = v`, `clone`, `inner`), `-1` / `<= old` (`Array::pop`/`pop_front`/`remove`), `== 0` (`Array::clear`), and key invalidation (`Map::remove`/`pop_entry`/`clear`, `Set::remove`/`clear`); all other writes, container-resizing calls, active `defer` mutations before exit, and open-state/open-effect calls soundly invalidate affected facts (while preserving uncaptured confined `let mut` / value `var` locals).
 
 ---
 
@@ -2057,7 +2066,7 @@ where
 
 `SignatureGuard` (`|> [ref] guard(args)`) unifies two lexically distinct forms on `RegularParam` and declaration `ReturnSpec` (`FunctionDecl`, `MetaFnDecl`):
 
-- **Type-Function Static Proofs (`|> PascalCase`, zero runtime cost)**: When `guard` resolves to a Type Function returning `<()>` (accept) or `<never>` (reject) (`E0306` otherwise), the check is erased completely in MIR/codegen and verified statically at call sites (parameters, `E0323` or `E0362` on bounds intrinsics) and function exits (returns, after applying active `defer` mutations, `E0323`). Leading generic type parameters of the Type Function are deduced automatically from the subject and arguments (e.g., `i |> InBounds(xs)`, `-> new []U |> SameLen(xs)`), and static proof arguments admit pure `len(x)`, field paths, and linear `±` (e.g., `Between(0, len(xs))`). All-constant call sites run the full static evaluator; symbolic runtime arguments are lowered to NNF difference logic and discharged by the DBM prover (`E0306` if outside the decidable fragment). On `?T` / `!<T, E>` returns, a static proof whose subject matches `T` applies to `Some(v)` / `Ok(v)` payloads and propagates on `?` / `if let` / `match`. Functions with static parameter proofs cannot decay to first-class `CallableType` values (`E0534`; return-only proofs may decay), anonymous closures forbid static proofs (`E0534`), public signatures cannot leak private proof Type Functions (`E0910`), and `.rili` interfaces verify contravariant parameter / covariant return proof compatibility (`E0552`).
+- **Type-Function Static Proofs (`|> PascalCase`, zero runtime cost)**: When `guard` resolves to a Type Function returning `<()>` (accept) or `<never>` (reject) (`E0306` otherwise), the check is erased completely in MIR/codegen and verified statically at call sites (parameters, `E0323` or `E0362` on bounds/membership intrinsics), function exits (returns, after applying active `defer` mutations, `E0323`), and `Name::(...)` construction of non-linear deeply-immutable nominal/opaque invariant types (`type Port(int) |> Between(1, 65535)`, `E0323`). Leading generic type parameters of the Type Function are deduced automatically from the subject and arguments (e.g., `i |> InBounds(xs)`, `k |> In(m)`, `-> new []U |> SameLen(xs)`), and static proof arguments admit pure `len(x)`, field paths, and linear `±` (e.g., `Between(0, len(xs))`). All-constant call sites run the full static evaluator; symbolic runtime arguments are lowered to NNF difference logic and discharged by the DBM prover (`E0306` if outside the decidable fragment). On `?T` / `!<T, E>` returns, a static proof whose subject matches `T` applies to `Some(v)` / `Ok(v)` payloads and propagates on `?` / `if let` / `match`. Functions with static parameter proofs cannot decay to first-class `CallableType` values (`E0534`; return-only proofs may decay), anonymous closures forbid static proofs (`E0534`), public signatures cannot leak private proof Type Functions (`E0910`), and `.rili` interfaces verify contravariant parameter / covariant return proof compatibility and bidirectional public type-invariant compatibility (`E0552`).
 - **Runtime Signature Guards (`|> snake_case`)**: When `guard` resolves to an ordinary pure fallible `fn`, it executes at runtime on entry/exit and returns `Err` / `None` on failure:
 
 ```ril
@@ -2114,7 +2123,7 @@ ParameterMode        ::= "mut" | "^mut" | "ref" | "new" | "via"
 ReturnSpec           ::= [ EffectAnnot ] [ StateAnnot ] "->" ReturnType { SignatureGuard }
 SignatureGuard       ::= "|>" [ "ref" ] QualifiedName [ GenericArgs ] [ "(" [ GuardArgList ] ")" ]
 GuardArgList         ::= GuardArg { "," GuardArg } [ "," ]
-GuardArg             ::= [ ValueName ":" ] ( [ "ref" ] QualifiedName | [ "-" ] Literal )
+GuardArg             ::= [ ValueName ":" ] [ "ref" ] Expression
 ReturnType           ::= [ ReturnMode ] TypeExpression
 ReturnMode           ::= "new"
                        | "infer"
