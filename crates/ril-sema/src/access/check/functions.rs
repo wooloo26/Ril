@@ -72,11 +72,43 @@ impl Analyzer<'_> {
         ledger.no_continuation = false;
         ledger.iteration.clear();
         ledger.holds.clear();
-        if callable.open_effects || callable.open_state {
+        fn contains_open_effect_callable(ty: &Ty) -> bool {
+            match ty {
+                Ty::Callable(c) => {
+                    c.open_effects
+                        || c.direct_open_effects
+                        || c.parameters
+                            .iter()
+                            .any(|p| contains_open_effect_callable(&p.ty))
+                        || contains_open_effect_callable(&c.result)
+                }
+                Ty::Tuple(items) => items.iter().any(|m| contains_open_effect_callable(&m.ty)),
+                Ty::Record(fields, _) => fields
+                    .iter()
+                    .any(|(_, m)| contains_open_effect_callable(&m.ty)),
+                Ty::Array(m) => contains_open_effect_callable(&m.ty),
+                Ty::Map(k, v) => {
+                    contains_open_effect_callable(k) || contains_open_effect_callable(&v.ty)
+                }
+                Ty::Draft(inner) => contains_open_effect_callable(inner),
+                Ty::Adt(adt) => adt.arguments.iter().any(|arg| match arg {
+                    crate::ty::GenericValue::Type(t) => contains_open_effect_callable(t),
+                    _ => false,
+                }),
+                _ => false,
+            }
+        }
+        let has_open_effect_param = callable
+            .parameters
+            .iter()
+            .any(|p| contains_open_effect_callable(&p.ty));
+        if callable.open_state
+            || ((callable.open_effects || callable.direct_open_effects) && !has_open_effect_param)
+        {
             self.error(
                 Code::E0547,
                 ctx.owner,
-                "named definitions require closed effect and state sets",
+                "named definitions require closed state sets and open '@' requires an open callback parameter",
             );
         }
         let body_span = self.ast(ctx.file).expr(body).span;
@@ -433,6 +465,9 @@ impl Analyzer<'_> {
         };
         self.publish_snapshot_contract(fun, &mut summary);
         let mut up = BTreeSet::new();
+        let mut used_effect_vars = BTreeSet::new();
+        let mut used_open_effect = false;
+        let mut used_direct_open_effect = false;
         for fact in facts.iter().filter(|fact| fact.owner == fun.owner) {
             match &fact.obligation {
                 Obligation::Write(span) => {
@@ -467,10 +502,14 @@ impl Analyzer<'_> {
                         summary.invoked.push(formal);
                     }
                 }
-                Obligation::NoCtlParam(span) => {
-                    if let Some(formal) = fun.formals.iter().position(|decl| *decl == Some(*span)) {
-                        summary.no_ctl_params.push(formal);
-                    }
+                Obligation::EffectVar(var) => {
+                    used_effect_vars.insert(*var);
+                }
+                Obligation::OpenEffect => {
+                    used_open_effect = true;
+                }
+                Obligation::DirectOpenEffect => {
+                    used_direct_open_effect = true;
                 }
                 Obligation::Effect(effect) => {
                     self.record_effect_use(fun, &mut summary, effect, None);
@@ -493,8 +532,6 @@ impl Analyzer<'_> {
         summary.retained.dedup();
         summary.independent_retention.sort_unstable();
         summary.invoked.sort_unstable();
-        summary.no_ctl_params.sort_unstable();
-        summary.no_ctl_params.dedup();
         summary.effects.sort();
         summary.effects.dedup();
         summary.effect_uses.sort_unstable();
@@ -542,6 +579,50 @@ impl Analyzer<'_> {
                     format!("declared @{effect} is never exercised"),
                 );
             }
+        }
+        for &var in &used_effect_vars {
+            if !sig.effect_vars.contains(&var) {
+                let var_name = &self.program.hir.definition(var).name.value;
+                self.error(Code::E0612, name, format!("unhandled @{var_name}"));
+            }
+        }
+        for &var in &sig.effect_vars {
+            if !used_effect_vars.contains(&var) {
+                let var_name = &self.program.hir.definition(var).name.value;
+                self.error(
+                    Code::E0626,
+                    name,
+                    format!("declared @{var_name} is never exercised"),
+                );
+            }
+        }
+        if used_open_effect {
+            if sig.direct_open_effects && !sig.open_effects {
+                self.error(
+                    Code::E0616,
+                    name,
+                    "open '@' callback may perform ctl and cannot be covered by '@fn'",
+                );
+            } else if !sig.open_effects {
+                self.error(
+                    Code::E0612,
+                    name,
+                    "missing '@' obligation for open-effect callback",
+                );
+            }
+        }
+        if used_direct_open_effect && !sig.open_effects && !sig.direct_open_effects {
+            self.error(
+                Code::E0612,
+                name,
+                "missing '@fn' obligation for direct open-effect callback",
+            );
+        }
+        if sig.open_effects && !used_open_effect && !used_direct_open_effect {
+            self.error(Code::E0626, name, "declared '@' is never exercised");
+        }
+        if sig.direct_open_effects && !used_direct_open_effect {
+            self.error(Code::E0626, name, "declared '@fn' is never exercised");
         }
         if up.difference(&fun.capture_names).next().is_some() {
             self.error(Code::E0510, name, "missing &up dependency");

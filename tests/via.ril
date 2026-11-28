@@ -587,8 +587,8 @@ pub fn apply(action: fn(via Cell, via Cell) -> (), flag: bool) -> int {
 }
 
 -- @case higher_order_writable_and_plain_instantiations_are_independent compile-pass
-fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
-fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { apply(action, cell) }
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { action(cell) }
+fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { apply(action, cell) }
 fn change(via cell: Cell) -> int { cell.count += 1; cell.count }
 fn read(via cell: Cell) -> int { cell.count }
 fn run() -> int {
@@ -598,7 +598,7 @@ fn run() -> int {
 }
 
 -- @case higher_order_argument_demands_survive_recursion_and_named_values compile-fail E0520
-fn apply(via action: fn(via Cell) @& -> int, via cell: Cell, recur: bool) -> int {
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell, recur: bool) @ -> int {
     if recur { apply(action, cell, false) } else { action(cell) }
 }
 fn change(via cell: Cell) -> int { cell.count += 1; cell.count }
@@ -610,7 +610,7 @@ fn invalid() -> int {
 }
 
 -- @case callback_handoffs_from_separate_calls_do_not_revoke_a_readers_path compile-pass
-fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { action(cell) }
 fn bump(via cell: Cell) -> int {
     cell.count += 1
     cell.count
@@ -624,7 +624,7 @@ fn sum(via cell: Cell) -> int {
 fn run() -> int { sum(Cell.{ count: 10 }) }
 
 -- @case consuming_callback_may_return_the_new_path compile-pass
-fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell {
     let via value = action(cell)
     assert(value.count == 41)
     value
@@ -638,16 +638,16 @@ fn run() -> int {
 
 -- @case dropping_the_preservation_requirement_is_compatible compat-pass
 -- @baseline
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int {
     let result = action(cell)
     result + cell.count
 }
 -- @revision
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { action(cell) }
 
 -- @case higher_order_inferred_return_cannot_freeze_a_call_scoped_mut_argument compile-fail E0535
 fn through(via cell: Cell) -> infer Cell { cell }
-fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell {
     let via value = action(cell)
     through(value)
 }
@@ -659,7 +659,7 @@ fn invalid(ref cell: Cell) -> int {
 }
 
 -- @case higher_order_return_distinguishes_reference_snapshot_and_new_arguments compile-pass
-fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell { action(cell) }
 fn identity(via cell: Cell) -> infer Cell { cell }
 fn run() -> int {
     let plain = Cell.{ count: 1 }
@@ -674,7 +674,7 @@ fn run() -> int {
 }
 
 -- @case higher_order_return_cannot_recover_new_qualification_after_attenuation compile-fail E0520
-fn observe(via action: fn() @& -> infer Cell) -> infer Cell { ref action() }
+fn observe(via action: fn() @& -> infer Cell) @ -> infer Cell { ref action() }
 fn invalid() -> int {
     let mut view = observe(\-> Cell.{ count: 41 })
     -- ^ E0520
@@ -684,30 +684,30 @@ fn invalid() -> int {
 
 -- @case adding_a_higher_order_mode_requirement_breaks_compatibility compat-fail E0552
 -- @baseline
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int {
     let _ = action(Cell.{ count: 0 })
     cell.count
 }
 -- @revision
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { action(cell) }
 -- ^ E0552
 
 -- @case forwarding_preserves_higher_order_mode_requirements compat-pass
 -- @baseline
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { action(cell) }
 -- @revision
-fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
-pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { relay(action, cell) }
+fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { action(cell) }
+pub fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { relay(action, cell) }
 
 -- @case changing_callback_result_source_breaks_compatibility compat-fail E0552
 -- @baseline
-pub fn pick(via action: fn(via Cell) @& -> infer Cell, via a: Cell, via b: Cell) -> infer Cell {
+pub fn pick(via action: fn(via Cell) @& -> infer Cell, via a: Cell, via b: Cell) @ -> infer Cell {
     let via left = action(a)
     let via right = action(b)
     left
 }
 -- @revision
-pub fn pick(via action: fn(via Cell) @& -> infer Cell, via a: Cell, via b: Cell) -> infer Cell {
+pub fn pick(via action: fn(via Cell) @& -> infer Cell, via a: Cell, via b: Cell) @ -> infer Cell {
 -- ^ E0552
     let via left = action(a)
     let via right = action(b)
@@ -716,17 +716,17 @@ pub fn pick(via action: fn(via Cell) @& -> infer Cell, via a: Cell, via b: Cell)
 
 -- @case forwarding_preserves_callback_result_sources compat-pass
 -- @baseline
-pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell {
     action(cell)
 }
 -- @revision
-fn relay(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
-pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
+fn relay(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell { action(cell) }
+pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell {
     relay(action, cell)
 }
 
 -- @case higher_order_infer_can_use_an_enclosing_mode_input compile-pass
-fn accept(via callback: fn() @& -> infer Cell) -> int { callback().count }
+fn accept(via callback: fn() @& -> infer Cell) @ -> int { callback().count }
 
 -- @case higher_order_mode_template_rejects_a_value_type_input compile-fail E0550
 type Invalid = fn(via int) -> infer int

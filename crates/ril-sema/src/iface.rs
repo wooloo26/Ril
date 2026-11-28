@@ -77,6 +77,10 @@ pub struct Declaration {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Generic {
     pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_effect: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct_only: bool,
     pub bounds: Vec<String>,
     pub guards: Vec<String>,
     pub default: Option<String>,
@@ -706,9 +710,12 @@ fn generics(program: &TypedProgram, ast: &Ast, params: &[GenericParam]) -> Vec<G
                 GenericArg::Type(ty) => fingerprint(program, ast.ty(*ty).span),
                 GenericArg::Value(expr) => fingerprint(program, ast.expr(*expr).span),
                 GenericArg::Mode(storage) => format!("{:?} {}", storage.mode, storage.variable),
+                GenericArg::Effect(_, span) => fingerprint(program, *span),
             });
             Generic {
                 name: param.name.value.clone(),
+                is_effect: param.is_effect,
+                direct_only: param.direct_only,
                 bounds,
                 guards: param
                     .guards

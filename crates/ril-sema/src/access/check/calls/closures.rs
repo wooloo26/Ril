@@ -83,8 +83,17 @@ impl Analyzer<'_> {
             }
             self.charge_latent_effects(&effect_ctx, ledger, &value, rhs.span);
             if !inline && let Ty::Callable(signature) = self.ty(rhs.span) {
+                let signature = signature.clone();
                 for effect in &signature.effects {
                     self.effect(&effect_ctx, ledger, effect, rhs.span);
+                }
+                for &var in &signature.effect_vars {
+                    self.use_effect_var(&effect_ctx, ledger, var, rhs.span);
+                }
+                if signature.open_effects {
+                    self.use_open_effect(&effect_ctx, ledger, false, rhs.span);
+                } else if signature.direct_open_effects {
+                    self.use_open_effect(&effect_ctx, ledger, true, rhs.span);
                 }
             }
             self.link_invocation(ctx, &value);
@@ -190,7 +199,7 @@ impl Analyzer<'_> {
                 },
             );
         }
-        if obligations.open_effects || obligations.open_state {
+        if obligations.open_effects || obligations.direct_open_effects || obligations.open_state {
             self.error(
                 Code::E0547,
                 node.span,
@@ -551,6 +560,15 @@ impl Analyzer<'_> {
                     closure
                         .latent_operations
                         .insert((operation.id, operation.effect.clone()));
+                }
+                Obligation::EffectVar(var) => {
+                    closure.latent_effect_vars.insert(*var);
+                }
+                Obligation::OpenEffect => {
+                    closure.latent_open_effect = true;
+                }
+                Obligation::DirectOpenEffect => {
+                    closure.latent_direct_open_effect = true;
                 }
                 Obligation::StatefulHandler => {
                     closure.live_callable_state = true;

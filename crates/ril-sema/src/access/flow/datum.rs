@@ -192,6 +192,10 @@ impl Datum {
         self.requires_new &= other.requires_new;
         self.latent_effects.append(&mut other.latent_effects);
         self.latent_operations.append(&mut other.latent_operations);
+        self.latent_effect_vars
+            .append(&mut other.latent_effect_vars);
+        self.latent_open_effect |= other.latent_open_effect;
+        self.latent_direct_open_effect |= other.latent_direct_open_effect;
         self.environments.append(&mut other.environments);
         for (owner, existing_storage) in other.publications {
             *self.publications.entry(owner).or_default() |= existing_storage;
@@ -462,6 +466,9 @@ impl Datum {
                 members,
                 array_len,
                 latent_effects: value.latent_effects.clone(),
+                latent_effect_vars: value.latent_effect_vars.clone(),
+                latent_open_effect: value.latent_open_effect,
+                latent_direct_open_effect: value.latent_direct_open_effect,
                 environments: value.environments.clone(),
                 invocations: value.invocations.clone(),
                 live_callable_state: value.live_callable_state,

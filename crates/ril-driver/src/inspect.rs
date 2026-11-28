@@ -278,8 +278,6 @@ pub struct SymbolFact {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effect_ops: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub no_ctl_params: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub may_panic: Vec<WitnessStepJson>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub may_abort: Vec<WitnessStepJson>,
@@ -1012,7 +1010,6 @@ fn build_symbol_fact(
             shared_mut: Vec::new(),
             captures: false,
             effect_ops: Vec::new(),
-            no_ctl_params: Vec::new(),
             may_panic: Vec::new(),
             may_abort: Vec::new(),
             may_diverge: Vec::new(),
@@ -1029,7 +1026,6 @@ fn build_symbol_fact(
     let param_names = function_param_names(typed, def_id);
     let mut_params = formal_names(&param_names, &summary.writes);
     let shared_params = formal_names(&param_names, &summary.retained);
-    let no_ctl_params = formal_names(&param_names, &summary.no_ctl_params);
 
     let mut effect_ops = BTreeSet::new();
     for eu in &summary.effect_uses {
@@ -1102,7 +1098,6 @@ fn build_symbol_fact(
         shared_mut: shared_params,
         captures: summary.captures,
         effect_ops: effect_ops.into_iter().collect(),
-        no_ctl_params,
         may_panic,
         may_abort,
         may_diverge,

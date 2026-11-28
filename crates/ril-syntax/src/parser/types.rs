@@ -409,6 +409,24 @@ impl Parser<'_> {
     }
 
     fn generic_arg(&mut self) -> Result<GenericArg> {
+        if self.is("@") {
+            let start = self.current().span;
+            let mut paths = Vec::new();
+            while self.eat("@") {
+                if self.is("(") && self.current().tight_left {
+                    self.open("(", ")", Layout::List)?;
+                    self.close(")")?;
+                    break;
+                }
+                let path = self.path(Angle::Type, true)?;
+                paths.push(path);
+                self.skip_lines();
+                if !self.is("@") {
+                    break;
+                }
+            }
+            return Ok(GenericArg::Effect(paths, start.join(self.last)));
+        }
         if matches!(self.text(), "let" | "var" | "mut" | "^mut" | "ref") {
             return Ok(GenericArg::Mode(self.storage(false)?));
         }
@@ -448,6 +466,28 @@ impl Parser<'_> {
     }
 
     pub(super) fn generic_param(&mut self) -> Result<GenericParam> {
+        if self.eat("@") {
+            let name = self.name(Some(Word::Pascal), false)?;
+            let direct_only = if self.eat(":") {
+                self.require("fn")?;
+                true
+            } else {
+                false
+            };
+            let default = if self.eat("=") {
+                Some(self.generic_arg()?)
+            } else {
+                None
+            };
+            return Ok(GenericParam {
+                name,
+                is_effect: true,
+                direct_only,
+                bound: Vec::new(),
+                guards: Vec::new(),
+                default,
+            });
+        }
         let name = self.name(None, false)?;
         let mut bound = Vec::new();
         let mut guards = Vec::new();
@@ -479,6 +519,8 @@ impl Parser<'_> {
         };
         Ok(GenericParam {
             name,
+            is_effect: false,
+            direct_only: false,
             bound,
             guards,
             default,

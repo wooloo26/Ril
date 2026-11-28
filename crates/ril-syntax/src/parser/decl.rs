@@ -472,6 +472,16 @@ impl Parser<'_> {
             self.continue_lines(|tok| matches!(tok, "@" | "&"));
             if self.eat("@") {
                 let at_span = self.last;
+                if self.text() == "fn" && self.current().tight_left {
+                    self.bump();
+                    obligations.direct_open_effects = true;
+                    continue;
+                }
+                if self.is("(") && self.current().tight_left {
+                    self.open("(", ")", Layout::List)?;
+                    self.close(")")?;
+                    continue;
+                }
                 let effect = matches!(
                     self.current().kind,
                     Kind::Word(Word::Value | Word::Pascal | Word::Constant | Word::Primitive)

@@ -5,6 +5,130 @@ impl Analyzer<'_> {
         self.use_effect(ctx, ledger, Obligation::Effect(effect.into()), span, None);
     }
 
+    pub(super) fn use_effect_var(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        var: DefinitionId,
+        span: Span,
+    ) {
+        if ctx.shadow || !ctx.reachable {
+            return;
+        }
+        let direct = self.program.hir.is_direct_effect_param(var);
+        if !direct && ctx.no_ctl.is_some() {
+            self.error(
+                Code::E0616,
+                span,
+                "unconstrained effect row parameter may contain ctl and is prohibited in defer cleanup or fn handler arm; constrain with ': fn'",
+            );
+        }
+        if !direct {
+            let unarmed: Vec<_> = ledger
+                .pending_linear()
+                .filter(|occ| {
+                    !ledger.linear_armed.get(*occ).is_some_and(|defer_span| {
+                        ctx.ctl_boundary.is_none_or(|b| {
+                            defer_span.file == b.file
+                                && defer_span.start >= b.start
+                                && defer_span.end <= b.end
+                        })
+                    })
+                })
+                .map(|occ| occ.span)
+                .collect();
+            for handle_span in unarmed {
+                let mut diag = Diagnostic::error(
+                    Code::E0625,
+                    span,
+                    "must-consume value must be managed by an armed defer across effect row call",
+                );
+                if handle_span != span {
+                    diag = diag.with_label(handle_span, "unarmed must-consume value created here");
+                }
+                self.error_diag(diag);
+            }
+        }
+        if ledger.iteration.iter().any(|iterable| {
+            iterable
+                .roots
+                .iter()
+                .any(|origin| origin.mode == Access::Shared)
+        }) {
+            self.error(
+                Code::E0526,
+                span,
+                "shared collection being iterated cannot cross an unhandled effect",
+            );
+        }
+        self.seed(ctx, Obligation::EffectVar(var));
+    }
+
+    pub(super) fn use_open_effect(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        direct: bool,
+        span: Span,
+    ) {
+        if ctx.shadow || !ctx.reachable {
+            return;
+        }
+        if !direct && ctx.no_ctl.is_some() {
+            self.error(
+                Code::E0616,
+                span,
+                "open '@' callback may contain ctl and is prohibited in defer cleanup or fn handler arm; use '@fn'",
+            );
+        }
+        if !direct {
+            let unarmed: Vec<_> = ledger
+                .pending_linear()
+                .filter(|occ| {
+                    !ledger.linear_armed.get(*occ).is_some_and(|defer_span| {
+                        ctx.ctl_boundary.is_none_or(|b| {
+                            defer_span.file == b.file
+                                && defer_span.start >= b.start
+                                && defer_span.end <= b.end
+                        })
+                    })
+                })
+                .map(|occ| occ.span)
+                .collect();
+            for handle_span in unarmed {
+                let mut diag = Diagnostic::error(
+                    Code::E0625,
+                    span,
+                    "must-consume value must be managed by an armed defer across open '@' call",
+                );
+                if handle_span != span {
+                    diag = diag.with_label(handle_span, "unarmed must-consume value created here");
+                }
+                self.error_diag(diag);
+            }
+        }
+        if ledger.iteration.iter().any(|iterable| {
+            iterable
+                .roots
+                .iter()
+                .any(|origin| origin.mode == Access::Shared)
+        }) {
+            self.error(
+                Code::E0526,
+                span,
+                "shared collection being iterated cannot cross an unhandled effect",
+            );
+        }
+        self.seed(
+            ctx,
+            if direct {
+                Obligation::DirectOpenEffect
+            } else {
+                Obligation::OpenEffect
+            },
+        );
+    }
+
     pub(super) fn operation(&self, id: DefinitionId, path: Span) -> Option<Operation> {
         let definition = self.program.hir.operation_effect(id)?;
         let effect = self
@@ -323,11 +447,98 @@ impl Analyzer<'_> {
                 if_exercised.cloned(),
             );
         }
+        for &var in &value.latent_effect_vars {
+            self.use_effect_var(ctx, ledger, var, span);
+        }
+        if value.latent_open_effect || value.latent_direct_open_effect {
+            self.use_open_effect(
+                ctx,
+                ledger,
+                value.latent_direct_open_effect && !value.latent_open_effect,
+                span,
+            );
+        }
+    }
+
+    pub(super) fn charge_latent_effects_filtered_if(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        value: &Datum,
+        covered: &[String],
+        span: Span,
+        if_exercised: Option<&Fact>,
+    ) {
+        for (id, effect) in &value.latent_operations {
+            if covered
+                .iter()
+                .any(|cov| self.program.effect_covers(cov, effect))
+            {
+                continue;
+            }
+            self.use_effect(
+                ctx,
+                ledger,
+                Obligation::Operation(Operation {
+                    id: *id,
+                    effect: effect.clone(),
+                }),
+                span,
+                if_exercised.cloned(),
+            );
+        }
+        for effect in &value.latent_effects {
+            if covered
+                .iter()
+                .any(|cov| self.program.effect_covers(cov, effect))
+            {
+                continue;
+            }
+            self.use_effect(
+                ctx,
+                ledger,
+                Obligation::Effect(effect.clone()),
+                span,
+                if_exercised.cloned(),
+            );
+        }
+        for &var in &value.latent_effect_vars {
+            self.use_effect_var(ctx, ledger, var, span);
+        }
+        if value.latent_open_effect || value.latent_direct_open_effect {
+            self.use_open_effect(
+                ctx,
+                ledger,
+                value.latent_direct_open_effect && !value.latent_open_effect,
+                span,
+            );
+        }
     }
 
     pub(super) fn has_unhandled_ctl(&self, ctx: &Context, value: &Datum, ty: &Ty) -> bool {
+        self.has_unhandled_ctl_filtered(ctx, value, ty, &[])
+    }
+
+    pub(super) fn has_unhandled_ctl_filtered(
+        &self,
+        ctx: &Context,
+        value: &Datum,
+        ty: &Ty,
+        covered: &[String],
+    ) -> bool {
+        if value.latent_open_effect
+            || value
+                .latent_effect_vars
+                .iter()
+                .any(|v| !self.program.hir.is_direct_effect_param(*v))
+        {
+            return true;
+        }
         if value.latent_operations.iter().any(|(id, effect)| {
             self.program.hir.is_ctl_operation(*id)
+                && !covered
+                    .iter()
+                    .any(|cov| self.program.effect_covers(cov, effect))
                 && !ctx.handlers.contains_key(&Operation {
                     id: *id,
                     effect: effect.clone(),
@@ -336,7 +547,10 @@ impl Analyzer<'_> {
             return true;
         }
         let check_effect = |effect: &str| {
-            self.program.effect_has_ctl(effect)
+            !covered
+                .iter()
+                .any(|cov| self.program.effect_covers(cov, effect))
+                && self.program.effect_has_ctl(effect)
                 && self.effect_operations(effect).iter().any(|op| {
                     self.program.hir.is_ctl_operation(op.id) && !ctx.handlers.contains_key(op)
                 })
@@ -345,7 +559,12 @@ impl Analyzer<'_> {
             return true;
         }
         if let Ty::Callable(sig) = ty
-            && sig.effects.iter().any(|eff| check_effect(eff))
+            && (sig.open_effects
+                || sig.effects.iter().any(|eff| check_effect(eff))
+                || sig
+                    .effect_vars
+                    .iter()
+                    .any(|v| !self.program.hir.is_direct_effect_param(*v)))
         {
             return true;
         }

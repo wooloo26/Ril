@@ -156,13 +156,6 @@ impl Analyzer<'_> {
                     consume_oneshot_target = true;
                 }
             }
-            if ctx.no_ctl.is_some() && sig.is_some_and(|sig| sig.open_effects) {
-                for root in &target.roots {
-                    if ctx.formals.contains(&Some(root.region.source)) {
-                        self.seed(ctx, Obligation::NoCtlParam(root.region.source));
-                    }
-                }
-            }
             let requires_writer = sig.is_some_and(|sig| sig.state.iter().any(|s| s == "up"));
             if requires_writer && target.invocations.is_empty() {
                 self.mutate(ctx, ledger, target, callee.span);
@@ -340,6 +333,8 @@ impl Analyzer<'_> {
         );
         let may_perform_unhandled_effect = sig.is_some_and(|sig| {
             sig.open_effects
+                || sig.direct_open_effects
+                || !sig.effect_vars.is_empty()
                 || sig.effects.iter().any(|eff| {
                     eff != "io"
                         && self
@@ -347,28 +342,47 @@ impl Analyzer<'_> {
                             .iter()
                             .any(|op| !ctx.handlers.contains_key(op))
                 })
-        }) || target.as_ref().is_some_and(|t| {
-            t.latent_effects.iter().any(|eff| {
-                eff != "io"
-                    && self
-                        .effect_operations(eff)
-                        .iter()
-                        .any(|op| !ctx.handlers.contains_key(op))
-            }) || t.latent_operations.iter().any(|(op_id, eff)| {
-                !ctx.handlers.contains_key(&crate::access::check::Operation {
-                    id: *op_id,
-                    effect: eff.clone(),
+        }) || self
+            .program
+            .effect_applications
+            .get(&span)
+            .is_some_and(|effects| {
+                effects.iter().any(|eff| {
+                    eff != "io"
+                        && self
+                            .effect_operations(eff)
+                            .iter()
+                            .any(|op| !ctx.handlers.contains_key(op))
                 })
             })
-        }) || id.is_some_and(|id| {
-            if let Expr::Path(path) = &callee.value
-                && let Some(op) = self.operation(id, path.span)
-            {
-                !ctx.handlers.contains_key(&op)
-            } else {
-                false
-            }
-        });
+            || self
+                .program
+                .effect_var_applications
+                .get(&span)
+                .is_some_and(|vars| !vars.is_empty())
+            || target.as_ref().is_some_and(|t| {
+                t.latent_effects.iter().any(|eff| {
+                    eff != "io"
+                        && self
+                            .effect_operations(eff)
+                            .iter()
+                            .any(|op| !ctx.handlers.contains_key(op))
+                }) || t.latent_operations.iter().any(|(op_id, eff)| {
+                    !ctx.handlers.contains_key(&crate::access::check::Operation {
+                        id: *op_id,
+                        effect: eff.clone(),
+                    })
+                })
+            })
+            || id.is_some_and(|id| {
+                if let Expr::Path(path) = &callee.value
+                    && let Some(op) = self.operation(id, path.span)
+                {
+                    !ctx.handlers.contains_key(&op)
+                } else {
+                    false
+                }
+            });
         if may_perform_unhandled_effect && ctx.reachable && !ctx.shadow {
             for ((_, mode, value), &argument_span) in values.iter().zip(&value_spans) {
                 if matches!(mode, Mode::Mut | Mode::Ref)
@@ -515,7 +529,9 @@ impl Analyzer<'_> {
                 if let Some(formal) = modes.formals.get(*index).copied().flatten() {
                     let formal_open_effects = sig
                         .and_then(|s| s.parameters.get(*index))
-                        .is_some_and(|p| matches!(&p.ty, Ty::Callable(c) if c.open_effects));
+                        .is_some_and(|p| {
+                            matches!(&p.ty, Ty::Callable(c) if c.open_effects || c.direct_open_effects)
+                        });
                     self.apply_closure_input(
                         ctx,
                         ledger,
@@ -640,7 +656,7 @@ impl Analyzer<'_> {
             && !all_aliases_known
             && let Some(sig) = sig
         {
-            self.charge_call_effects(ctx, ledger, sig, None, span);
+            self.charge_call_effects(ctx, ledger, sig, None, true, span);
             if sig.open_effects
                 && !ctx.shadow
                 && let Ty::Callable(actual) = self.ty(callee.span)

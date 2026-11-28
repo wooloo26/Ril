@@ -58,6 +58,34 @@ impl Checker<'_> {
         arg: &GenericArg,
         span: Span,
     ) -> GenericValue {
+        if param.is_effect {
+            let GenericArg::Effect(paths, arg_span) = arg else {
+                self.error(
+                    Code::E0306,
+                    span,
+                    "effect row parameter requires '@Eff' or '@()' syntax",
+                );
+                return GenericValue::Effects(crate::ty::EffectRow::default());
+            };
+            let row = self.effect_row_from_paths(env, paths);
+            let norm = self.normalize_effect_row(&row);
+            if param.direct_only {
+                let has_ctl = norm.open
+                    || norm.concrete.iter().any(|e| self.effect_label_has_ctl(e))
+                    || norm
+                        .vars
+                        .iter()
+                        .any(|v| !self.hir.is_direct_effect_param(*v));
+                if has_ctl {
+                    self.error(
+                        Code::E0616,
+                        *arg_span,
+                        "effect row argument with ctl effect violates ': fn' constraint",
+                    );
+                }
+            }
+            return GenericValue::Effects(norm);
+        }
         if param
             .name
             .value
@@ -80,7 +108,7 @@ impl Checker<'_> {
                         None
                     }
                 }
-                GenericArg::Mode(_) => None,
+                GenericArg::Mode(_) | GenericArg::Effect(..) => None,
             };
             if let Some(data) = evaluated {
                 GenericValue::Data(static_argument(data))
@@ -112,6 +140,7 @@ impl Checker<'_> {
                     .map_or(Span::new(env.file, 0, 0), |&id| {
                         self.ast(env.file).stmt(id).span
                     }),
+                GenericArg::Effect(_, span) => *span,
                 GenericArg::Type(_) => ril_source::ice!("type argument was already handled"),
             };
             self.error(Code::E0306, span, "type parameter requires type syntax");
@@ -803,6 +832,9 @@ impl Checker<'_> {
                 if let Some(id) = self.resolve(param.name.span) {
                     let argument = match args.get(index) {
                         Some(arg) => self.generic_argument(env, param, arg, span),
+                        None if param.is_effect => {
+                            GenericValue::Effects(crate::ty::EffectRow::infer(self.fresh_effect()))
+                        }
                         None => GenericValue::Type(self.fresh()),
                     };
                     generics.insert(id, argument);

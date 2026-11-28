@@ -156,12 +156,12 @@ eff Bad {
     -- ^ E0547
 }
 
--- @case derive_forbids_outer_ctl compile-fail E0607
+-- @case derive_forbids_outer_ctl compile-fail E0616
 eff Yield { ctl emit() -> () }
 type Box = .{ v: int }
 fn bad(b: Box) @Yield -> Box {
     derive(b, \mut d -> {
-    -- ^ E0607
+    -- ^ E0616
         Yield::emit()
         d.v = 1
     })

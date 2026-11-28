@@ -96,6 +96,9 @@ impl Datum {
             && self.results.is_empty()
             && self.latent_effects.is_empty()
             && self.latent_operations.is_empty()
+            && self.latent_effect_vars.is_empty()
+            && !self.latent_open_effect
+            && !self.latent_direct_open_effect
             && self.environments.is_empty()
             && self.publications.is_empty()
             && self.invocations.is_empty()

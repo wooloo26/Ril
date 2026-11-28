@@ -61,10 +61,6 @@ impl<'program> Analyzer<'program> {
                             export.summary.retained.contains(&index),
                             Obligation::StoreShare(formal),
                         ),
-                        (
-                            export.summary.no_ctl_params.contains(&index),
-                            Obligation::NoCtlParam(formal),
-                        ),
                     ] {
                         if selected {
                             self.rules.push(Rule {
@@ -212,30 +208,63 @@ impl<'program> Analyzer<'program> {
                         argument_span,
                     );
                 }
+                let formal_cb = signature
+                    .and_then(|s| s.parameters.get(*position))
+                    .and_then(|p| match &p.ty {
+                        Ty::Callable(c) => Some(c.as_ref()),
+                        _ => None,
+                    });
+                let formal_covered: &[String] = formal_cb.map_or(&[], |c| c.effects.as_slice());
+                let formal_direct_only =
+                    formal_cb.is_some_and(|c| c.direct_open_effects && !c.open_effects);
+                if formal_direct_only
+                    && self.has_unhandled_ctl_filtered(
+                        ctx,
+                        argument,
+                        self.ty(argument_span),
+                        formal_covered,
+                    )
+                {
+                    self.error(
+                        Code::E0616,
+                        argument_span,
+                        "callable using unhandled ctl effect cannot be passed to a '@fn' parameter",
+                    );
+                }
                 if summary.invoked.contains(position) {
                     self.link_invocation(ctx, argument);
                     for source in argument.root_dependencies() {
                         self.seed(ctx, Obligation::Invoke(source));
                     }
-                    self.charge_latent_effects(ctx, &frozen, argument, argument_span);
-                    if let Ty::Callable(actual) = self.ty(argument_span) {
-                        for effect in &actual.effects {
-                            self.effect(ctx, &frozen, effect, argument_span);
-                        }
-                    }
-                }
-                if summary.no_ctl_params.contains(position) {
-                    if self.has_unhandled_ctl(ctx, argument, self.ty(argument_span)) {
-                        self.error(
-                            Code::E0616,
+                    if formal_cb.is_some_and(|c| c.open_effects || c.direct_open_effects) {
+                        self.charge_latent_effects_filtered_if(
+                            ctx,
+                            &frozen,
+                            argument,
+                            formal_covered,
                             argument_span,
-                            "callable using unhandled ctl effect cannot be passed to a no_ctl parameter",
+                            None,
                         );
-                    }
-                    if matches!(self.ty(argument_span), Ty::Callable(c) if c.open_effects) {
-                        for root in &argument.roots {
-                            if ctx.formals.contains(&Some(root.region.source)) {
-                                self.seed(ctx, Obligation::NoCtlParam(root.region.source));
+                        if let Ty::Callable(actual) = self.ty(argument_span).clone() {
+                            for effect in &actual.effects {
+                                if formal_covered
+                                    .iter()
+                                    .any(|cov| self.program.effect_covers(cov, effect))
+                                {
+                                    continue;
+                                }
+                                self.effect(ctx, &frozen, effect, argument_span);
+                            }
+                            for &var in &actual.effect_vars {
+                                self.use_effect_var(ctx, &frozen, var, argument_span);
+                            }
+                            if actual.open_effects || actual.direct_open_effects {
+                                self.use_open_effect(
+                                    ctx,
+                                    &frozen,
+                                    actual.direct_open_effects && !actual.open_effects,
+                                    argument_span,
+                                );
                             }
                         }
                     }

@@ -1001,7 +1001,7 @@ impl Checker<'_> {
                     seg.arguments.iter().any(|arg| match arg {
                         GenericArg::Type(ty) => self.is_pattern_only_type(env, *ty),
                         GenericArg::Mode(storage) => storage.bind_mode,
-                        GenericArg::Value(_) => false,
+                        GenericArg::Value(_) | GenericArg::Effect(..) => false,
                     })
                 })
             }
@@ -1103,6 +1103,17 @@ impl Checker<'_> {
                         .map(|arg| match arg {
                             GenericArg::Type(ty) => self.type_pattern_shape_key(env, *ty),
                             GenericArg::Mode(storage) => format_storage(storage),
+                            GenericArg::Effect(paths, _) => {
+                                if paths.is_empty() {
+                                    "@()".into()
+                                } else {
+                                    paths
+                                        .iter()
+                                        .map(|p| format!("@{}", super::check::path_name(p)))
+                                        .collect::<Vec<_>>()
+                                        .join(" ")
+                                }
+                            }
                             GenericArg::Value(expr) => {
                                 format!("val:{}", self.ast(env.file).expr(*expr).span.start)
                             }

@@ -393,7 +393,10 @@ impl Walk<'_> {
 
     fn generics(&mut self, parameters: &[GenericParam]) {
         for param in parameters {
-            self.declare(&param.name, DefinitionKind::Generic, None, false);
+            let id = self.declare(&param.name, DefinitionKind::Generic, None, false);
+            if param.is_effect {
+                self.program.effect_params.insert(id, param.direct_only);
+            }
         }
         for param in parameters {
             for &bound in &param.bound {
@@ -408,33 +411,39 @@ impl Walk<'_> {
         }
     }
 
-    fn obligations(&mut self, obligations: &Obligations) {
-        for effect in &obligations.effects {
-            if !matches!(effect.segments.as_slice(), [seg] if seg.name.value == "io") {
-                let before = self.errors.len();
-                self.path(effect);
-                if let Some(def) = self.definition_at(effect.span) {
-                    if !matches!(self.program.definition(def).kind, DefinitionKind::Effect(_)) {
-                        self.report(
-                            Code::E0620,
-                            effect.span,
-                            "effect label must name a declared effect",
-                        );
-                    }
-                } else if self.errors.len() == before
-                    || self
-                        .errors
-                        .get(before)
-                        .is_some_and(|diag| diag.code == Some(Code::E0204))
+    fn resolve_effect_path(&mut self, effect: &Path) {
+        if !matches!(effect.segments.as_slice(), [seg] if seg.name.value == "io") {
+            let before = self.errors.len();
+            self.path(effect);
+            if let Some(def) = self.definition_at(effect.span) {
+                if !matches!(self.program.definition(def).kind, DefinitionKind::Effect(_))
+                    && !self.program.is_effect_param(def)
                 {
-                    self.errors.truncate(before);
                     self.report(
                         Code::E0620,
                         effect.span,
-                        "effect label must name a declared effect",
+                        "effect label must name a declared effect or effect row parameter",
                     );
                 }
+            } else if self.errors.len() == before
+                || self
+                    .errors
+                    .get(before)
+                    .is_some_and(|diag| diag.code == Some(Code::E0204))
+            {
+                self.errors.truncate(before);
+                self.report(
+                    Code::E0620,
+                    effect.span,
+                    "effect label must name a declared effect or effect row parameter",
+                );
             }
+        }
+    }
+
+    fn obligations(&mut self, obligations: &Obligations) {
+        for effect in &obligations.effects {
+            self.resolve_effect_path(effect);
         }
         for clause in &obligations.state {
             for (mode, binding) in &clause.bindings {
@@ -960,6 +969,11 @@ impl Walk<'_> {
                             GenericArg::Mode(storage) => {
                                 self.ty_pattern_storage(storage, alias, seen);
                             }
+                            GenericArg::Effect(paths, _) => {
+                                for path in paths {
+                                    self.resolve_effect_path(path);
+                                }
+                            }
                         }
                     }
                     let target = if let Some(prev) = current {
@@ -1190,6 +1204,11 @@ impl Walk<'_> {
             GenericArg::Type(ty) => self.ty(*ty),
             GenericArg::Value(expr) => self.expr(*expr),
             GenericArg::Mode(mode) => self.storage(mode),
+            GenericArg::Effect(paths, _) => {
+                for path in paths {
+                    self.resolve_effect_path(path);
+                }
+            }
         }
     }
 

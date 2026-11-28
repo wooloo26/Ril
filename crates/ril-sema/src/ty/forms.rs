@@ -76,6 +76,7 @@ impl Checker<'_> {
                     GenericArg::Type(ty) => self.ast(env.file).ty(*ty).span,
                     GenericArg::Value(expr) => self.ast(env.file).expr(*expr).span,
                     GenericArg::Mode(_) => continue,
+                    GenericArg::Effect(_, span) => *span,
                 };
                 let refs: HashSet<_> = self.hir.references_within(span).map(|(_, id)| id).collect();
                 if parameters
@@ -576,8 +577,10 @@ impl Checker<'_> {
             }
         }
         if signature.open_effects
+            || signature.direct_open_effects
             || signature.open_state
             || !signature.effects.is_empty()
+            || !signature.effect_vars.is_empty()
             || !signature.state.is_empty()
         {
             self.error(Code::E0409, original.span, "signature guard must be pure");
@@ -881,12 +884,10 @@ impl Checker<'_> {
             }
         }
         env.mode_scope = enclosing;
-        let effects = signature
-            .obligations
-            .effects
-            .iter()
-            .map(|path| self.effect_label(env, path))
-            .collect();
+        let effect_row = self.effect_row_from_paths(env, &signature.obligations.effects);
+        let effects = effect_row.concrete;
+        let effect_vars = effect_row.vars;
+        let effect_infers = effect_row.infers;
         let mut state = Vec::new();
         for clause in &signature.obligations.state {
             let name = match clause.kind {
@@ -939,7 +940,11 @@ impl Checker<'_> {
             result,
             result_mode: signature.result_mode,
             effects,
-            open_effects: signature.obligations.open_effects,
+            effect_vars,
+            effect_infers,
+            open_effects: signature.obligations.open_effects || effect_row.open,
+            direct_open_effects: signature.obligations.direct_open_effects
+                || effect_row.direct_open,
             state,
             open_state: signature.obligations.open_state,
         };

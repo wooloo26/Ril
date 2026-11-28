@@ -170,6 +170,8 @@ pub fn is_pure(callable: &Callable, summary: &Summary) -> bool {
         .any(|clause| clause == "up" || clause.starts_with("up("));
     !has_writable_param
         && !callable.open_effects
+        && !callable.direct_open_effects
+        && callable.effect_vars.is_empty()
         && !callable.open_state
         && callable.effects.is_empty()
         && summary.effects.is_empty()
@@ -1920,8 +1922,14 @@ impl<'a> Collector<'a> {
                     ops.insert(format!("@{eff}"));
                 }
             }
+            for var in &c.effect_vars {
+                let name = &self.program.hir.definition(*var).name.value;
+                ops.insert(format!("@{name}"));
+            }
             if c.open_effects {
                 ops.insert("@".into());
+            } else if c.direct_open_effects {
+                ops.insert("@fn".into());
             }
         }
         ops.into_iter().collect()

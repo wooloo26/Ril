@@ -200,7 +200,7 @@ impl Checker<'_> {
                 result: Ty::Unit,
                 result_mode: Mode::Infer,
                 open_state: true,
-                open_effects: true,
+                direct_open_effects: true,
                 ..unknown_callable()
             }));
             let mut cb_env = env.clone();
@@ -217,6 +217,7 @@ impl Checker<'_> {
             }
             self.expect(&mut cb_env, update.value, &callback);
             env.effects_seen.extend(cb_env.effects_seen);
+            env.effect_vars_seen.extend(cb_env.effect_vars_seen);
             return base;
         }
         if name == "with_scoped"
@@ -248,7 +249,7 @@ impl Checker<'_> {
                 result: result_ty.clone(),
                 result_mode: Mode::Infer,
                 open_state: true,
-                open_effects: true,
+                direct_open_effects: true,
                 ..unknown_callable()
             }));
             let actual_cb = self.expect(env, body_arg.value, &callback);
@@ -546,7 +547,10 @@ impl Checker<'_> {
                             self.ast(env.file).expr(arg.value).value,
                             Expr::Closure { .. }
                         )
-                    }) && (call.open_effects || !call.effects.is_empty())
+                    }) && (call.open_effects
+                        || call.direct_open_effects
+                        || !call.effects.is_empty()
+                        || !call.effect_vars.is_empty())
                     {
                         self.error(
                             Code::E0608,

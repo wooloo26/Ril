@@ -81,7 +81,7 @@ pub fn contains<T>(via xs: [via]T, via target: T) -> bool {
 }
 
 -- Returns a new array formed by applying `f` to each element of `xs` in order.
-pub fn map<T, U>(xs: []T, via f: fn(T) @& -> U) -> new []U |> SameLen<xs> {
+pub fn map<T, U>(xs: []T, via f: fn(T) @& -> U) @ -> new []U |> SameLen<xs> {
     let mut out: []U = []
     for xs as x {
         push(mut out, f(x))
@@ -90,7 +90,7 @@ pub fn map<T, U>(xs: []T, via f: fn(T) @& -> U) -> new []U |> SameLen<xs> {
 }
 
 -- Returns a new array containing only the elements of `xs` for which `pred` returns `true`.
-pub fn filter<T>(via xs: []T, via pred: fn(T) @& -> bool) &return(xs) -> new []T {
+pub fn filter<T>(via xs: []T, via pred: fn(T) @& -> bool) @ &return(xs) -> new []T {
     let mut out: []T = []
     for xs as x {
         if pred(x) {
@@ -101,7 +101,7 @@ pub fn filter<T>(via xs: []T, via pred: fn(T) @& -> bool) &return(xs) -> new []T
 }
 
 -- Reduces `xs` from left to right starting at `init`.
-pub fn fold<T, Acc>(via xs: []T, init: Acc, via f: fn(Acc, T) @& -> Acc) -> Acc {
+pub fn fold<T, Acc>(via xs: []T, init: Acc, via f: fn(Acc, T) @& -> Acc) @ -> Acc {
     var acc = init
     for xs as x {
         acc = f(acc, x)
@@ -110,7 +110,7 @@ pub fn fold<T, Acc>(via xs: []T, init: Acc, via f: fn(Acc, T) @& -> Acc) -> Acc 
 }
 
 -- Reports whether `pred` returns `true` for at least one element of `xs`.
-pub fn any<T>(via xs: []T, via pred: fn(T) @& -> bool) -> bool {
+pub fn any<T>(via xs: []T, via pred: fn(T) @& -> bool) @ -> bool {
     for xs as x {
         if pred(x) {
             return true
@@ -120,7 +120,7 @@ pub fn any<T>(via xs: []T, via pred: fn(T) @& -> bool) -> bool {
 }
 
 -- Reports whether `pred` returns `true` for every element of `xs`.
-pub fn all<T>(via xs: []T, via pred: fn(T) @& -> bool) -> bool {
+pub fn all<T>(via xs: []T, via pred: fn(T) @& -> bool) @ -> bool {
     for xs as x {
         if !pred(x) {
             return false
@@ -130,7 +130,7 @@ pub fn all<T>(via xs: []T, via pred: fn(T) @& -> bool) -> bool {
 }
 
 -- Returns the first element of `xs` for which `pred` returns `true`, or `None`.
-pub fn find<T>(via xs: []T, via pred: fn(T) @& -> bool) &return(xs) -> new ?T {
+pub fn find<T>(via xs: []T, via pred: fn(T) @& -> bool) @ &return(xs) -> new ?T {
     for xs as x {
         if pred(x) {
             return Some(x)

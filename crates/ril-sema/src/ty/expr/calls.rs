@@ -344,26 +344,32 @@ impl Checker<'_> {
         } else {
             result
         };
-        let effects = if obligations.effects.is_empty() {
+        let (effects, effect_vars) = if obligations.effects.is_empty() {
             let mut used: Vec<_> = local
                 .effects_seen
                 .difference(&env.effects_seen)
                 .cloned()
                 .collect();
             used.sort();
-            used
+            let mut vars: Vec<_> = local
+                .effect_vars_seen
+                .difference(&env.effect_vars_seen)
+                .copied()
+                .collect();
+            vars.sort();
+            (used, vars)
         } else {
-            obligations
-                .effects
-                .iter()
-                .map(|path| self.effect_label(&mut local, path))
-                .collect()
+            let row = self.effect_row_from_paths(&mut local, &obligations.effects);
+            (row.concrete, row.vars)
         };
         Ty::Callable(Arc::new(Callable {
             parameters,
             result,
             effects,
+            effect_vars,
+            effect_infers: Vec::new(),
             open_effects: obligations.open_effects,
+            direct_open_effects: obligations.direct_open_effects,
             ..unknown_callable()
         }))
     }
@@ -911,6 +917,9 @@ impl Checker<'_> {
         // 2. Sound call invalidation (including plain args containing writable/shared member schemas!).
         if call.is_ctl
             || call.open_effects
+            || call.direct_open_effects
+            || !call.effect_vars.is_empty()
+            || !call.effect_infers.is_empty()
             || call.open_state
             || call.effects.iter().any(|eff| eff != "io")
             || call
@@ -1005,17 +1014,64 @@ impl Checker<'_> {
         {
             self.seed_call_return_proofs(env, id, &arg_by_formal, call_expr);
         }
-        let effects = if !call.effects.is_empty()
+        let (effects, effect_vars) = if (!call.effects.is_empty() || !call.effect_vars.is_empty())
             && let Some(id) = def_id
-            && let Some(specialized) = self.call_effects(id, &generics)
+            && let Some(row) = self.call_effect_row(id, &generics)
         {
-            self.effect_applications.insert(span, specialized.clone());
-            specialized
+            if !row.concrete.is_empty() {
+                self.effect_applications.insert(span, row.concrete.clone());
+            }
+            if !row.vars.is_empty() {
+                self.effect_var_applications.insert(span, row.vars.clone());
+            }
+            (row.concrete, row.vars)
         } else {
-            call.effects.clone()
+            let row = self.normalize_effect_row(&crate::ty::EffectRow {
+                concrete: call.effects.clone(),
+                vars: call.effect_vars.clone(),
+                infers: call.effect_infers.clone(),
+                open: call.open_effects,
+                direct_open: call.direct_open_effects,
+            });
+            (row.concrete, row.vars)
         };
         if !env.shadow {
             env.effects_seen.extend(effects);
+            env.effect_vars_seen.extend(effect_vars);
+        }
+        if !env.shadow
+            && let Some(known) = def_id
+            && let Some(stmt) = self.hir.definition(known).stmt
+            && let ril_syntax::syntax::StmtKind::Function(fun) = &self
+                .ast(self.hir.definition(known).name.span.file)
+                .stmt(stmt)
+                .value
+                .kind
+        {
+            let eff_checks: Vec<_> = fun
+                .generics
+                .iter()
+                .filter(|g| g.is_effect && g.direct_only)
+                .filter_map(|g| self.resolve(g.name.span))
+                .collect();
+            for pid in eff_checks {
+                if let Some(crate::ty::GenericValue::Effects(row)) = generics.get(&pid) {
+                    let norm = self.normalize_effect_row(row);
+                    let has_ctl = norm.open
+                        || norm.concrete.iter().any(|e| self.effect_label_has_ctl(e))
+                        || norm
+                            .vars
+                            .iter()
+                            .any(|v| !self.hir.is_direct_effect_param(*v));
+                    if has_ctl {
+                        self.error(
+                            Code::E0616,
+                            span,
+                            "callable using ctl effect cannot instantiate ': fn' effect row parameter",
+                        );
+                    }
+                }
+            }
         }
         if let Some(known) = def_id {
             self.validate_generic_uses(env, known, &generics, span);
@@ -1123,7 +1179,7 @@ impl Checker<'_> {
             } else {
                 result
             };
-        self.normalize(&result)
+        self.finalize(&result)
     }
 
     pub(super) fn wrap(

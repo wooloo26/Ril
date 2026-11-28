@@ -299,6 +299,7 @@ pub struct Program {
     effect_owner: HashMap<ScopeId, DefinitionId>,
     effect_by_label_map: HashMap<String, DefinitionId>,
     local_effects: BTreeSet<DefinitionId>,
+    effect_params: BTreeMap<DefinitionId, bool>,
     effect_spreads: BTreeMap<DefinitionId, BTreeSet<DefinitionId>>,
     package_edges: BTreeMap<String, Vec<(String, Span)>>,
     pending_operations: Vec<effects::PendingOperation>,
@@ -315,6 +316,14 @@ impl Program {
     }
     pub fn is_stdlib_file(&self, file: FileId) -> bool {
         self.stdlib_files.contains(&file)
+    }
+
+    pub fn is_effect_param(&self, id: DefinitionId) -> bool {
+        self.effect_params.contains_key(&id)
+    }
+
+    pub fn is_direct_effect_param(&self, id: DefinitionId) -> bool {
+        self.effect_params.get(&id).copied().unwrap_or(false)
     }
 
     pub fn file(&self, id: FileId) -> &File {

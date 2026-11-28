@@ -38,7 +38,14 @@ impl<'program> Analyzer<'program> {
             }
         }
         if let Some(sig) = sig {
-            self.charge_call_effects(ctx, ledger, sig, fun.body.map(|_| fun.name.span), span);
+            self.charge_call_effects(
+                ctx,
+                ledger,
+                sig,
+                fun.body.map(|_| fun.name.span),
+                false,
+                span,
+            );
         }
         let lexical = fun
             .signature
@@ -147,35 +154,6 @@ impl<'program> Analyzer<'program> {
                 .and_then(|param| param.name.as_ref())
                 .map(|name| name.span);
             if let Some(formal) = formal.filter(|_| has_body) {
-                let no_ctl_premise = Fact {
-                    owner: fun.name.span,
-                    obligation: Obligation::NoCtlParam(formal),
-                };
-                if ctx.reachable && !ctx.shadow {
-                    if self.has_unhandled_ctl(ctx, value, self.ty(arg_span)) {
-                        self.deferred_errors.push((
-                            vec![no_ctl_premise.clone()],
-                            Diagnostic::error(
-                                Code::E0616,
-                                arg_span,
-                                "callable using unhandled ctl effect cannot be passed to a no_ctl parameter",
-                            ),
-                        ));
-                    }
-                    if matches!(self.ty(arg_span), Ty::Callable(c) if c.open_effects) {
-                        for root in &value.roots {
-                            if ctx.formals.contains(&Some(root.region.source)) {
-                                self.rules.push(Rule {
-                                    premises: vec![no_ctl_premise.clone()],
-                                    conclusion: Fact {
-                                        owner: ctx.owner,
-                                        obligation: Obligation::NoCtlParam(root.region.source),
-                                    },
-                                });
-                            }
-                        }
-                    }
-                }
                 let invocation = Fact {
                     owner: fun.name.span,
                     obligation: Obligation::Invoke(formal),
@@ -184,21 +162,50 @@ impl<'program> Analyzer<'program> {
                     self.forward_via_input(ctx, ledger, value, (fun.name.span, formal), span);
                 }
                 self.link_invocation_if(ctx, value, Some(&invocation));
-                let formal_open_effects = sig
-                    .and_then(|s| s.parameters.get(*index))
-                    .is_some_and(|p| matches!(&p.ty, Ty::Callable(c) if c.open_effects));
+                let formal_cb =
+                    sig.and_then(|s| s.parameters.get(*index))
+                        .and_then(|p| match &p.ty {
+                            Ty::Callable(c) => Some(c.as_ref()),
+                            _ => None,
+                        });
+                let formal_open_effects =
+                    formal_cb.is_some_and(|c| c.open_effects || c.direct_open_effects);
+                let formal_direct_only =
+                    formal_cb.is_some_and(|c| c.direct_open_effects && !c.open_effects);
+                let formal_covered: &[String] = formal_cb.map_or(&[], |c| c.effects.as_slice());
                 if ctx.reachable && !ctx.shadow {
+                    if formal_direct_only
+                        && self.has_unhandled_ctl_filtered(
+                            ctx,
+                            value,
+                            self.ty(arg_span),
+                            formal_covered,
+                        )
+                    {
+                        self.error(
+                            Code::E0616,
+                            arg_span,
+                            "callable using unhandled ctl effect cannot be passed to a '@fn' parameter",
+                        );
+                    }
                     if formal_open_effects {
-                        self.charge_latent_effects_if(
+                        self.charge_latent_effects_filtered_if(
                             ctx,
                             ledger,
                             value,
+                            formal_covered,
                             arg_span,
                             Some(&invocation),
                         );
                         let arg_ty = self.ty(arg_span).clone();
                         if let Ty::Callable(actual) = &arg_ty {
                             for effect in &actual.effects {
+                                if formal_covered
+                                    .iter()
+                                    .any(|cov| self.program.effect_covers(cov, effect))
+                                {
+                                    continue;
+                                }
                                 self.use_effect(
                                     ctx,
                                     ledger,
@@ -207,22 +214,43 @@ impl<'program> Analyzer<'program> {
                                     Some(invocation.clone()),
                                 );
                             }
+                            for &var in &actual.effect_vars {
+                                self.use_effect_var(ctx, ledger, var, arg_span);
+                            }
+                            if actual.open_effects || actual.direct_open_effects {
+                                self.use_open_effect(
+                                    ctx,
+                                    ledger,
+                                    actual.direct_open_effects && !actual.open_effects,
+                                    arg_span,
+                                );
+                            }
                         }
+                        let is_covered = |eff: &str| {
+                            formal_covered
+                                .iter()
+                                .any(|cov| self.program.effect_covers(cov, eff))
+                        };
                         let cb_unhandled = value.latent_effects.iter().any(|eff| {
                             eff != "io"
+                                && !is_covered(eff)
                                 && self
                                     .effect_operations(eff)
                                     .iter()
                                     .any(|op| !ctx.handlers.contains_key(op))
                         }) || value.latent_operations.iter().any(
                             |(op_id, eff)| {
-                                !ctx.handlers.contains_key(&crate::access::check::Operation {
-                                    id: *op_id,
-                                    effect: eff.clone(),
-                                })
+                                !is_covered(eff)
+                                    && !ctx.handlers.contains_key(
+                                        &crate::access::check::Operation {
+                                            id: *op_id,
+                                            effect: eff.clone(),
+                                        },
+                                    )
                             },
-                        ) || matches!(&arg_ty, Ty::Callable(actual) if actual.open_effects || actual.effects.iter().any(|eff| {
+                        ) || matches!(&arg_ty, Ty::Callable(actual) if actual.open_effects || actual.direct_open_effects || !actual.effect_vars.is_empty() || actual.effects.iter().any(|eff| {
                             eff != "io"
+                                && !is_covered(eff)
                                 && self
                                     .effect_operations(eff)
                                     .iter()
@@ -433,14 +461,58 @@ impl<'program> Analyzer<'program> {
         ledger: &Ledger,
         signature: &Callable,
         owner: Option<Span>,
+        indirect: bool,
         span: Span,
     ) {
-        for (index, template) in signature.effects.iter().enumerate() {
-            let applied = self.applied_effect(index, template, span).to_owned();
-            if let Some(owner) = owner {
-                self.link_effects(ctx, ledger, owner, template, &applied, span);
-            } else {
-                self.effect(ctx, ledger, &applied, span);
+        if let Some(applied_list) = self.program.effect_applications.get(&span).cloned() {
+            for (index, template) in signature.effects.iter().enumerate() {
+                let applied = applied_list
+                    .get(index)
+                    .map_or(template.as_str(), String::as_str)
+                    .to_owned();
+                if let Some(owner) = owner {
+                    self.link_effects(ctx, ledger, owner, template, &applied, span);
+                } else {
+                    self.effect(ctx, ledger, &applied, span);
+                }
+            }
+            // Any extra concrete effects came from instantiated `<@E>` effect row variables!
+            if !signature.effect_vars.is_empty() {
+                for eff in applied_list {
+                    if !signature
+                        .effects
+                        .iter()
+                        .any(|t| self.program.effect_covers(t, &eff))
+                    {
+                        self.effect(ctx, ledger, &eff, span);
+                    }
+                }
+            }
+        } else {
+            for (index, template) in signature.effects.iter().enumerate() {
+                let applied = self.applied_effect(index, template, span).to_owned();
+                if let Some(owner) = owner {
+                    self.link_effects(ctx, ledger, owner, template, &applied, span);
+                } else {
+                    self.effect(ctx, ledger, &applied, span);
+                }
+            }
+        }
+        if let Some(applied_vars) = self.program.effect_var_applications.get(&span).cloned() {
+            for var in applied_vars {
+                self.use_effect_var(ctx, ledger, var, span);
+            }
+        } else if indirect {
+            for &var in &signature.effect_vars {
+                self.use_effect_var(ctx, ledger, var, span);
+            }
+            if signature.open_effects || signature.direct_open_effects {
+                self.use_open_effect(
+                    ctx,
+                    ledger,
+                    signature.direct_open_effects && !signature.open_effects,
+                    span,
+                );
             }
         }
     }

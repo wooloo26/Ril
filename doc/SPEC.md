@@ -918,7 +918,7 @@ Closures inside a `via` function specialize their captured schemas and `-> infer
 
 ```ril
 type Box = .{ var v: int }
-fn run_with<R>(via b: Box, f: fn(via Box) @& -> infer R) -> infer R {
+fn run_with<R>(via b: Box, f: fn(via Box) @& -> infer R) @ -> infer R {
     let via local = b
     f(local)
 }
@@ -970,7 +970,7 @@ assert((h0.f)(3) == 4 && (h1.f)(3) == 30 && h1.tag == "v2")
 | :--- | :--- |
 | Root eligibility (`E0536`, `E0308`) | `base` must be an immutable `SharedObject` (including accessible nominal and in-scope `opaque` shared objects; sealed `opaque` fails `E0308`; value types and live `mut`/`^mut`/`ref` roots fail `E0536`) |
 | `Derived<T>` path operations | Confined `mut Derived<T>` paths permit `d.field = v` (regardless of `var`), tuple-slot updates `d.0 = v`, `mut` collection operations (`d.tags \|> mut Array::push(...)`), `inner(mut d)` on accessible nominal types, and `match d { Tag(mut p) -> ... }` in-place variant updates |
-| `Derived<T>` confinement (`E0607`) | `Derived<T>` handles, derived `ref`/`mut` paths, and capturing closures cannot escape the `derive` closure; outer `ctl` effects cannot be invoked inside `derive` (`E0607`; locally handled `ctl` is permitted) |
+| `Derived<T>` confinement (`E0607`, `E0616`) | `Derived<T>` handles, derived `ref`/`mut` paths, and capturing closures cannot escape the `derive` closure (`E0607`); outer `ctl` effects are prohibited by `derive`'s `@fn` callback contract (`E0616`; locally handled `ctl` is permitted) |
 | Inserted values (`E0535`) | Assigned values must be deeply immutable or newly allocated inside the `derive` closure and free of surviving outside writers (`E0535`) |
 | Fixed shape (`E0336`, `E0312`) | Preserves record fields, tuple arity, and active sum tags of `T`; forwards the `derive` closure's effects and outer state obligations |
 
@@ -1431,16 +1431,16 @@ fn run_query() @io -> new !<int, str> {
 ```
 
 ```ril
--- Unified LIFO stack with 'with', and 'no_ctl' open-effect callback check:
+-- Unified LIFO stack with 'with', and '@fn' direct-only open-effect callback check:
 eff Trace { fn log(msg: str) -> () }
 
-fn run_with_cleanup(cb: fn() @ -> ()) -> new []str {
+fn run_with_cleanup(cb: fn() @fn -> ()) @fn -> new []str {
     let mut events: []str = []
     {
         with Trace::log = \m -> Array::push(mut events, m) -- Above 'defer': covers 'defer' calls
         defer {
             Trace::log("cleanup")
-            cb()                                           -- Records 'no_ctl' constraint on 'cb'
+            cb()                                           -- '@fn' forbids ctl callbacks (E0616)
         }
         Trace::log("body")
     }
@@ -1987,7 +1987,7 @@ Conditions using `== None`, `!= None`, `!`, `&&`, `||`, and early-exit `if` / `w
 ```ril
 type Cell = .{ var val: ?int }
 
-fn check_narrowing(mut cell: Cell, via hook: fn() & -> (), eff_cb: fn() @ -> (), nested: ??int) -> int {
+fn check_narrowing(mut cell: Cell, via hook: fn() & -> (), eff_cb: fn() @ -> (), nested: ??int) @ -> int {
     var local: ?int = Some(10)
     if local == None {
         -- if local != None { return 0 }        -- Error [E0311]: contradictory 'None' narrowing
@@ -2140,11 +2140,13 @@ The compiler infers complete effects and provenance for every callable body:
 - **Form separation (`E0538`)**: `&up` and `&up(ref)` appear only on `CallableType`; concrete `&up(x)` appears only on local named `fn`s (`E0538`).
 - **Anonymous closures (`\... -> ...`)**: Infer their exact callable signature. Closures cannot capture linear `ctl(...)` continuations (`E0625`). Written `@Eff` / `&State` / `: Type` annotations constrain inference.
 
-#### Closed and Open Effect and State Sets
+#### Closed, Open, and Polymorphic Effect and State Sets
 
-Omitted sets are closed empty; `@`, `&`, and `@&` open compiler-tracked effect/state bounds on `CallableType` in parameters, record fields, and collection elements (`E0547` on definitions and `EffectOpDecl`). Underlying effects, state obligations, and provenance remain tracked through bindings, records, collections, and interfaces (`K-IFACE`) and are charged at every call site.
+Omitted sets are closed empty (`@()` explicitly denotes the empty effect row in generic arguments). `@` (any effects, including `ctl`), `@fn` (direct effects only: `@io` and `fn`-op effects, forbidding `ctl`, `E0616`), `&`, and `@&` open compiler-tracked effect/state bounds on `CallableType` in parameters, record fields, and collection elements (`E0547` on `EffectOpDecl`, on named definitions for `&`, or on named definitions declaring `@`/`@fn` without an open-effect callback parameter). Named functions that invoke an open-effect callback propagate that open row on their outer arrow (`@` or `@fn`), while effects handled locally inside the function (e.g. `fn f(cb: fn() @Clock @ -> T) @ -> T`) are discharged from the caller.
 
-Access modes remain orthogonal to `@`/`&`/`@&`: immutable fields/bindings forbid `&up` (`E0535`) while admitting any `@Eff`; mutable `&up` closures require `mut`/`^mut`/`M`/`via` storage; linear `ctl(...)` continuations are mode-free (`E0402`/`E0532`) and live in plain mode-free bindings, records, sums, arrays, and maps (`[]ctl(...)`, `[K: ctl(...)]`, `.{ k: ctl(...) }`).
+When multiple callbacks, stored types, or `eff` declarations must share or return the same polymorphic effect row, declare an explicit flat idempotent effect row parameter `<@E>` (or direct-only `<@E: fn>`): `@` is syntactic sugar for an anonymous `<@E>`, and `@fn` is syntactic sugar for `<@E: fn>`. Underlying effects, state obligations, and provenance remain tracked through bindings, records, collections, and interfaces (`K-IFACE`) and are charged at every call site.
+
+Access modes remain orthogonal to `@`/`@fn`/`&`/`@&`: immutable fields/bindings forbid `&up` (`E0535`) while admitting any `@Eff`; mutable `&up` closures require `mut`/`^mut`/`M`/`via` storage; linear `ctl(...)` continuations are mode-free (`E0402`/`E0532`) and live in plain mode-free bindings, records, sums, arrays, and maps (`[]ctl(...)`, `[K: ctl(...)]`, `.{ k: ctl(...) }`).
 
 ```ril
 type PureFn   = fn(int) -> int             -- Closed empty effects, closed pure state
@@ -2152,29 +2154,39 @@ type IoFn     = fn(str) @io -> ()          -- Closed {io}, closed pure state
 type ReadObs  = fn() &up(ref) -> int       -- Pure effects, read-only closure env (invocable via ref)
 type MutStep  = fn() &up -> int            -- Pure effects, mutable closure env (requires mut/^mut path)
 type ContStep = ctl(int) -> str            -- Linear must-consume delimited continuation from 'with ctl'
-type AnyEff   = fn() @ -> ()               -- Open effect set, closed pure state
+type AnyEff   = fn() @ -> ()               -- Open effect set (may include ctl), closed pure state
+type DirectCb = fn() @fn -> ()             -- Open direct-only effect set (forbids ctl), closed pure state
 type AnyState = fn() & -> ()               -- Closed empty effects, open state/provenance
 type AnyCall  = fn() @& -> ()              -- Open effects and open state/provenance
 
--- Open '@&' tracks underlying effects & state across calls:
-fn call_open(via f: fn() @& -> int) -> int { f() }
+-- Open '@&' tracks underlying effects & state across calls; outer '@' propagates callback effects:
+fn call_open(via f: fn() @& -> int) @ -> int { f() }
+
+-- Explicit effect row variable '<@E>' correlates multiple callbacks and returned closures:
+fn compose<A, B, C, @E>(f: fn(A) @E -> B, g: fn(B) @E -> C) &capture -> fn(A) @E -> C {
+    \x -> g(f(x))
+}
 
 fn test_callables() -> () {
     let mut count = [0]
     let ^mut inc = \-> { Array::push(mut count, 1); len(ref count) }
     assert(call_open(^mut inc) == 2)
+    let h = compose(\x: int -> x + 1, \y: int -> y * 2)
+    assert(h(5) == 12)
 }
 test_callables()
 ```
 
 | Callable annotation | Effects (`@`) | State & provenance (`&`) |
 | :--- | :--- | :--- |
-| *(omitted)* | Closed empty | Closed pure (reusable via immutable access) |
+| *(omitted)* | Closed empty (`@()`) | Closed pure (reusable via immutable access) |
 | `@io` | Closed `{io}` | Closed pure |
 | `&up(ref)` | Closed empty | Read-only closure env (invoked via `ref`; pure callables matching `&up(ref)` stay immutable) |
 | `&up` | Closed empty | Mutable/abstract closure env (requires `mut`/`^mut` path, `E0520`) |
 | `ctl(...)` | Closed empty | Mode-free linear must-consume one-shot continuation from `with ctl` (`E0625` if unconsumed; discharged by `k(...)` or `unwind_ctl(k)`; forbids `mut`/`ref`/`^mut`/`new`/`var`, `clone`, `derive`, `==`, and closure capture) |
-| `@` | Open effect set (tracked & charged at call) | Closed pure (live narrowings still reject handler writes, `E0533`) |
+| `@` | Open effect set (tracked & charged at call; sugar for anonymous `<@E>`) | Closed pure (live narrowings still reject handler writes, `E0533`) |
+| `@fn` | Open direct-only effect set (forbids `ctl`, `E0616`; sugar for `<@E: fn>`) | Closed pure |
+| `@E` | Polymorphic flat idempotent effect row parameter (`<@E>` or `<@E: fn>`) | Closed pure (combinable with `&...`) |
 | `&` | Closed empty | Open state/provenance set (tracked & charged at call; orthogonal to access mode) |
 | `@&` | Open effect set (tracked & charged at call) | Open state/provenance set (tracked & charged at call; orthogonal to access mode) |
 
@@ -2193,7 +2205,7 @@ fn run_step(mut f: Step) -> int { f() }   -- OK: '&up' invoked through 'mut' pat
 -- Rejected callable signatures and conversions:
 -- fn bad_step(ref f: Step) -> int { f() }     -- Error [E0520]: '&up' requires 'mut' or '^mut' callable path
 -- pub fn len(x: int) -> int                   -- Error [E0909]: built-in signature mismatch in prelude
--- fn bad_open() @ -> () {}                    -- Error [E0547]: open '@' marker prohibited on named 'fn'
+-- fn bad_open() @ -> () {}                    -- Error [E0547]: open '@' requires an open-effect callback parameter
 -- fn bad_ret(ref a: []int) -> []int { a }     -- Error [E0544]: missing 'ref(a)' return mode annotation
 -- fn bad_new_omit() -> []int { [1, 2] }       -- Error [E0544]: missing 'new' return mode annotation
 -- let pure_cb: fn() -> () = \-> Io::println("hi") -- Error [E0534]: '@io' incompatible with pure 'fn() -> ()'
@@ -2201,9 +2213,9 @@ fn run_step(mut f: Step) -> int { f() }   -- OK: '&up' invoked through 'mut' pat
 -- let idle_cb = \mut _xs: []int -> ()         -- Error [E0527]: wildcard does not waive 'mut' use
 ```
 
-Under `MatchCallable`, a callable of actual signature $C_{\text{act}}$ matches expected `CallableType` $C_{\text{exp}}$ (`E0534` on signature/return-mode mismatch, `E0407` on parameter mode mismatch) iff:
+Under `MatchCallable`, a callable of actual signature $C_{\text{act}}$ matches expected `CallableType` $C_{\text{exp}}$ (`E0534` on signature/return-mode mismatch, `E0407` on parameter mode mismatch, `E0616` on `ctl` effect into `@fn` or `<@E: fn>`) iff:
 1. **Types & modes**: Parameter count matches (`E0314`), parameter types are contravariant, return type is covariant, concrete parameter modes match (`E0407`; `mut`/`^mut` definitions still satisfy `E0527`), and return modes/sources satisfy $C_{\text{exp}}$ (`E0534`; a caller's plain `-> T` target may receive a freezable `-> new T` result).
-2. **Effects**: Every effect in $C_{\text{act}}$ appears in $C_{\text{exp}}$ (or is covered by an `@SupEff` spread in $C_{\text{exp}}$, unless $C_{\text{exp}}$ is effect-open via `@` or `@&`).
+2. **Effects**: Every effect in $C_{\text{act}}$ appears in $C_{\text{exp}}$ (or is covered by an `@SupEff` spread in $C_{\text{exp}}$, unified into an effect row parameter `<@E>`, or permitted by open `@` / `@fn` / `@&`).
 3. **State & captures**: Every non-pure state/capture obligation in $C_{\text{act}}$ is permitted by $C_{\text{exp}}$ (`&` / `@&` opens state obligations):
    - `&up(ref)` admits pure or read-only observer closures callable via `ref`.
    - `&up` admits mutable closure environments; invoking an `&up` callable requires a `mut` or `^mut` path and exercises the callable's writable authority (`E0527`).
@@ -2215,8 +2227,8 @@ CallableType        ::= ( "fn" | "ctl" ) "(" [ ParameterTypeList ] ")" [ Callabl
 ParameterTypeList   ::= ParameterTypeItem { "," ParameterTypeItem } [ "," ]
 ParameterTypeItem   ::= [ ParameterMode ] [ ValueName ":" ] TypeExpression
 CallableAnnot       ::= "@&"
-                      | "@" [ ClosedCallableState ]
-                      | EffectAnnot [ CallableStateAnnot ]
+                      | EffectAnnot [ "@" | "@fn" ] [ CallableStateAnnot ]
+                      | ( "@" | "@fn" ) [ CallableStateAnnot ]
                       | CallableStateAnnot
 CallableStateAnnot  ::= "&" | ClosedCallableState
 ClosedCallableState ::= CallableStateClause { CallableStateClause }
@@ -2405,7 +2417,7 @@ Anonymous closures (`\... -> ...`) and shorthand projection accessors (`\.field`
 type Dept = .{ name: str, code: (str, int) }
 type Org  = .{ title: str, dept: ?Dept }
 
-fn with_tx<T>(mut log: []str, via body: fn(mut []str) @& -> !<T, str>) -> new !<T, str> {
+fn with_tx<T>(mut log: []str, via body: fn(mut []str) @& -> !<T, str>) @ -> new !<T, str> {
     Array::push(mut log, "begin")
     let out = body(mut log)?
     Array::push(mut log, "commit")
@@ -2788,7 +2800,7 @@ assert(ints == [1] && tags == ["a"])
 | Effect / handler aspect | Rule |
 | :--- | :--- |
 | Two `with` forms (`E0120`, `E0623`) | **Statement `with`** (`with [ctl] Op = [mode] expr`) governs the remaining statements of its enclosing block (prior locals, `defer`s, and outer `with`s stay outside its `with` boundary). **Expression `with { ... }`** governs strictly its own body (`E0120` if body omitted). Arm `ctl` prefix must match the op's kind (`E0623`). Arm RHSs evaluate once top-to-bottom in the outer handler environment before all arms activate together (`E0535`/`E0548`/`E0549`) |
-| `EffectOpDecl` limits (`E0412`, `E0538`, `E0547`, `E0401`, `E0546`) | Forbids `via`/`infer` (`E0412`), `&up(...)` (`E0538`), and open `@`/`&`/`@&` on parameter/return `CallableType`s (`E0547`). `ctl` ops additionally forbid call-scoped `ref`/`mut` parameters and `ref(...)`/`^mut(...)` root returns (`E0401`/`E0546`) |
+| `EffectOpDecl` limits (`E0412`, `E0538`, `E0547`, `E0401`, `E0546`) | Forbids `via`/`infer` (`E0412`), `&up(...)` (`E0538`), and bare open `@`/`@fn`/`&`/`@&` on parameter/return `CallableType`s (`E0547`; explicit effect row parameters `<@E>` declared on `eff` are allowed). `ctl` ops additionally forbid call-scoped `ref`/`mut` parameters and `ref(...)`/`^mut(...)` root returns (`E0401`/`E0546`) |
 | Dynamic stack dispatch | Closures and `where`-local `fn`s do not capture outer `with` handlers; all invoked `@Eff` effects remain in their signatures and dispatch dynamically along the active call stack. When `Eff::op(args)` matches handler frame `H`, `H`'s arm runs against `H`'s **parent** stack frame. For `ctl` ops, frames from `H` (inclusive, deep handler) to the `op` call site are captured in `k`; `k(v)` splices that slice onto the resumer's stack |
 | `ctl(...)` typing & `unwind_ctl` (`E0625`, `E0549`, `E0301`) | Within a `with` boundary of answer type `R` (`K-JOIN` of body and `ctl` arms), a `ctl` arm receives mode-free `k` as its final parameter of type `ctl() @E_res [&S_res] -> R` (when `OpRet ≡ ()`) or `ctl(OpRet) @E_res [&S_res] -> R`. Every `ctl(...)` is **must-consume (`E0625`)**, discharged by invoking `k(...)` once (`E0549` on reuse) or calling `unwind_ctl(k)`. A wildcard `_` continuation parameter runs `unwind_ctl(k)` before the arm body. `unwind_ctl(k)` (`E0301` on non-`ctl(...)`) is `no_ctl`, unwinds `k`'s armed `defer`s LIFO, returns `()`, and charges `k`'s residual `&State`, `@io`, and `fn`-op `@Eff` labels |
 | Control-flow & escape (`E0707`, `E0528`, `E0510`, `E0604`) | A `ctl`-bearing `with { ... }` or nested-block statement `with ctl` forbids outer `return`/`break`/`continue`/`?` (`E0707`). At a function's top-level block, `return e`/`?` under statement `with ctl` completes the innermost enclosing top-level `with ctl` boundary with `e` (return signature guards run only when the function returns). Inside an arm, `k` participates in overlap checks (`E0523`/`E0524`/`E0526`). If `k` escapes the `with` boundary, outer captures are checked as escaping captures (forbidding unshared `let mut`, call-scoped `mut`, `var`, and `ref`) |
@@ -3204,7 +3216,7 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | `len` | `pub fn len<T \|> LenTarget>(via item: T) -> int \|> Nat` | Dual-phase: scalar count of `str`, byte count of `bytes`, element/entry count of `[]T`, `[K: V]`, `Set<T>` (and `Derived` wrappers thereof; admits `ref` on collections at runtime; `E0401` on `ref str`) |
 | `inner` | `pub fn inner<W \|> InnerTarget>(via wrapper: W) -> infer Inner<W>` | Dual-phase: unwraps accessible nominal wrapper (or `Derived<W>`, lifting `InnerTarget`/`Inner`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Derived<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0308` on sealed `opaque`, `E0301` on non-nominals) |
 | `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `ctl(...)` or `Derived` handles, `E0530` on live callable environments) |
-| `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> ()) -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`) |
+| `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Derived<T>) @fn & -> ()) @fn -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`, `E0616`) |
 | `unwind_ctl` | `pub fn unwind_ctl<T>(k: T) -> ()` | Runtime: synchronously unwinds `ctl(...)` continuation `k`'s armed `defer` stack frames LIFO and returns `()` (`E0810` in static eval; `E0301` on non-`ctl(...)`; `no_ctl`, legal inside `defer`; charges residual `&S`, `@io`, and `fn`-op `@Eff` labels) |
 | `Panic::recover` (`ril/panic`) | `pub fn recover<T>(via action: fn() @& -> infer T) -> infer !<T, Panic::Error>` | Runtime: panic-isolated containment (`E0608`) |
 | `Panic::message` (`ril/panic`) | `pub fn message(report: Panic::Report) -> str` | Runtime: extracts human-readable message from `Panic::Report` (`E0810` in static eval) |

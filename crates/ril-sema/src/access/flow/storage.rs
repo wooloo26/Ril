@@ -29,6 +29,7 @@ pub(in crate::access) struct DeferredStorageCall {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(in crate::access) enum StorageAction {
     Write(StorageTarget, Replacement),
     Invoke(DeferredStorageCall),

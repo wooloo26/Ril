@@ -260,11 +260,61 @@ pub enum AdtKind {
     OpaqueSum,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EffectRow {
+    pub concrete: Vec<String>,
+    pub vars: Vec<DefinitionId>,
+    pub infers: Vec<usize>,
+    pub open: bool,
+    pub direct_open: bool,
+}
+
+impl EffectRow {
+    pub fn infer(id: usize) -> Self {
+        Self {
+            infers: vec![id],
+            ..Self::default()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.concrete.is_empty()
+            && self.vars.is_empty()
+            && self.infers.is_empty()
+            && !self.open
+            && !self.direct_open
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        for eff in &other.concrete {
+            if !self.concrete.contains(eff) {
+                self.concrete.push(eff.clone());
+            }
+        }
+        for &v in &other.vars {
+            if !self.vars.contains(&v) {
+                self.vars.push(v);
+            }
+        }
+        for &i in &other.infers {
+            if !self.infers.contains(&i) {
+                self.infers.push(i);
+            }
+        }
+        self.open |= other.open;
+        self.direct_open |= other.direct_open;
+        self.concrete.sort();
+        self.vars.sort();
+        self.infers.sort();
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GenericValue {
     Type(Ty),
     Data(Value),
     Mode(MemberMode),
+    Effects(EffectRow),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -337,7 +387,10 @@ pub struct Callable {
     pub result: Ty,
     pub result_mode: Mode,
     pub effects: Vec<String>,
+    pub effect_vars: Vec<DefinitionId>,
+    pub effect_infers: Vec<usize>,
     pub open_effects: bool,
+    pub direct_open_effects: bool,
     pub state: Vec<String>,
     pub open_state: bool,
 }
@@ -409,6 +462,7 @@ pub struct TypedProgram {
     pub(crate) operation_effects: HashMap<Span, String>,
     pub(crate) operation_instances: HashMap<Span, effects::Instance>,
     pub(crate) effect_applications: HashMap<Span, Vec<String>>,
+    pub(crate) effect_var_applications: HashMap<Span, Vec<DefinitionId>>,
     pub(crate) exported_param_proofs: BTreeMap<DefinitionId, Vec<proofs::ExportProof>>,
     pub(crate) exported_return_proofs: BTreeMap<DefinitionId, Vec<proofs::ExportProof>>,
     pub(crate) exported_type_invariants: BTreeMap<DefinitionId, Vec<proofs::ExportProof>>,
@@ -791,6 +845,26 @@ impl fmt::Display for Display<'_> {
                             GenericValue::Type(ty) => write!(f, "{}", show(ty))?,
                             GenericValue::Data(value) => f.write_str(&render(value))?,
                             GenericValue::Mode(mode) => f.write_str(mode_name(*mode))?,
+                            GenericValue::Effects(row) => {
+                                let mut parts = Vec::new();
+                                for eff in &row.concrete {
+                                    parts.push(format!("@{eff}"));
+                                }
+                                for var in &row.vars {
+                                    parts
+                                        .push(format!("@{}", self.hir.definition(*var).name.value));
+                                }
+                                if row.open {
+                                    parts.push("@".into());
+                                } else if row.direct_open {
+                                    parts.push("@fn".into());
+                                }
+                                if parts.is_empty() {
+                                    f.write_str("@()")?;
+                                } else {
+                                    f.write_str(&parts.join(" "))?;
+                                }
+                            }
                         }
                     }
                     f.write_str(">")?;
@@ -844,11 +918,17 @@ impl fmt::Display for Display<'_> {
                     write!(f, "{}", show(&p.ty))?;
                 }
                 f.write_str(")")?;
-                if call.open_effects {
-                    f.write_str(" @")?;
-                }
                 for effect in &call.effects {
                     write!(f, " @{effect}")?;
+                }
+                for &var in &call.effect_vars {
+                    write!(f, " @{}", self.hir.definition(var).name.value)?;
+                }
+                if call.direct_open_effects {
+                    f.write_str(" @fn")?;
+                }
+                if call.open_effects {
+                    f.write_str(" @")?;
                 }
                 if call.open_state {
                     f.write_str(" &")?;

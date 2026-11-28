@@ -46,6 +46,7 @@ fn lower_impl(files: Vec<File>, entry: FileId, partial: bool) -> (Program, Vec<D
         effect_owner: HashMap::new(),
         effect_by_label_map: HashMap::new(),
         local_effects: BTreeSet::new(),
+        effect_params: BTreeMap::new(),
         effect_spreads: BTreeMap::new(),
         package_edges: BTreeMap::new(),
         pending_operations: Vec::new(),

@@ -54,6 +54,23 @@ fn label(hir: &Program, definition: DefinitionId, arguments: &[GenericValue]) ->
             GenericValue::Mode(mode) => mode_name(*mode).into(),
             GenericValue::Data(Value::Type(ty)) => format!("<{}>", ty.qualified_display(hir)),
             GenericValue::Data(data) => render(data),
+            GenericValue::Effects(row) => {
+                let mut parts: Vec<String> = row.concrete.iter().map(|e| format!("@{e}")).collect();
+                for &v in &row.vars {
+                    parts.push(format!("@{}", hir.definition(v).name.value));
+                }
+                if row.direct_open {
+                    parts.push("@fn".into());
+                }
+                if row.open {
+                    parts.push("@".into());
+                }
+                if parts.is_empty() {
+                    "@()".into()
+                } else {
+                    parts.join(" ")
+                }
+            }
         })
         .collect::<Vec<_>>();
     format!("{identity}<{}>", args.join(", "))
@@ -194,11 +211,38 @@ impl Checker<'_> {
         label
     }
 
-    pub(super) fn call_effects(
+    pub(super) fn effect_row_from_paths(
+        &mut self,
+        env: &mut Env,
+        paths: &[Path],
+    ) -> super::EffectRow {
+        let mut row = super::EffectRow::default();
+        for path in paths {
+            if let Some(id) = self.resolve(path.span)
+                && self.hir.is_effect_param(id)
+            {
+                if let Some(GenericValue::Effects(bound)) = env.generics.get(&id).cloned() {
+                    row.merge(&bound);
+                } else if !row.vars.contains(&id) {
+                    row.vars.push(id);
+                }
+            } else {
+                let label = self.effect_label(env, path);
+                if !row.concrete.contains(&label) {
+                    row.concrete.push(label);
+                }
+            }
+        }
+        row.concrete.sort();
+        row.vars.sort();
+        row
+    }
+
+    pub(super) fn call_effect_row(
         &mut self,
         id: DefinitionId,
         generics: &HashMap<DefinitionId, GenericValue>,
-    ) -> Option<Vec<String>> {
+    ) -> Option<super::EffectRow> {
         let def = self.hir.definition(id);
         let StmtKind::Function(function) = &self.ast(def.name.span.file).stmt(def.stmt?).value.kind
         else {
@@ -206,14 +250,10 @@ impl Checker<'_> {
         };
         let mut local = Env::new(def.name.span.file, def.scope);
         local.generics.clone_from(generics);
-        Some(
-            function
-                .signature
-                .obligations
-                .effects
-                .iter()
-                .map(|path| self.effect_label(&mut local, path))
-                .collect(),
-        )
+        let mut raw =
+            self.effect_row_from_paths(&mut local, &function.signature.obligations.effects);
+        raw.open |= function.signature.obligations.open_effects;
+        raw.direct_open |= function.signature.obligations.direct_open_effects;
+        Some(self.normalize_effect_row(&raw))
     }
 }

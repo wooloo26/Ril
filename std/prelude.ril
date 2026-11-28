@@ -199,11 +199,11 @@ pub fn clone<T |> SharedObject>(via value: T) -> new T
 --     Array::push(mut d.tags, "ril")
 -- })
 -- ```
-pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> ()) -> T
+pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Derived<T>) @fn & -> ()) @fn -> T
 
 -- Runs `body` with a lexically confined `Scoped<T>` view of `value`.
 -- The `Scoped<T>` handle cannot escape `body` (`E0607`) and `body` cannot invoke outer `ctl` effects.
-pub fn with_scoped<T, R>(via value: T, via body: fn(via Scoped<T>) @& -> infer R) -> infer R
+pub fn with_scoped<T, R>(via value: T, via body: fn(via Scoped<T>) @fn & -> infer R) @fn -> infer R
 
 -- Synchronously discards a one-shot `ctl(...)` delimited continuation by unwinding its
 -- suspended frames and running their registered `defer` cleanups in LIFO order.

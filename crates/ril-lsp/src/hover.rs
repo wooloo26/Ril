@@ -185,20 +185,6 @@ pub(crate) fn render_definition_hover(
                     .collect();
                 meta_parts.push(format!("**Effects** {}", ops.join(", ")));
             }
-            if !summary.no_ctl_params.is_empty() {
-                let param_names = ril_driver::inspect::function_param_names(typed, id);
-                let names: Vec<String> = summary
-                    .no_ctl_params
-                    .iter()
-                    .map(|&idx| {
-                        param_names
-                            .get(idx)
-                            .and_then(|n| n.clone())
-                            .unwrap_or_else(|| format!("arg{idx}"))
-                    })
-                    .collect();
-                meta_parts.push(format!("**No-ctl** `{}`", names.join("`, `")));
-            }
             if !meta_parts.is_empty() {
                 extra_sections.push(meta_parts.join(" · "));
             }

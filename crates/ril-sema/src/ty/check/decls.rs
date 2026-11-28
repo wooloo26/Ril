@@ -49,7 +49,7 @@ impl Checker<'_> {
             for param in &call.parameters {
                 transform(&param.ty, &mut |part| {
                     if let Ty::Callable(c) = part
-                        && (c.open_effects || c.open_state)
+                        && (c.open_effects || c.direct_open_effects || c.open_state)
                     {
                         has_open = true;
                     }
@@ -58,7 +58,7 @@ impl Checker<'_> {
             }
             transform(&call.result, &mut |part| {
                 if let Ty::Callable(c) = part
-                    && (c.open_effects || c.open_state)
+                    && (c.open_effects || c.direct_open_effects || c.open_state)
                 {
                     has_open = true;
                 }
@@ -148,8 +148,10 @@ impl Checker<'_> {
                 );
             }
             if call.open_effects
+                || call.direct_open_effects
                 || call.open_state
                 || !call.effects.is_empty()
+                || !call.effect_vars.is_empty()
                 || !call.state.is_empty()
             {
                 self.error(Code::E0813, span, "meta fn must be pure");
@@ -915,7 +917,10 @@ impl Checker<'_> {
                         result: ans.clone(),
                         result_mode: k_result_mode,
                         effects: residual_effects.to_vec(),
+                        effect_vars: Vec::new(),
+                        effect_infers: Vec::new(),
                         open_effects: false,
+                        direct_open_effects: false,
                         state: Vec::new(),
                         open_state: false,
                     }));

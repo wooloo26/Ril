@@ -1158,7 +1158,7 @@ pub fn consume_token(t: Token) -> () {
     let Token::(.{ k }) = t
     unwind_ctl(k)
 }
-pub fn with_defer(cb: fn() @ -> ()) -> () {
+pub fn with_defer(cb: fn() @fn -> ()) @fn -> () {
     defer cb()
 }
 "#;
@@ -1169,10 +1169,10 @@ pub fn with_defer(cb: fn() @ -> ()) -> () {
     let decoded = Interface::decode(&encoded).unwrap();
     assert!(
         decoded.functions["pkg/kiface.ril::with_defer"]
-            .summary
-            .no_ctl_params
-            .contains(&0),
-        "expected no_ctl_params=[0] in published interface"
+            .signature
+            .contains("@fn"),
+        "expected @fn in published interface signature: {:?}",
+        decoded.functions["pkg/kiface.ril::with_defer"].signature
     );
     for (mount, bytes) in [
         ("library/kiface.ril", source.as_slice()),
@@ -1971,13 +1971,13 @@ pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &^mut -> () {
     pair.left = ^mut head
     pair.right = ^mut head
 }
-pub fn through(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &^mut -> infer Node {
+pub fn through(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) @ &^mut -> infer Node {
     action(build(^mut tail, count))
 }
-pub fn relay(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &^mut -> infer Node {
+pub fn relay(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) @ &^mut -> infer Node {
     through(action, ^mut tail, count)
 }
-pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int, first: bool) &^mut -> infer Node {
+pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int, first: bool) @ &^mut -> infer Node {
     if first { action(build(^mut tail, count)) } else { action(build(^mut tail, count)) }
 }
 "#;
@@ -2212,8 +2212,8 @@ pub fn read_extended() @Extended -> int { Meter::read() }
 pub opaque type Handle(.{ id: int })
 pub fn open() -> new Handle { Handle::(.{ id: 1 }) }
 pub fn close(_handle: Handle) @Meter -> () { let _ = Meter::read() }
-pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
-pub fn observe_after(via action: fn(via Cell) @& -> int, via cell: Cell) -> int {
+pub fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell { action(cell) }
+pub fn observe_after(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int {
     let result = action(cell)
     result + cell.count
 }
@@ -2326,7 +2326,7 @@ fn read() -> int {
         ),
         (
             r#"
-fn relay(via action: fn(via Store::Cell) @& -> infer Store::Cell, via cell: Store::Cell) -> infer Store::Cell {
+fn relay(via action: fn(via Store::Cell) @& -> infer Store::Cell, via cell: Store::Cell) @ -> infer Store::Cell {
     Store::apply(action, cell)
 }
 fn run() -> int {
@@ -3187,7 +3187,6 @@ fn exported_summaries_and_via_domains_agree_with_lean() {
             "captures": summary.captures,
             "constructs": summary.constructs,
             "nonreturning": summary.nonreturning,
-            "no_ctl_params": summary.no_ctl_params,
             "forbids_linear_drop": summary.forbids_linear_drop,
             "forbids_linear_dup": summary.forbids_linear_dup,
             "forbids_linear_suspend": summary.forbids_linear_suspend,

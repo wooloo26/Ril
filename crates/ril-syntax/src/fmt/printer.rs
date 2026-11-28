@@ -503,19 +503,33 @@ impl<'src, 'a> Printer<'src, 'a> {
     }
 
     fn print_obligations(&mut self, ob: &Obligations, limit_end: usize) -> DocId {
-        if ob.open_effects && ob.open_state && ob.effects.is_empty() && ob.state.is_empty() {
+        if ob.open_effects
+            && !ob.direct_open_effects
+            && ob.open_state
+            && ob.effects.is_empty()
+            && ob.state.is_empty()
+        {
             return self.arena.text("@&");
         }
         let mut parts = Vec::new();
-        if ob.open_effects {
-            parts.push(self.arena.text("@"));
-        }
         for eff in &ob.effects {
             if !parts.is_empty() {
                 parts.push(self.arena.text(" "));
             }
             parts.push(self.arena.text("@"));
             parts.push(self.print_path(eff));
+        }
+        if ob.direct_open_effects {
+            if !parts.is_empty() {
+                parts.push(self.arena.text(" "));
+            }
+            parts.push(self.arena.text("@fn"));
+        }
+        if ob.open_effects {
+            if !parts.is_empty() {
+                parts.push(self.arena.text(" "));
+            }
+            parts.push(self.arena.text("@"));
         }
         if ob.open_state {
             if !parts.is_empty() {
@@ -641,7 +655,14 @@ impl<'src, 'a> Printer<'src, 'a> {
         let items: Vec<(Span, DocId)> = params
             .iter()
             .map(|g| {
-                let mut parts = vec![self.arena.owned(g.name.value.clone())];
+                let mut parts = Vec::new();
+                if g.is_effect {
+                    parts.push(self.arena.text("@"));
+                }
+                parts.push(self.arena.owned(g.name.value.clone()));
+                if g.is_effect && g.direct_only {
+                    parts.push(self.arena.text(": fn"));
+                }
                 if !g.bound.is_empty() {
                     parts.push(self.arena.text(": "));
                     for (i, &b) in g.bound.iter().enumerate() {
@@ -674,6 +695,21 @@ impl<'src, 'a> Printer<'src, 'a> {
                     self.arena.text("let")
                 } else {
                     self.print_storage(s, false)
+                }
+            }
+            GenericArg::Effect(paths, _) => {
+                if paths.is_empty() {
+                    self.arena.text("@()")
+                } else {
+                    let mut parts = Vec::new();
+                    for (i, path) in paths.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(self.arena.text(" "));
+                        }
+                        parts.push(self.arena.text("@"));
+                        parts.push(self.print_path(path));
+                    }
+                    self.arena.concat(&parts)
                 }
             }
         }
@@ -1270,6 +1306,7 @@ impl<'src, 'a> Printer<'src, 'a> {
                         GenericArg::Mode(s) => {
                             s.mode_span.or(s.keyword_span).unwrap_or(seg.name.span)
                         }
+                        GenericArg::Effect(_, span) => *span,
                     };
                     (span, self.print_generic_arg(arg))
                 })

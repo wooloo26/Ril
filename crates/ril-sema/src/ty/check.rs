@@ -84,6 +84,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
                 operation_effects: HashMap::new(),
                 operation_instances: HashMap::new(),
                 effect_applications: HashMap::new(),
+                effect_var_applications: HashMap::new(),
                 subset_tags: HashMap::new(),
                 tuple_payloads: HashMap::new(),
                 receptions: HashMap::new(),
@@ -97,23 +98,23 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
     }
     let types = std::mem::take(&mut ck.types)
         .into_iter()
-        .map(|(span, ty)| (span, ck.normalize(&ty)))
+        .map(|(span, ty)| (span, ck.finalize(&ty)))
         .collect();
     let bindings = std::mem::take(&mut ck.bindings)
         .into_iter()
-        .map(|(id, ty)| (id, ck.normalize(&ty)))
+        .map(|(id, ty)| (id, ck.finalize(&ty)))
         .collect();
     let navigation_values = std::mem::take(&mut ck.navigation_values)
         .into_iter()
-        .map(|(span, ty)| (span, ck.normalize(&ty)))
+        .map(|(span, ty)| (span, ck.finalize(&ty)))
         .collect();
     let propagation_inputs = std::mem::take(&mut ck.propagation_inputs)
         .into_iter()
-        .map(|(span, ty)| (span, ck.normalize(&ty)))
+        .map(|(span, ty)| (span, ck.finalize(&ty)))
         .collect();
     let nominal_layouts = std::mem::take(&mut ck.nominal_layouts)
         .into_iter()
-        .map(|(id, ty)| (id, ck.normalize(&ty)))
+        .map(|(id, ty)| (id, ck.finalize(&ty)))
         .collect();
     let static_generic_arguments = std::mem::take(&mut ck.generic_arguments)
         .into_iter()
@@ -124,7 +125,10 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
                     (
                         id,
                         match arg {
-                            GenericValue::Type(ty) => GenericValue::Type(ck.normalize(&ty)),
+                            GenericValue::Type(ty) => GenericValue::Type(ck.finalize(&ty)),
+                            GenericValue::Effects(row) => {
+                                GenericValue::Effects(ck.normalize_effect_row(&row))
+                            }
                             value => value,
                         },
                     )
@@ -164,6 +168,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         operation_effects,
         operation_instances,
         effect_applications,
+        effect_var_applications,
         subset_tags,
         tuple_payloads,
         receptions,
@@ -206,6 +211,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         operation_effects,
         operation_instances,
         effect_applications,
+        effect_var_applications,
         subset_tags,
         tuple_payloads,
         receptions,
@@ -283,6 +289,7 @@ pub(super) struct Env {
     pub(super) active_defers: Vec<syntax::ExprId>,
     pub(super) shadow: bool,
     pub(super) effects_seen: HashSet<String>,
+    pub(super) effect_vars_seen: HashSet<DefinitionId>,
     pub(super) refinements: Refinements,
     pub(super) unrefined: Option<Span>,
     pub(super) nominal_fields: Option<Span>,
@@ -320,6 +327,7 @@ impl Env {
             active_defers: Vec::new(),
             shadow: false,
             effects_seen: HashSet::new(),
+            effect_vars_seen: HashSet::new(),
             refinements: Refinements::default(),
             unrefined: None,
             nominal_fields: None,
@@ -357,6 +365,7 @@ pub(super) struct Checker<'a> {
     pub(super) inspection_scopes: HashMap<Span, ScopeId>,
     next_infer: u32,
     substitutions: HashMap<u32, Ty>,
+    pub(super) effect_infers: Vec<super::EffectRow>,
     pub(super) resolving: HashSet<DefinitionId>,
     pub(super) must_consume_active: HashSet<DefinitionId>,
     checked: HashSet<DefinitionId>,
@@ -380,6 +389,7 @@ pub(super) struct Checker<'a> {
     pub(super) operation_effects: HashMap<Span, String>,
     pub(super) operation_instances: HashMap<Span, super::effects::Instance>,
     pub(super) effect_applications: HashMap<Span, Vec<String>>,
+    pub(super) effect_var_applications: HashMap<Span, Vec<DefinitionId>>,
     pub(super) subset_tags: HashMap<Span, Vec<String>>,
     pub(super) tuple_payloads: HashMap<Span, usize>,
     pub(super) receptions: HashMap<Span, Vec<super::reception::Adjustment>>,
@@ -418,6 +428,7 @@ impl<'a> Checker<'a> {
             meta_parameters: HashSet::new(),
             next_infer: 0,
             substitutions: HashMap::new(),
+            effect_infers: Vec::new(),
             resolving: HashSet::new(),
             must_consume_active: HashSet::new(),
             checked: HashSet::new(),
@@ -440,6 +451,7 @@ impl<'a> Checker<'a> {
             operation_effects: HashMap::new(),
             operation_instances: HashMap::new(),
             effect_applications: HashMap::new(),
+            effect_var_applications: HashMap::new(),
             navigation_values: HashMap::new(),
             subset_tags: HashMap::new(),
             tuple_payloads: HashMap::new(),
@@ -520,18 +532,133 @@ impl<'a> Checker<'a> {
         Ty::Infer(id)
     }
 
+    pub(super) fn fresh_effect(&mut self) -> usize {
+        let id = self.effect_infers.len();
+        self.effect_infers.push(super::EffectRow::default());
+        id
+    }
+
+    pub(super) fn normalize_effect_row(&self, row: &super::EffectRow) -> super::EffectRow {
+        let mut out = super::EffectRow {
+            concrete: row.concrete.clone(),
+            vars: row.vars.clone(),
+            infers: Vec::new(),
+            open: row.open,
+            direct_open: row.direct_open,
+        };
+        let mut stack = row.infers.clone();
+        let mut seen = HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Some(bound) = self.effect_infers.get(id) {
+                for eff in &bound.concrete {
+                    if !out.concrete.contains(eff) {
+                        out.concrete.push(eff.clone());
+                    }
+                }
+                for &v in &bound.vars {
+                    if !out.vars.contains(&v) {
+                        out.vars.push(v);
+                    }
+                }
+                for &nested in &bound.infers {
+                    stack.push(nested);
+                }
+                out.open |= bound.open;
+                out.direct_open |= bound.direct_open;
+            }
+        }
+        out.concrete.sort();
+        out.vars.sort();
+        out
+    }
+
+    pub(super) fn effect_label_has_ctl(&self, effect: &str) -> bool {
+        if effect == "io" {
+            return false;
+        }
+        let def = self
+            .effect_instances
+            .get(effect)
+            .map(|inst| inst.definition)
+            .or_else(|| self.hir.effect_by_label(effect));
+        def.is_some_and(|id| {
+            self.hir
+                .effect_operations(id)
+                .any(|op| self.hir.is_ctl_operation(op))
+        })
+    }
+
     pub(super) fn normalize(&self, ty: &Ty) -> Ty {
         if let Ty::Infer(var) = ty
             && let Some(replace) = self.substitutions.get(var)
         {
             return self.normalize(replace);
         }
-        transform(ty, &mut |ty| {
-            if matches!(ty, Ty::Infer(var) if self.substitutions.contains_key(var)) {
-                Some(self.normalize(ty))
-            } else {
-                None
+        transform(ty, &mut |ty| match ty {
+            Ty::Infer(var) if self.substitutions.contains_key(var) => Some(self.normalize(ty)),
+            _ => None,
+        })
+    }
+
+    pub(super) fn finalize(&self, ty: &Ty) -> Ty {
+        if let Ty::Infer(var) = ty
+            && let Some(replace) = self.substitutions.get(var)
+        {
+            return self.finalize(replace);
+        }
+        transform(ty, &mut |ty| match ty {
+            Ty::Infer(var) if self.substitutions.contains_key(var) => Some(self.finalize(ty)),
+            Ty::Callable(call) if !call.effect_infers.is_empty() => {
+                let row = self.normalize_effect_row(&super::EffectRow {
+                    concrete: call.effects.clone(),
+                    vars: call.effect_vars.clone(),
+                    infers: call.effect_infers.clone(),
+                    open: call.open_effects,
+                    direct_open: call.direct_open_effects,
+                });
+                Some(Ty::Callable(Arc::new(Callable {
+                    parameters: call
+                        .parameters
+                        .iter()
+                        .map(|p| Parameter {
+                            ty: self.finalize(&p.ty),
+                            ..p.clone()
+                        })
+                        .collect(),
+                    result: self.finalize(&call.result),
+                    effects: row.concrete,
+                    effect_vars: row.vars,
+                    effect_infers: Vec::new(),
+                    open_effects: row.open,
+                    direct_open_effects: row.direct_open,
+                    ..(**call).clone()
+                })))
             }
+            Ty::Adt(adt)
+                if adt
+                    .arguments
+                    .iter()
+                    .any(|a| matches!(a, GenericValue::Effects(r) if !r.infers.is_empty())) =>
+            {
+                Some(Ty::Adt(Arc::new(super::Adt {
+                    arguments: adt
+                        .arguments
+                        .iter()
+                        .map(|arg| match arg {
+                            GenericValue::Type(t) => GenericValue::Type(self.finalize(t)),
+                            GenericValue::Effects(r) => {
+                                GenericValue::Effects(self.normalize_effect_row(r))
+                            }
+                            other => other.clone(),
+                        })
+                        .collect(),
+                    ..(**adt).clone()
+                })))
+            }
+            _ => None,
         })
     }
 
@@ -687,6 +814,18 @@ impl<'a> Checker<'a> {
                                     self.equiv(env, actual, expected)
                                 }
                             }
+                            (GenericValue::Effects(actual), GenericValue::Effects(expected)) => {
+                                if !expected.infers.is_empty() {
+                                    for &eid in &expected.infers {
+                                        if let Some(slot) = self.effect_infers.get_mut(eid) {
+                                            slot.merge(actual);
+                                        }
+                                    }
+                                    true
+                                } else {
+                                    actual == expected
+                                }
+                            }
                             _ => actual == expected,
                         })
             }
@@ -790,10 +929,41 @@ impl<'a> Checker<'a> {
     }
 
     fn callable_equiv(&mut self, env: &Env, a: &Callable, b: &Callable) -> bool {
+        let effects_eq = if !b.effect_infers.is_empty() && a.effect_infers.is_empty() {
+            for &eid in &b.effect_infers {
+                if let Some(slot) = self.effect_infers.get_mut(eid) {
+                    slot.merge(&super::EffectRow {
+                        concrete: a.effects.clone(),
+                        vars: a.effect_vars.clone(),
+                        infers: Vec::new(),
+                        open: a.open_effects,
+                        direct_open: a.direct_open_effects,
+                    });
+                }
+            }
+            true
+        } else if !a.effect_infers.is_empty() && b.effect_infers.is_empty() {
+            for &eid in &a.effect_infers {
+                if let Some(slot) = self.effect_infers.get_mut(eid) {
+                    slot.merge(&super::EffectRow {
+                        concrete: b.effects.clone(),
+                        vars: b.effect_vars.clone(),
+                        infers: Vec::new(),
+                        open: b.open_effects,
+                        direct_open: b.direct_open_effects,
+                    });
+                }
+            }
+            true
+        } else {
+            a.open_effects == b.open_effects
+                && a.direct_open_effects == b.direct_open_effects
+                && a.effects == b.effects
+                && a.effect_vars == b.effect_vars
+        };
         a.is_ctl == b.is_ctl
             && a.parameters.len() == b.parameters.len()
-            && a.open_effects == b.open_effects
-            && a.effects == b.effects
+            && effects_eq
             && a.open_state == b.open_state
             && a.state == b.state
             && (a.result_mode == b.result_mode
@@ -843,16 +1013,77 @@ impl<'a> Checker<'a> {
     }
 
     fn callable_fits(&mut self, env: &Env, actual: &Callable, expected: &Callable) -> bool {
-        actual.is_ctl == expected.is_ctl
-            && actual.parameters.len() == expected.parameters.len()
-            && (expected.open_effects
-                || !actual.open_effects
-                    && actual.effects.iter().all(|effect| {
-                        expected
-                            .effects
-                            .iter()
-                            .any(|cover| self.effect_covers(cover, effect))
-                    }))
+        if actual.is_ctl != expected.is_ctl || actual.parameters.len() != expected.parameters.len()
+        {
+            return false;
+        }
+        let effects_ok = if !expected.effect_infers.is_empty() {
+            // Union any effects of `actual` not already covered by `expected`'s explicit effects/vars
+            // into each effect inference variable on `expected`.
+            let extra_concrete: Vec<String> = actual
+                .effects
+                .iter()
+                .filter(|eff| {
+                    !expected
+                        .effects
+                        .iter()
+                        .any(|cover| self.effect_covers(cover, eff))
+                })
+                .cloned()
+                .collect();
+            let extra_vars: Vec<DefinitionId> = actual
+                .effect_vars
+                .iter()
+                .filter(|v| !expected.effect_vars.contains(v))
+                .copied()
+                .collect();
+            let extra_infers: Vec<usize> = actual
+                .effect_infers
+                .iter()
+                .filter(|i| !expected.effect_infers.contains(i))
+                .copied()
+                .collect();
+            for &eid in &expected.effect_infers {
+                if let Some(slot) = self.effect_infers.get_mut(eid) {
+                    slot.merge(&super::EffectRow {
+                        concrete: extra_concrete.clone(),
+                        vars: extra_vars.clone(),
+                        infers: extra_infers.clone(),
+                        open: actual.open_effects,
+                        direct_open: actual.direct_open_effects,
+                    });
+                }
+            }
+            true
+        } else if expected.open_effects {
+            true
+        } else if expected.direct_open_effects {
+            !actual.open_effects
+                && actual.effects.iter().all(|eff| {
+                    expected
+                        .effects
+                        .iter()
+                        .any(|cover| self.effect_covers(cover, eff))
+                        || !self.effect_label_has_ctl(eff)
+                })
+                && actual.effect_vars.iter().all(|v| {
+                    expected.effect_vars.contains(v) || self.hir.is_direct_effect_param(*v)
+                })
+        } else {
+            !actual.open_effects
+                && !actual.direct_open_effects
+                && actual.effects.iter().all(|effect| {
+                    expected
+                        .effects
+                        .iter()
+                        .any(|cover| self.effect_covers(cover, effect))
+                })
+                && actual
+                    .effect_vars
+                    .iter()
+                    .all(|v| expected.effect_vars.contains(v))
+        };
+        effects_ok
             && (expected.open_state
                 || !actual.open_state
                     && actual
@@ -890,6 +1121,19 @@ impl<'a> Checker<'a> {
         let actual = self.normalize(actual);
         let expected = self.normalize(expected);
         if let (Ty::Callable(actual), Ty::Callable(expected)) = (&actual, &expected) {
+            let direct_ctl_mismatch = expected.direct_open_effects
+                && !expected.open_effects
+                && (actual.open_effects
+                    || actual.effects.iter().any(|eff| {
+                        !expected
+                            .effects
+                            .iter()
+                            .any(|cover| self.effect_covers(cover, eff))
+                            && self.effect_label_has_ctl(eff)
+                    })
+                    || actual.effect_vars.iter().any(|v| {
+                        !expected.effect_vars.contains(v) && !self.hir.is_direct_effect_param(*v)
+                    }));
             let code = if actual.parameters.len() != expected.parameters.len() {
                 Code::E0314
             } else if actual
@@ -901,14 +1145,17 @@ impl<'a> Checker<'a> {
                 })
             {
                 Code::E0407
+            } else if direct_ctl_mismatch {
+                Code::E0616
             } else {
                 Code::E0534
             };
-            self.error(
-                code,
-                span,
-                "callable is incompatible with the target signature",
-            );
+            let msg = if code == Code::E0616 {
+                "callable using ctl effect cannot be passed to a '@fn' target"
+            } else {
+                "callable is incompatible with the target signature"
+            };
+            self.error(code, span, msg);
             return false;
         }
         let code = if matches!((&actual, &expected), (Ty::Adt(a), Ty::Adt(b)) if a.definition != b.definition
@@ -962,15 +1209,90 @@ impl<'a> Checker<'a> {
     }
 }
 
-pub(super) fn substitute(ty: &Ty, generics: &HashMap<DefinitionId, GenericValue>) -> Ty {
-    transform(ty, &mut |ty| {
-        if let Ty::Param(id) = ty
-            && let Some(GenericValue::Type(ty)) = generics.get(id)
-        {
-            Some(ty.clone())
-        } else {
-            None
+pub(super) fn substitute_effect_row(
+    row: &super::EffectRow,
+    generics: &HashMap<DefinitionId, GenericValue>,
+) -> super::EffectRow {
+    let mut out = super::EffectRow {
+        concrete: row.concrete.clone(),
+        vars: Vec::new(),
+        infers: row.infers.clone(),
+        open: row.open,
+        direct_open: row.direct_open,
+    };
+    for &var in &row.vars {
+        if let Some(GenericValue::Effects(bound)) = generics.get(&var) {
+            out.merge(bound);
+        } else if !out.vars.contains(&var) {
+            out.vars.push(var);
         }
+    }
+    out.concrete.sort();
+    out.vars.sort();
+    out.infers.sort();
+    out
+}
+
+pub(super) fn substitute(ty: &Ty, generics: &HashMap<DefinitionId, GenericValue>) -> Ty {
+    transform(ty, &mut |ty| match ty {
+        Ty::Param(id) => {
+            if let Some(GenericValue::Type(ty)) = generics.get(id) {
+                Some(ty.clone())
+            } else {
+                None
+            }
+        }
+        Ty::Callable(call) if !call.effect_vars.is_empty() => {
+            let row = substitute_effect_row(
+                &super::EffectRow {
+                    concrete: call.effects.clone(),
+                    vars: call.effect_vars.clone(),
+                    infers: call.effect_infers.clone(),
+                    open: call.open_effects,
+                    direct_open: call.direct_open_effects,
+                },
+                generics,
+            );
+            Some(Ty::Callable(Arc::new(Callable {
+                result: substitute(&call.result, generics),
+                parameters: call
+                    .parameters
+                    .iter()
+                    .map(|p| Parameter {
+                        ty: substitute(&p.ty, generics),
+                        ..p.clone()
+                    })
+                    .collect(),
+                effects: row.concrete,
+                effect_vars: row.vars,
+                effect_infers: row.infers,
+                open_effects: row.open,
+                direct_open_effects: row.direct_open,
+                ..(**call).clone()
+            })))
+        }
+        Ty::Adt(adt)
+            if adt
+                .arguments
+                .iter()
+                .any(|a| matches!(a, GenericValue::Effects(r) if !r.vars.is_empty())) =>
+        {
+            Some(Ty::Adt(Arc::new(super::Adt {
+                arguments: adt
+                    .arguments
+                    .iter()
+                    .map(|arg| match arg {
+                        GenericValue::Type(t) => GenericValue::Type(substitute(t, generics)),
+                        GenericValue::Effects(r) => {
+                            GenericValue::Effects(substitute_effect_row(r, generics))
+                        }
+                        other => other.clone(),
+                    })
+                    .collect(),
+                ..(**adt).clone()
+            })))
+        }
+        _ => None,
     })
 }
 
@@ -1031,7 +1353,10 @@ pub(super) fn unknown_callable() -> Callable {
         result: Ty::Unknown,
         result_mode: Mode::Plain,
         effects: Vec::new(),
+        effect_vars: Vec::new(),
+        effect_infers: Vec::new(),
         open_effects: false,
+        direct_open_effects: false,
         state: Vec::new(),
         open_state: false,
     }

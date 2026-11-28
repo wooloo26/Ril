@@ -654,3 +654,66 @@ fn main() -> () {
     }
     assert(pair == (30, 10))
 }
+
+-- @case effect_row_variables_compose_local_discharge_and_direct_fn run-pass backend=both
+eff Clock { fn now() -> int }
+eff Log { fn emit(msg: str) -> () }
+
+type Route<@E> = .{ handle: fn(int) @E -> int }
+
+fn with_fixed_clock<T>(t: int, body: fn() @Clock @ -> T) @ -> T {
+    with Clock::now = \-> t
+    body()
+}
+
+fn compose<A, B, C, @E>(f: fn(A) @E -> B, g: fn(B) @E -> C) &capture -> fn(A) @E -> C {
+    \x -> g(f(x))
+}
+
+fn with_direct_cleanup(cb: fn() @fn -> ()) @fn -> () {
+    defer cb()
+}
+
+fn with_direct_row<@E: fn>(cb: fn() @E -> ()) @E -> () {
+    defer cb()
+}
+
+fn run_route<@E>(r: Route<@E>, x: int) @E -> int {
+    (r.handle)(x)
+}
+
+fn main() -> () {
+    let mut logs: []str = []
+    with Log::emit = \m -> Array::push(mut logs, m)
+
+    -- 1. Local discharge: @Clock handled inside, @Log forwarded via @
+    let v = with_fixed_clock(100, \-> {
+        Log::emit("tick")
+        Clock::now() + 5
+    })
+    assert(v == 105)
+
+    -- 2. Explicit <@E> composition: unions effects of f and g
+    let step = compose(
+        \x: int -> { Log::emit("f"); x + 1 },
+        \y: int -> { Log::emit("g"); y * 2 },
+    )
+    assert(step(10) == 22)
+
+    -- 3. Pure composition stays pure
+    let pure_step = compose(\x: int -> x + 3, \y: int -> y * 10)
+    assert(pure_step(2) == 50)
+
+    -- 4. Generic type parameterized by <@E>
+    let r = Route<@Log>.{ handle: \n -> { Log::emit("route"); n + 7 } }
+    assert(run_route(r, 3) == 10)
+
+    -- 5. @fn and <@E: fn> inside defer
+    with_direct_cleanup(\-> Log::emit("d1"))
+    with_direct_row(\-> Log::emit("d2"))
+
+    -- 6. Array::map honest @ forwarding
+    let mapped = Array::map([1, 2], \n -> { Log::emit("m"); n * 3 })
+    assert(mapped == [3, 6])
+    assert(logs == ["tick", "f", "g", "route", "d1", "d2", "m", "m"])
+}

@@ -50,11 +50,13 @@ enum Obligation {
     NeedsSharing(Span),
     ReadUp(Span),
     Invoke(Span),
-    NoCtlParam(Span),
     Capture,
     StatefulHandler,
     CtlHandler,
     Effect(String),
+    EffectVar(DefinitionId),
+    OpenEffect,
+    DirectOpenEffect,
     Operation(Operation),
 }
 

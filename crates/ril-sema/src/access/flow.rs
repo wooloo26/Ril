@@ -486,6 +486,9 @@ pub(super) struct Datum {
     pub requires_new: bool,
     pub latent_effects: BTreeSet<String>,
     pub latent_operations: BTreeSet<(ril_hir::DefinitionId, String)>,
+    pub latent_effect_vars: BTreeSet<ril_hir::DefinitionId>,
+    pub latent_open_effect: bool,
+    pub latent_direct_open_effect: bool,
     pub environments: BTreeSet<Span>,
     pub publications: BTreeMap<Span, bool>,
     // Paths in the environment at callable entry. A true entry identifies

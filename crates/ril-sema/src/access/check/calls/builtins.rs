@@ -12,7 +12,7 @@ impl Analyzer<'_> {
         let Some(sig) = sig else {
             return;
         };
-        self.charge_call_effects(ctx, ledger, sig, None, span);
+        self.charge_call_effects(ctx, ledger, sig, None, false, span);
         for (index, _, value) in args {
             if sig
                 .parameters
@@ -127,6 +127,22 @@ impl Analyzer<'_> {
                         );
                     }
                     self.invoke_callable_obligations(ctx, ledger, callback, span);
+                    if let Ty::Callable(actual) = cb_ty.clone() {
+                        for eff in &actual.effects {
+                            self.effect(ctx, ledger, eff, span);
+                        }
+                        for &var in &actual.effect_vars {
+                            self.use_effect_var(ctx, ledger, var, span);
+                        }
+                        if actual.open_effects || actual.direct_open_effects {
+                            self.use_open_effect(
+                                ctx,
+                                ledger,
+                                actual.direct_open_effects && !actual.open_effects,
+                                span,
+                            );
+                        }
+                    }
                 }
                 return Datum::default();
             }
@@ -137,12 +153,28 @@ impl Analyzer<'_> {
                     });
                     if callback.uses_ctl_handler || self.has_unhandled_ctl(ctx, callback, cb_ty) {
                         self.error(
-                            Code::E0607,
+                            Code::E0616,
                             span,
                             "derive callback cannot invoke outer ctl effects",
                         );
                     }
                     self.invoke_callable_obligations(ctx, ledger, callback, span);
+                    if let Ty::Callable(actual) = cb_ty.clone() {
+                        for eff in &actual.effects {
+                            self.effect(ctx, ledger, eff, span);
+                        }
+                        for &var in &actual.effect_vars {
+                            self.use_effect_var(ctx, ledger, var, span);
+                        }
+                        if actual.open_effects || actual.direct_open_effects {
+                            self.use_open_effect(
+                                ctx,
+                                ledger,
+                                actual.direct_open_effects && !actual.open_effects,
+                                span,
+                            );
+                        }
+                    }
                     if let Some(base) = first
                         && ctx.runtime
                         && ctx.reachable
@@ -184,6 +216,9 @@ impl Analyzer<'_> {
                     || first.is_some_and(|value| {
                         !value.latent_effects.is_empty()
                             || !value.latent_operations.is_empty()
+                            || !value.latent_effect_vars.is_empty()
+                            || value.latent_open_effect
+                            || value.latent_direct_open_effect
                             || value.live_callable_state
                             || value.uses_ctl_handler
                             || value.roots.iter().any(|origin| {

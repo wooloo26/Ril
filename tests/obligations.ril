@@ -1119,7 +1119,7 @@ fn bad_reflects(x: int) -> bool |> Reflects<Positive<x>> {
 fn map_indexed<T, R>(
     xs: []T,
     via f: fn(i: InBounds<xs>, x: T) @& -> R,
-) -> new []R |> SameLen<xs> {
+) @ -> new []R |> SameLen<xs> {
     let mut out: []R = []
     for 0..len(xs) as i {
         Array::push(mut out, f(i, xs[i]))
@@ -1414,3 +1414,43 @@ fn bad() @Clock -> new PureStep {
         PureStep::Done
     }
 }
+
+-- @case open_effect_missing_outer_at_is_e0612 compile-fail E0612
+fn bad(f: fn() @ -> int) -> int {
+-- ^ E0612
+    f()
+}
+
+-- @case open_effect_without_callback_param_is_e0547 compile-fail E0547
+fn bad() @ -> () {}
+-- ^ E0547
+
+-- @case direct_open_effect_rejects_ctl_callback_is_e0616 compile-fail E0616
+eff Yield { ctl step() -> () }
+fn run_direct(cb: fn() @fn -> ()) @fn -> () {
+    defer cb()
+}
+fn bad() @Yield -> () {
+    run_direct(\-> Yield::step())
+    --         ^ E0616
+}
+
+-- @case direct_effect_row_var_rejects_ctl_callback_is_e0616 compile-fail E0616
+eff Yield { ctl step() -> () }
+fn run_row<@E: fn>(cb: fn() @E -> ()) @E -> () {
+    defer cb()
+}
+fn bad() @Yield -> () {
+    run_row(\-> Yield::step())
+    -- ^ E0616
+}
+
+-- @case unconstrained_effect_row_var_rejected_in_defer_is_e0616 compile-fail E0616
+fn bad<@E>(cb: fn() @E -> ()) @E -> () {
+    defer cb()
+    --    ^ E0616
+}
+
+-- @case unused_effect_row_var_is_e0626 compile-fail E0626
+fn bad<@E>(_cb: fn() @E -> ()) @E -> () {}
+-- ^ E0626

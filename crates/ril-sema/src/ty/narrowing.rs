@@ -2868,6 +2868,8 @@ impl Checker<'_> {
                     // Known pure user/stdlib call: check callable effects/state if already declared.
                     if let Some(sig) = self.callables.get(&id)
                         && !sig.open_effects
+                        && !sig.direct_open_effects
+                        && sig.effect_vars.is_empty()
                         && !sig.open_state
                         && sig.effects.iter().all(|e| e == "io")
                         && sig.state.is_empty()
@@ -3133,6 +3135,8 @@ impl Checker<'_> {
                             && (self.hir.intrinsic(id).is_some()
                                 || self.callables.get(&id).is_some_and(|sig| {
                                     !sig.open_effects
+                                        && !sig.direct_open_effects
+                                        && sig.effect_vars.is_empty()
                                         && !sig.open_state
                                         && sig.effects.iter().all(|e| e == "io")
                                         && sig.state.is_empty()

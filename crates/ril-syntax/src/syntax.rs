@@ -147,11 +147,14 @@ pub enum GenericArg {
     Type(TypeId),
     Value(ExprId),
     Mode(Storage),
+    Effect(Vec<Path>, Span),
 }
 
 #[derive(Clone, Debug)]
 pub struct GenericParam {
     pub name: Name,
+    pub is_effect: bool,
+    pub direct_only: bool,
     pub bound: Vec<TypeId>,
     pub guards: Vec<Path>,
     pub default: Option<GenericArg>,
@@ -227,6 +230,7 @@ pub struct Obligations {
     pub effects: Vec<Path>,
     pub effect_spans: Vec<Span>,
     pub open_effects: bool,
+    pub direct_open_effects: bool,
     pub state: Vec<StateClause>,
     pub open_state: bool,
 }
