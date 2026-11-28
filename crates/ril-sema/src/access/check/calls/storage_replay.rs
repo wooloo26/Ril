@@ -107,7 +107,13 @@ impl Analyzer<'_> {
                         if let Some(flow) = &mut after.storage_flow {
                             flow.widen();
                         }
-                        alternatives.push(after);
+                        if after != head {
+                            alternatives.push(after);
+                        }
+                    }
+                    if alternatives.len() == 1 {
+                        *ledger = head;
+                        return applied;
                     }
                     let mut next = head.clone();
                     next.merge(entry.ledger, &alternatives);

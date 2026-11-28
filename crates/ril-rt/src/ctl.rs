@@ -97,7 +97,7 @@ impl State {
 }
 
 #[cfg(not(miri))]
-const MAX_POOLED_STACKS: usize = 64;
+const MAX_POOLED_STACKS: usize = 512;
 
 #[cfg(not(miri))]
 thread_local! {

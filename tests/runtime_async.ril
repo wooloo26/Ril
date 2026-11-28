@@ -1,0 +1,371 @@
+-- @suite runtime_async
+-- @default_stage run
+
+-- @case async_named_record_join_and_try_join_cancel_siblings run-pass backend=both
+use ril/async
+
+fn run_join_and_try_join() -> () {
+    let joined = Async::simulate(7, \-> Async::join(.{
+        user: \-> {
+            Async::sleep_ms(20)
+            "alice"
+        },
+        count: \-> {
+            Async::sleep_ms(5)
+            42
+        },
+        flag: \-> {
+            Async::yield_now()
+            true
+        },
+    }))
+    assert(joined.user == "alice")
+    assert(joined.count == 42)
+    assert(joined.flag)
+
+    let ok_res = Async::simulate(11, \-> Async::try_join(.{
+        a: \-> {
+            Async::sleep_ms(10)
+            let out: !<int, str> = Ok(100)
+            out
+        },
+        b: \-> {
+            Async::sleep_ms(5)
+            let out: !<str, str> = Ok("ok")
+            out
+        },
+    }))
+    match ok_res {
+        Ok(v) -> assert(v.a == 100 && v.b == "ok")
+        Err(_) -> assert(false)
+    }
+
+    let mut cancelled_log: []str = []
+    let ^mut log = cancelled_log
+    let err_res = Async::simulate(13, \-> Async::try_join(.{
+        fast_err: \-> {
+            Async::sleep_ms(5)
+            let out: !<int, str> = Err("boom")
+            out
+        },
+        slow_ok: \-> {
+            defer Array::push(mut log, "slow_cleaned")
+            Async::sleep_ms(500)
+            Array::push(mut log, "slow_finished")
+            let out: !<int, str> = Ok(99)
+            out
+        },
+    }))
+    match err_res {
+        Ok(_) -> assert(false)
+        Err(msg) -> assert(msg == "boom")
+    }
+    assert(log == ["slow_cleaned"])
+}
+
+fn main() -> () {
+    run_join_and_try_join()
+}
+
+-- @case async_nested_scope_spawn_await_and_cancel run-pass backend=both
+use ril/async
+
+fn main() -> () {
+    let mut events: []str = []
+    let ^mut log = events
+    let total = Async::simulate(19, \-> Async::scope \mut outer -> {
+        let ref t1 = Async::spawn(mut outer, \-> {
+            Async::sleep_ms(10)
+            10
+        })
+        let inner_sum = Async::scope \mut inner -> {
+            let ref t2 = Async::spawn(mut inner, \-> {
+                Async::sleep_ms(5)
+                20
+            })
+            let ref doomed = Async::spawn(mut inner, \-> {
+                defer Array::push(mut log, "doomed_cleaned")
+                Async::sleep_ms(1000)
+                999
+            })
+            Async::go(mut inner, \-> {
+                Async::sleep_ms(2)
+                Array::push(mut log, "bg_done")
+            })
+            Async::sleep_ms(3)
+            Async::cancel(ref doomed)
+            let d = Async::await_task(ref doomed)
+            assert(d == None)
+            match Async::await_task(ref t2) {
+                Some(v) -> v
+                None -> 0
+            }
+        }
+        let v1 = match Async::await_task(ref t1) {
+            Some(v) -> v
+            None -> 0
+        }
+        v1 + inner_sum
+    })
+    assert(total == 30)
+    assert(len(ref log) == 2)
+}
+
+-- @case async_timeout_race_on_cancel_finally_and_shield run-pass backend=both
+use ril/async
+
+fn main() -> () {
+    let mut trace: []str = []
+    let ^mut log = trace
+    Async::simulate(23, \-> {
+        -- Race cancels the slower branch and runs its defer.
+        let win = Async::race(
+            \-> {
+                Async::sleep_ms(10)
+                "fast"
+            },
+            \-> {
+                defer Array::push(mut log, "race_loser_cleanup")
+                Async::sleep_ms(200)
+                "slow"
+            },
+        )
+        assert(win == "fast")
+
+        -- Timeout returns Some when fast, None when slow, firing on_cancel + finally.
+        let ok_fast = Async::timeout(100, \-> {
+            Async::sleep_ms(5)
+            7
+        })
+        assert(ok_fast == Some(7))
+
+        let timed_out = Async::timeout(15, \-> {
+            Async::finally(
+                \-> Async::on_cancel(
+                    \-> {
+                        Async::sleep_ms(300)
+                        1
+                    },
+                    \-> Array::push(mut log, "on_cancel_ran"),
+                ),
+                \-> Array::push(mut log, "finally_ran"),
+            )
+        })
+        assert(timed_out == None)
+
+        -- Shield protects a critical section from cancellation until shield exits.
+        let shielded = Async::timeout(5, \-> {
+            let v = Async::shield(\-> {
+                Async::sleep_ms(20)
+                Array::push(mut log, "shield_completed")
+                55
+            })
+            Async::yield_now()
+            Array::push(mut log, "after_shield_should_not_run")
+            v
+        })
+        assert(shielded == None)
+    })
+    assert(log == ["race_loser_cleanup", "on_cancel_ran", "finally_ran", "shield_completed"])
+}
+
+-- @case async_try_map_limit_and_bounded_channel run-pass backend=both
+use ril/async
+
+type Counter = .{ var active: int, var peak: int }
+
+fn main() -> () {
+    let mut c = Counter.{ active: 0, peak: 0 }
+    let ^mut ctr = c
+    let mapped = Async::simulate(29, \-> Async::try_map_limit([1, 2, 3, 4, 5, 6], 2, \x -> {
+        ctr.active = ctr.active + 1
+        if ctr.active > ctr.peak {
+            ctr.peak = ctr.active
+        }
+        Async::sleep_ms(5)
+        ctr.active = ctr.active - 1
+        let out: !<int, str> = Ok(x * 10)
+        out
+    }))
+    assert(mapped == Ok([10, 20, 30, 40, 50, 60]))
+    assert(ctr.peak <= 2)
+
+    let failed = Async::simulate(31, \-> Async::try_map_limit([1, 2, 3, 4], 2, \x -> {
+        Async::sleep_ms(x * 2)
+        if x == 2 {
+            let out: !<int, str> = Err("bad-2")
+            out
+        } else {
+            let out: !<int, str> = Ok(x)
+            out
+        }
+    }))
+    assert(failed == Err("bad-2"))
+
+    -- Bounded channel backpressure (capacity 2, 5 messages).
+    let received = Async::simulate(37, \-> Async::scope \mut s -> {
+        let .{ mut tx, mut rx } = Async::channel<int>(2)
+        let mut out: []int = []
+        let ^mut collected = out
+        Async::go(mut s, \-> {
+            defer Async::close_sender(mut tx)
+            for 1..=5 as n {
+                let sent = Async::send(mut tx, n * 3)
+                assert(sent)
+            }
+        })
+        while let Some(v) = Async::recv(mut rx) {
+            Array::push(mut collected, v)
+        }
+        clone(ref collected)
+    })
+    assert(received == [3, 6, 9, 12, 15])
+}
+
+-- @case async_simulate_deterministic_zero_io_and_virtual_tcp run-pass backend=both
+use ril/async
+
+fn run_trace(seed: int) -> new []int {
+    let mut seq: []int = []
+    let ^mut log = seq
+    let elapsed = Async::simulate(seed, \-> {
+        let t0 = Async::now_ms()
+        let _ = Async::join(.{
+            ^mut a: \-> {
+                Array::push(mut log, 1)
+                Async::yield_now()
+                Array::push(mut log, 2)
+                Async::sleep_ms(5000)
+                Array::push(mut log, 3)
+                1
+            },
+            ^mut b: \-> {
+                Array::push(mut log, 10)
+                Async::yield_now()
+                Array::push(mut log, 20)
+                Async::sleep_ms(1000)
+                Array::push(mut log, 30)
+                2
+            },
+        })
+        Async::now_ms() - t0
+    })
+    assert(elapsed == 5000)
+    clone(ref log)
+}
+
+fn run_virtual_tcp() -> str {
+    Async::simulate(41, \-> Async::scope \mut s -> {
+        let Ok(listener) = Async::tcp_listen("127.0.0.1:0") else {
+            panic("virtual listen failed")
+        }
+        defer Async::close_listener(listener)
+        let port = Async::listener_port(listener)
+        let addr = String::join(["127.0.0.1:", String::inspect(port)], "")
+        Async::go(mut s, \-> {
+            let Ok(conn) = Async::tcp_accept(listener) else { return () }
+            defer Async::close_stream(conn)
+            let Ok(req) = Async::tcp_read(conn, 64) else { return () }
+            let Ok(_) = Async::tcp_write_all(conn, req) else { return () }
+        })
+        let Ok(client) = Async::tcp_connect(addr) else {
+            panic("virtual connect failed")
+        }
+        defer Async::close_stream(client)
+        let Ok(_) = Async::tcp_write_all(client, String::encode_utf8("ping-sim")) else {
+            panic("virtual write failed")
+        }
+        let Ok(reply) = Async::tcp_read(client, 64) else {
+            panic("virtual read failed")
+        }
+        match String::decode_utf8(reply) {
+            Some(txt) -> txt
+            None -> "bad-utf8"
+        }
+    })
+}
+
+fn main() -> () {
+    let t1 = run_trace(12345)
+    let t2 = run_trace(12345)
+    assert(t1 == t2)
+    assert(run_virtual_tcp() == "ping-sim")
+}
+
+-- @case async_real_reactor_tcp_loopback_and_timers run-pass backend=both
+use ril/async
+
+fn main() @io -> () {
+    let reply = Async::run(\-> Async::scope \mut s -> {
+        let Ok(listener) = Async::tcp_listen("127.0.0.1:0") else {
+            panic("host listen failed")
+        }
+        defer Async::close_listener(listener)
+        let port = Async::listener_port(listener)
+        let addr = String::join(["127.0.0.1:", String::inspect(port)], "")
+        Async::go(mut s, \-> {
+            let Ok(conn) = Async::tcp_accept(listener) else { return () }
+            defer Async::close_stream(conn)
+            let Ok(data) = Async::tcp_read(conn, 64) else { return () }
+            let Ok(_) = Async::tcp_write_all(conn, data) else { return () }
+        })
+        Async::sleep_ms(5)
+        let Ok(client) = Async::tcp_connect(addr) else {
+            panic("host connect failed")
+        }
+        defer Async::close_stream(client)
+        let Ok(_) = Async::tcp_write_all(client, String::encode_utf8("hello-reactor")) else {
+            panic("host write failed")
+        }
+        let Ok(buf) = Async::tcp_read(client, 64) else {
+            panic("host read failed")
+        }
+        match String::decode_utf8(buf) {
+            Some(txt) -> txt
+            None -> "bad-utf8"
+        }
+    })
+    assert(reply == "hello-reactor")
+}
+
+-- @case async_join_rejects_non_callable_field compile-fail E0301
+use ril/async
+
+fn main() -> () {
+    let _ = Async::simulate(1, \-> Async::join(.{ a: 42 }))
+    --                                          ^ E0301
+}
+
+-- @case async_join_rejects_io_thunk compile-fail E0534
+use ril/async
+use ril/io
+
+fn main() @io -> () {
+    let _ = Async::run(\-> Async::join(.{ a: \-> Io::println("nope") }))
+    --                                 ^ E0534
+}
+
+-- @case async_try_join_rejects_mismatched_errors compile-fail E0301
+use ril/async
+
+fn main() -> () {
+    let _ = Async::simulate(1, \-> Async::try_join(.{
+        --                                         ^ E0301
+        a: \-> {
+            let out: !<int, str> = Ok(1)
+            out
+        },
+        b: \-> {
+            let out: !<int, int> = Ok(2)
+            out
+        },
+    }))
+}
+
+-- @case async_run_requires_io compile-fail E0612
+use ril/async
+
+fn main() -> () {
+    let _ = Async::run(\-> 1)
+    --      ^ E0612
+}

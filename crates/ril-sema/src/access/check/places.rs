@@ -462,9 +462,20 @@ impl<'a> Analyzer<'a> {
             && !self.program.is_value(self.ty(span))
             && !selected.roots.is_empty()
         {
-            let index =
-                self.storage_read_index(storage::ReadSite::Source(span, coordinate.clone()));
-            ledger.record_storage_read(index, base, coordinate, mode, &mut selected);
+            let depends_on_caller = |origin: &super::Origin| {
+                ctx.formals.contains(&Some(origin.region.source))
+                    || ctx.caller_slots.contains(&origin.region.source)
+                    || origin.callback_result.is_some()
+                    || origin.storage_read.is_some()
+            };
+            if !base.capture_paths.is_empty()
+                || base.origins().any(depends_on_caller)
+                || selected.origins().any(depends_on_caller)
+            {
+                let index =
+                    self.storage_read_index(storage::ReadSite::Source(span, coordinate.clone()));
+                ledger.record_storage_read(index, base, coordinate, mode, &mut selected);
+            }
         }
         selected
     }

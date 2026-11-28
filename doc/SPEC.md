@@ -3212,7 +3212,7 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 - **Types & effects**: Primitive types, `Option<T>` (`?T`; exports `Some`, `None`), `Result<T, E>` (`!<T, E>`; exports `Ok`, `Err`), `Set<T>`, `FieldMode`, `Derived<T>`, and `@io`.
 - **Static checks, proofs, patterns & type helpers**: `SharedObject`, `LenTarget`, `InTarget`, `InnerTarget`, `Inner`, `KeyOf`, the static-only type pattern `Nominal<pat>`, and 11 orthogonal static proof Type Functions: `NonZero`, `Nat`, `Positive`, `AtLeast`, `AtMost`, `Between`, `NonEmpty`, `Len`, `SameLen`, `InBounds`, and `In`.
 - **Core modules**: `Array` (including boundary accessors `Array::first`, `Array::last`, proved mutators/extractors `Array::swap`, `Array::insert`, `Array::remove`, `Array::repeat`, `Array::map`, and destructive extractors `Array::pop`, `Array::pop_front` returning `new ?T`), `Map` (including destructive extractors `Map::replace`, `Map::remove` returning `new ?V`, `Map::pop_entry` returning `new ?(K, V)`, plus linear-safe `Map::contains`, `Map::keys`, and `Map::values`), `Set`, `String`, `Bytes`, `Numeric` (`to_f64`, `to_int_trunc`, `to_int_exact`, and proved `int` `abs`/`min`/`max`/`clamp`), and `Reflect` (providing `TypeKind`, `FieldKey`, `type_name`, `type_kind`, `fields`, `sum_tags`, `attrs`, `field_attrs`, `variant_attrs`, `has_default`).
-- **Explicit standard imports**: `use ril/panic`, `use ril/io`, `use ril/file`, `use ril/platform`, and `use ril/math`.
+- **Explicit standard imports**: `use ril/panic`, `use ril/io`, `use ril/file`, `use ril/platform`, `use ril/math`, and `use ril/async`.
 
 #### Built-in Foundational Operations
 

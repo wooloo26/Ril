@@ -1,0 +1,1378 @@
+-- Standard Async module: colorless structured concurrency, cooperative
+-- single-threaded TCP reactor, and pure zero-`@io` deterministic simulation (DST).
+
+-- Private host `@io` reactor primitives (hidden from external callers).
+fn _now_ms() @io -> int
+fn _tcp_listen(addr: str) @io -> new !<(int, int), str>
+fn _tcp_connect(addr: str) @io -> new !<int, str>
+fn _tcp_try_accept(listener_id: int) @io -> new !<int, str>
+fn _tcp_try_read(stream_id: int, max_bytes: int) @io -> new !<?bytes, str>
+fn _tcp_try_write(stream_id: int, data: bytes) @io -> new !<int, str>
+fn _tcp_close(handle_id: int) @io -> ()
+fn _poll_wait(ref wait_fds: []int, ref wait_kinds: []int, timeout_ms: int) @io -> new []int
+
+-- Opaque TCP listener handle. Close with `Async::close_listener` inside `defer`.
+pub opaque type TcpListener(.{ id: int, port: int })
+
+-- Opaque TCP stream handle. Close with `Async::close_stream` inside `defer`.
+pub opaque type TcpStream(.{ id: int })
+
+-- Structured concurrency scope token passed as `mut s` to `Async::scope`.
+pub opaque type Scope(.{ var id: int })
+
+-- Internal mutable option cell for task results and error sharing.
+type ValBox<T> = .{ var value: ?T }
+
+-- Internal cursor + error cell for `try_map_limit`.
+
+-- Non-linear handle to a task spawned inside an `Async::scope`.
+pub opaque type TaskHandle<T>(.{ id: int, ref slot: ValBox<T> })
+
+-- Internal bounded channel state.
+type ChannelState<T> = .{ var closed: bool, cap: int, mut buf: []T }
+
+-- Sender half of a bounded single-threaded async channel.
+pub opaque type Sender<T>(.{ ^mut state: ChannelState<T> })
+
+-- Receiver half of a bounded single-threaded async channel.
+pub opaque type Receiver<T>(.{ ^mut state: ChannelState<T> })
+
+-- Pair returned by `Async::channel`.
+pub type ChannelPair<T> = .{ mut tx: Sender<T>, mut rx: Receiver<T> }
+
+-- Composable clock effect: monotonic time and cooperative sleep.
+pub eff Clock {
+    fn now_ms() -> int
+    ctl sleep_ms(ms: int) -> ()
+}
+
+-- Composable structured task scheduling effect.
+pub eff Task {
+    ctl yield_now() -> ()
+    fn spawn_unit(scope_id: int, new body: fn() @Async &up -> ()) -> int
+    ctl await_id(task_id: int) -> bool
+    fn cancel_id(task_id: int) -> ()
+    fn push_scope() -> int
+    ctl pop_scope(scope_id: int) -> ()
+    fn cancel_scope(scope_id: int) -> ()
+    fn set_shield(on: bool) -> bool
+    fn is_cancelled() -> bool
+    ctl wait_io(handle_id: int, kind: int) -> ()
+}
+
+-- Composable nonblocking TCP network effect.
+pub eff Net {
+    fn tcp_listen(addr: str) -> new !<TcpListener, str>
+    fn tcp_connect(addr: str) -> new !<TcpStream, str>
+    fn tcp_try_accept(listener: TcpListener) -> new !<int, str>
+    fn tcp_try_read(stream: TcpStream, max_bytes: Positive) -> new !<?bytes, str>
+    fn tcp_try_write(stream: TcpStream, data: bytes) -> new !<int, str>
+    fn close_nowait(handle_id: int) -> ()
+}
+
+-- Combined async effect: spreads `Task`, `Clock`, and `Net`.
+pub eff Async {
+    ..Task
+    ..Clock
+    ..Net
+}
+
+-- Extracts the return type of any `fn` callable type.
+pub type ReturnOf = \F -> match <F> {
+    <fn(..) @.. -> let R> -> <R>
+    _ -> compile_error("Async::join requires a record of zero-argument fn() thunks")
+}
+
+-- Maps a record of zero-argument thunks `.{ k: fn() @Async -> R_k }` to `.{ k: R_k }`.
+pub type JoinOut = \T: .{ .. } -> {
+    let mut keys: []str = []
+    for Reflect::fields(<T>) as (_, k) {
+        Array::push(mut keys, k)
+    }
+    <.{ [keys as k]: ReturnOf<T.(k)> }>
+}
+
+-- Extracts the `Ok` payload type from a fallible callable `fn(..) @.. -> !<OkT, _>`.
+pub type OkOf = \F -> match <F> {
+    <fn(..) @.. -> !<let OkT, _>> -> <OkT>
+    _ -> compile_error("Async::try_join requires a record of fallible !<T, E> thunks")
+}
+
+-- Extracts the `Err` payload type from a fallible callable `fn(..) @.. -> !<_, ErrT>`.
+pub type ErrOf = \F -> match <F> {
+    <fn(..) @.. -> !<_, let ErrT>> -> <ErrT>
+    _ -> compile_error("Async::try_join requires a record of fallible !<T, E> thunks")
+}
+
+-- Maps a record of fallible thunks `.{ k: fn() @Async -> !<Ok_k, E> }` to `.{ k: Ok_k }`.
+pub type TryJoinOut = \T: .{ .. } -> {
+    let mut keys: []str = []
+    for Reflect::fields(<T>) as (_, k) {
+        Array::push(mut keys, k)
+    }
+    <.{ [keys as k]: OkOf<T.(k)> }>
+}
+
+-- Extracts the shared error type `E` of a nonempty record of fallible thunks.
+pub type TryJoinErr = \T: .{ .. } -> {
+    let fields = Reflect::fields(<T>)
+    if len(fields) == 0 {
+        <never>
+    } else {
+        let (_, first_key) = fields[0]
+        <ErrOf<T.(first_key)>>
+    }
+}
+
+-- Runs a named record of zero-argument `@Async` thunks concurrently and returns
+-- a record with the exact same field names mapped to each thunk's result.
+--
+-- ```ril
+-- use ril/async
+-- let res = Async::simulate(1, \-> Async::join(.{
+--     a: \-> { Async::sleep_ms(10); 20 },
+--     b: \-> { Async::sleep_ms(5); 22 },
+-- }))
+-- assert(res.a + res.b == 42)
+-- ```
+pub fn join<T: .{ .. }>(new tasks: T) @Async -> new JoinOut<T>
+
+-- Runs a named record of fallible `!<T, E>` `@Async` thunks concurrently.
+-- On the first `Err(e)`, cancels all remaining siblings immediately via `unwind_ctl`
+-- and returns `Err(e)`; otherwise returns `Ok(.{ ... })`.
+pub fn try_join<T: .{ .. }>(new tasks: T) @Async -> new !<TryJoinOut<T>, TryJoinErr<T>>
+
+-- Internal array-based join backing `Async::join`.
+fn _join_array(thunks: []fn() @Async -> int) @Async -> new []int {
+    let count = len(thunks)
+    let mut slots: []?int = []
+    for 0..count as _ {
+        Array::push(mut slots, None)
+    }
+    let ^mut shared = slots
+    let sid = Task::push_scope()
+    defer Task::cancel_scope(sid)
+    for 0..count as i {
+        let f = thunks[i]
+        let _ = Task::spawn_unit(sid, \-> {
+            let v = f()
+            if i >= 0 && i < len(ref shared) {
+                shared[i] = Some(v)
+            }
+        })
+    }
+    Task::pop_scope(sid)
+    let mut out: []int = []
+    for 0..count as i {
+        match shared?[i] {
+            Some(Some(v)) -> Array::push(mut out, v)
+            _ -> panic("Async::join task did not complete")
+        }
+    }
+    out
+}
+
+-- Internal array-based fallible join backing `Async::try_join`.
+fn _try_join_array(thunks: []fn() @Async -> !<int, int>) @Async -> new !<[]int, int> {
+    let count = len(thunks)
+    let mut slots: []?int = []
+    for 0..count as _ {
+        Array::push(mut slots, None)
+    }
+    let mut err_box: ValBox<int> = ValBox<int>.{ value: None }
+    let ^mut shared_slots = slots
+    let ^mut shared_err = err_box
+    let sid = Task::push_scope()
+    defer Task::cancel_scope(sid)
+    for 0..count as i {
+        let f = thunks[i]
+        let _ = Task::spawn_unit(sid, \-> {
+            match f() {
+                Ok(v) -> {
+                    if i >= 0 && i < len(ref shared_slots) {
+                        shared_slots[i] = Some(v)
+                    }
+                }
+                Err(e) -> {
+                    if shared_err.value == None {
+                        shared_err.value = Some(e)
+                        Task::cancel_scope(sid)
+                    }
+                }
+            }
+        })
+    }
+    Task::pop_scope(sid)
+    if shared_err.value != None {
+        return Err(shared_err.value)
+    }
+    let mut out: []int = []
+    for 0..count as i {
+        match shared_slots?[i] {
+            Some(Some(v)) -> Array::push(mut out, v)
+            _ -> panic("Async::try_join task did not complete")
+        }
+    }
+    Ok(out)
+}
+
+-- Returns monotonic milliseconds from the active `Clock` handler.
+pub fn now_ms() @Clock -> int {
+    Clock::now_ms()
+}
+
+-- Suspends the current task for `ms` milliseconds on the active `Clock` handler.
+pub fn sleep_ms(ms: int) @Clock -> () {
+    Clock::sleep_ms(ms)
+}
+
+-- Cooperatively yields control back to the active `Task` scheduler.
+pub fn yield_now() @Task -> () {
+    Task::yield_now()
+}
+
+-- Returns whether the current task has been marked for cancellation.
+pub fn is_cancelled() @Task -> bool {
+    Task::is_cancelled()
+}
+
+-- Opens a structured concurrency scope. All tasks spawned into `s` are awaited
+-- before `scope` returns normally, or cancelled via `unwind_ctl` on early exit or panic.
+pub fn scope<T>(via body: fn(mut Scope) @Async & -> T) @Async -> T {
+    let sid = Task::push_scope()
+    defer Task::cancel_scope(sid)
+    let mut s = Scope::(.{ id: sid })
+    let out = body(mut s)
+    Task::pop_scope(sid)
+    out
+}
+
+-- Spawns a task inside `s` and returns a non-linear `TaskHandle<T>`.
+pub fn spawn<T>(mut s: Scope, new body: fn() @Async &up -> T) @Async -> new TaskHandle<T> {
+    let sid = s.id
+    s.id = sid
+    let mut slot: ValBox<T> = ValBox<T>.{ value: None }
+    let ^mut shared = slot
+    let ^mut work = body
+    let id = Task::spawn_unit(sid, \-> {
+        let v = work()
+        shared.value = Some(v)
+    })
+    TaskHandle::(.{ id, slot: ref shared })
+}
+
+-- Spawns a fire-and-forget unit task bound to scope `s`.
+pub fn go(mut s: Scope, new body: fn() @Async &up -> ()) @Async -> () {
+    let sid = s.id
+    s.id = sid
+    let ^mut work = body
+    let _ = Task::spawn_unit(sid, \-> work())
+}
+
+-- Suspends until task `t` completes, returning `Some(value)` or `None` if cancelled.
+pub fn await_task<T>(ref t: TaskHandle<T>) @Async &return(t) -> new ?T {
+    let ok = Task::await_id(t.id)
+    if ok {
+        match t.slot.value {
+            Some(v) -> Some(v)
+            None -> None
+        }
+    } else {
+        None
+    }
+}
+
+-- Requests cancellation of task `t`.
+pub fn cancel<T>(ref t: TaskHandle<T>) @Task -> () {
+    Task::cancel_id(t.id)
+}
+
+-- Races two `@Async` tasks concurrently, cancelling the loser as soon as one finishes.
+pub fn race<T>(new a: fn() @Async &up -> T, new b: fn() @Async &up -> T) @Async -> T {
+    let mut winner: ValBox<T> = ValBox<T>.{ value: None }
+    let ^mut shared = winner
+    let ^mut fa = a
+    let ^mut fb = b
+    let sid = Task::push_scope()
+    defer Task::cancel_scope(sid)
+    let _ = Task::spawn_unit(sid, \-> {
+        let v = fa()
+        if shared.value == None {
+            shared.value = Some(v)
+            Task::cancel_scope(sid)
+        }
+    })
+    let _ = Task::spawn_unit(sid, \-> {
+        let v = fb()
+        if shared.value == None {
+            shared.value = Some(v)
+            Task::cancel_scope(sid)
+        }
+    })
+    Task::pop_scope(sid)
+    match shared.value {
+        Some(v) -> v
+        None -> panic("Async::race completed without a winner")
+    }
+}
+
+-- Runs `body` with a deadline of `ms` milliseconds, cancelling it and returning `None` on timeout.
+pub fn timeout<T>(ms: int, new body: fn() @Async &up -> T) @Async -> ?T {
+    let ^mut work = body
+    race(
+        \-> Some(work()),
+        \-> {
+            Clock::sleep_ms(ms)
+            None
+        },
+    )
+}
+
+-- Maps `xs` concurrently with at most `limit` in-flight tasks, preserving input order
+-- and cancelling remaining work on the first `Err(e)`.
+pub fn try_map_limit<
+    T,
+    U,
+    E,
+>(
+    xs: []T,
+    limit: Positive,
+    new f: fn(T) @Async &up -> !<U, E>,
+) @Async -> new !<[]U, E> {
+    let total = len(xs)
+    if total == 0 {
+        return Ok([])
+    }
+    let mut slots: []?U = []
+    for 0..total as _ {
+        Array::push(mut slots, None)
+    }
+    let mut err_box: ValBox<E> = ValBox<E>.{ value: None }
+    let ^mut shared_slots = slots
+    let ^mut shared_err = err_box
+    let ^mut work = f
+    let mut in_flight: []int = []
+    let sid = Task::push_scope()
+    defer Task::cancel_scope(sid)
+    for 0..total as i {
+        if len(ref in_flight) >= limit {
+            if let Some(done_tid) = Array::pop_front(mut in_flight) {
+                let _ = Task::await_id(done_tid)
+            }
+        }
+        if shared_err.value != None {
+            break
+        }
+        let item = xs[i]
+        let child_tid = Task::spawn_unit(sid, \-> {
+            match work(item) {
+                Ok(v) -> {
+                    if i >= 0 && i < len(ref shared_slots) {
+                        shared_slots[i] = Some(v)
+                    }
+                }
+                Err(e) -> {
+                    if shared_err.value == None {
+                        shared_err.value = Some(e)
+                        Task::cancel_scope(sid)
+                    }
+                }
+            }
+        })
+        Array::push(mut in_flight, child_tid)
+    }
+    Task::pop_scope(sid)
+    match shared_err.value {
+        Some(e) -> return Err(e)
+        None -> ()
+    }
+    let mut out: []U = []
+    for 0..total as i {
+        match shared_slots?[i] {
+            Some(Some(v)) -> Array::push(mut out, v)
+            _ -> panic("Async::try_map_limit item did not complete")
+        }
+    }
+    Ok(out)
+}
+
+-- Runs `body`; if the current task was cancelled when `body` unwinds, runs `cleanup`.
+pub fn on_cancel<T>(via body: fn() @Async & -> T, via cleanup: fn() @fn & -> ()) @Async @fn -> T {
+    defer {
+        if Task::is_cancelled() {
+            cleanup()
+        }
+    }
+    body()
+}
+
+-- Runs `body` and always runs `cleanup` via `defer` on normal exit, cancellation, or panic.
+pub fn finally<T>(via body: fn() @Async & -> T, via cleanup: fn() @fn & -> ()) @Async @fn -> T {
+    defer cleanup()
+    body()
+}
+
+-- Shields `body` from immediate cancellation until `shield` exits.
+pub fn shield<T>(via body: fn() @Async & -> T) @Async -> T {
+    let prev = Task::set_shield(true)
+    defer {
+        let _ = Task::set_shield(prev)
+    }
+    body()
+}
+
+-- Runs `body` shielded from outer cancellation up to a bounded `ms` millisecond grace period.
+pub fn shield_timeout<T>(ms: int, new body: fn() @Async &up -> T) @Async -> ?T {
+    let prev = Task::set_shield(true)
+    defer {
+        let _ = Task::set_shield(prev)
+    }
+    let ^mut work = body
+    timeout(ms, \-> work())
+}
+
+-- Creates a bounded cooperative channel with capacity `cap > 0`, returning `.{ tx, rx }`.
+pub fn channel<T>(cap: Positive) -> new ChannelPair<T> {
+    let mut state = ChannelState<T>.{ closed: false, cap, buf: [] }
+    let ^mut shared = state
+    ChannelPair<
+        T,
+    >.{
+        tx: Sender::(.{ state: ^mut shared }),
+        rx: Receiver::(.{ state: ^mut shared }),
+    }
+}
+
+-- Sends `value` into `tx`, suspending when full. Returns `false` if closed.
+pub fn send<T>(mut tx: Sender<T>, value: T) @Async -> bool {
+    while len(ref tx.state.buf) >= tx.state.cap && !tx.state.closed {
+        Task::yield_now()
+    }
+    if tx.state.closed {
+        return false
+    }
+    Array::push(mut tx.state.buf, value)
+    true
+}
+
+-- Receives the next value from `rx`, suspending when empty. Returns `None` once closed and drained.
+pub fn recv<T>(mut rx: Receiver<T>) @Async -> new ?T {
+    while len(ref rx.state.buf) == 0 && !rx.state.closed {
+        Task::yield_now()
+    }
+    Array::pop_front(mut rx.state.buf)
+}
+
+-- Closes the channel from the sender side so receivers drain remaining items then see `None`.
+pub fn close_sender<T>(mut tx: Sender<T>) -> () {
+    tx.state.closed = true
+}
+
+-- Binds a nonblocking TCP listener on `addr` (use `"127.0.0.1:0"` for an ephemeral port).
+pub fn tcp_listen(addr: str) @Net -> new !<TcpListener, str> {
+    Net::tcp_listen(addr)
+}
+
+-- Connects a nonblocking TCP stream to `addr`.
+pub fn tcp_connect(addr: str) @Net -> new !<TcpStream, str> {
+    Net::tcp_connect(addr)
+}
+
+-- Returns the local bound port of `listener`.
+pub fn listener_port(listener: TcpListener) -> int {
+    listener.port
+}
+
+-- Closes a `TcpListener` synchronously without suspending (safe inside `defer`).
+pub fn close_listener(listener: TcpListener) @Net -> () {
+    Net::close_nowait(listener.id)
+}
+
+-- Closes a `TcpStream` synchronously without suspending (safe inside `defer`).
+pub fn close_stream(stream: TcpStream) @Net -> () {
+    Net::close_nowait(stream.id)
+}
+
+-- Cooperatively accepts the next incoming connection on `listener`.
+pub fn tcp_accept(listener: TcpListener) @Async -> new !<TcpStream, str> {
+    while true {
+        let sid = Net::tcp_try_accept(listener)?
+        if sid > 0 {
+            return Ok(TcpStream::(.{ id: sid }))
+        }
+        Task::wait_io(listener.id, 0)
+    }
+    Err("tcp accept stopped")
+}
+
+-- Cooperatively reads up to `max_bytes` bytes from `stream`. Empty `bytes` indicates EOF.
+pub fn tcp_read(stream: TcpStream, max_bytes: Positive) @Async -> new !<bytes, str> {
+    while true {
+        match Net::tcp_try_read(stream, max_bytes)? {
+            Some(chunk) -> return Ok(chunk)
+            None -> Task::wait_io(stream.id, 0)
+        }
+    }
+    Err("tcp read stopped")
+}
+
+-- Cooperatively writes a chunk of `data` to `stream`, returning bytes written.
+pub fn tcp_write(stream: TcpStream, data: bytes) @Async -> new !<int, str> {
+    while true {
+        let n = Net::tcp_try_write(stream, data)?
+        if n >= 0 {
+            return Ok(n)
+        }
+        Task::wait_io(stream.id, 1)
+    }
+    Err("tcp write stopped")
+}
+
+-- Cooperatively writes all bytes of `data` to `stream`.
+pub fn tcp_write_all(stream: TcpStream, data: bytes) @Async -> new !<(), str> {
+    let total = len(data)
+    var offset = 0
+    while offset < total {
+        let slice = match data?[offset..total] {
+            Some(s) -> s
+            None -> break
+        }
+        let written = tcp_write(stream, slice)?
+        if written <= 0 {
+            return Err("tcp write returned zero bytes")
+        }
+        offset = offset + written
+    }
+    Ok()
+}
+
+-- =============================================================================
+-- Cooperative Scheduler Core (shared by `Async::run` and pure `Async::simulate`)
+-- =============================================================================
+
+type Step {
+    Done
+    Yield(ctl() -> new Step)
+    Sleep(int, ctl() -> new Step)
+    Await(int, ctl(bool) -> new Step)
+    PopScope(int, ctl() -> new Step)
+    WaitIo(int, int, ctl() -> new Step)
+}
+
+fn unwind_step(step: Step) -> () {
+    match step {
+        Step::Done -> ()
+        Step::Yield(k) -> unwind_ctl(k)
+        Step::Sleep(_, k) -> unwind_ctl(k)
+        Step::Await(_, k) -> unwind_ctl(k)
+        Step::PopScope(_, k) -> unwind_ctl(k)
+        Step::WaitIo(_, _, k) -> unwind_ctl(k)
+    }
+}
+
+type SimConn = .{
+    var closed_a: bool,
+    var closed_b: bool,
+    mut a_to_b: []bytes,
+    mut b_to_a: []bytes,
+}
+
+type SimNet = .{
+    var next_id: int,
+    mut port_listener: [int: int],
+    mut listener_queue: [int: mut []int],
+    mut listener_closed: [int: bool],
+    mut stream_conn: [int: int],
+    mut stream_side: [int: int],
+    mut conns: [int: mut SimConn],
+}
+
+fn new_sim_net() -> new SimNet {
+    SimNet.{
+        next_id: 100,
+        port_listener: [:],
+        listener_queue: [:],
+        listener_closed: [:],
+        stream_conn: [:],
+        stream_side: [:],
+        conns: [:],
+    }
+}
+
+type SchedState = .{
+    var next_task_id: int,
+    var next_scope_id: int,
+    var current_tid: int,
+    var virtual_now: int,
+    var rng: int,
+    mut ready: []int,
+    mut timers: [int: int],
+    mut task_scope: [int: int],
+    mut done_ok: [int: bool],
+    mut cancelled: [int: bool],
+    mut shielded: [int: bool],
+    mut awaiters: [int: mut []int],
+    mut scope_children: [int: mut []int],
+    mut scope_waiters: [int: mut []int],
+    mut io_wait_fd: [int: int],
+    mut io_wait_kind: [int: int],
+    mut pending_cancel: []int,
+    mut unstarted: [int: mut fn() @Async &up -> ()],
+}
+
+fn new_sched_state(seed: int) -> new SchedState {
+    let init_rng = if seed == 0 { 1 } else { seed }
+    SchedState.{
+        next_task_id: 1,
+        next_scope_id: 1,
+        current_tid: 0,
+        virtual_now: 0,
+        rng: init_rng,
+        ready: [],
+        timers: [:],
+        task_scope: [:],
+        done_ok: [:],
+        cancelled: [:],
+        shielded: [:],
+        awaiters: [:],
+        scope_children: [:],
+        scope_waiters: [:],
+        io_wait_fd: [:],
+        io_wait_kind: [:],
+        pending_cancel: [],
+        unstarted: [:],
+    }
+}
+
+fn sched_alloc_task(mut st: SchedState, scope_id: int) -> int {
+    let tid = st.next_task_id
+    st.next_task_id = tid + 1
+    st.task_scope[tid] = scope_id
+    if !Map::contains(ref st.scope_children, scope_id) {
+        st.scope_children[scope_id] = []
+    }
+    if Map::contains(ref st.scope_children, scope_id) {
+        Array::push(mut st.scope_children[scope_id], tid)
+    }
+    tid
+}
+
+fn sched_push_scope(mut st: SchedState) -> int {
+    let sid = st.next_scope_id
+    st.next_scope_id = sid + 1
+    st.scope_children[sid] = []
+    sid
+}
+
+fn sched_scope_has_live_children(ref st: SchedState, sid: int) -> bool {
+    if Map::contains(ref st.scope_children, sid) {
+        let ref kids = st.scope_children[sid]
+        for 0..len(ref kids) as i {
+            let kid = kids[i]
+            if !Map::contains(ref st.done_ok, kid) {
+                return true
+            }
+        }
+    }
+    false
+}
+
+fn sched_mark_done(mut st: SchedState, tid: int, ok: bool) -> () {
+    if Map::contains(ref st.done_ok, tid) {
+        return ()
+    }
+    st.done_ok[tid] = ok
+    let _ = Map::remove(mut st.timers, tid)
+    let _ = Map::remove(mut st.io_wait_fd, tid)
+    let _ = Map::remove(mut st.io_wait_kind, tid)
+    if let Some(mut waiters) = Map::remove(mut st.awaiters, tid) {
+        while len(ref waiters) > 0 {
+            if let Some(w) = Array::pop_front(mut waiters) {
+                Array::push(mut st.ready, w)
+            }
+        }
+    }
+    if let Some(sid) = st.task_scope?[tid] {
+        if !sched_scope_has_live_children(ref st, sid) {
+            if let Some(mut sws) = Map::remove(mut st.scope_waiters, sid) {
+                while len(ref sws) > 0 {
+                    if let Some(w) = Array::pop_front(mut sws) {
+                        Array::push(mut st.ready, w)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn sched_request_cancel(mut st: SchedState, tid: int) -> () {
+    if Map::contains(ref st.done_ok, tid) {
+        return ()
+    }
+    st.cancelled[tid] = true
+    Array::push(mut st.pending_cancel, tid)
+}
+
+fn sched_cancel_scope(mut st: SchedState, sid: int) -> () {
+    if Map::contains(ref st.scope_children, sid) {
+        let n = len(ref st.scope_children[sid])
+        for 0..n as i {
+            if Map::contains(ref st.scope_children, sid) {
+                let kid_opt = (st.scope_children[sid])?[i]
+                if let Some(kid) = kid_opt {
+                    sched_request_cancel(mut st, kid)
+                }
+            }
+        }
+    }
+}
+
+fn sched_is_shielded(ref st: SchedState, tid: int) -> bool {
+    match st.shielded?[tid] {
+        Some(v) -> v
+        None -> false
+    }
+}
+
+fn sched_is_task_cancelled(ref st: SchedState, tid: int) -> bool {
+    match st.cancelled?[tid] {
+        Some(v) -> v
+        None -> false
+    }
+}
+
+fn sched_set_shield(mut st: SchedState, on: bool) -> bool {
+    let cur = st.current_tid
+    let prev = match st.shielded?[cur] {
+        Some(v) -> v
+        None -> false
+    }
+    st.shielded[cur] = on
+    prev
+}
+
+fn sched_is_cur_cancelled(ref st: SchedState) -> bool {
+    sched_is_task_cancelled(ref st, st.current_tid)
+}
+
+fn sched_drain_cancels(mut st: SchedState, mut suspended: [int: Step]) -> () {
+    while len(ref st.pending_cancel) > 0 {
+        let Some(tid) = Array::pop_front(mut st.pending_cancel) else { break }
+        if Map::contains(ref st.done_ok, tid) {
+            continue
+        }
+        if sched_is_shielded(ref st, tid) {
+            continue
+        }
+        let _ = Map::remove(mut st.unstarted, tid)
+        if let Some(step) = Map::remove(mut suspended, tid) {
+            unwind_step(step)
+        }
+        sched_mark_done(mut st, tid, false)
+    }
+}
+
+fn sched_handle_step(
+    mut st: SchedState,
+    mut suspended: [int: Step],
+    tid: int,
+    now: int,
+    step: Step,
+) -> () {
+    match step {
+        Step::Done -> sched_mark_done(mut st, tid, true)
+        Step::Yield(k) -> {
+            if sched_is_task_cancelled(ref st, tid) && !sched_is_shielded(ref st, tid) {
+                unwind_ctl(k)
+                sched_mark_done(mut st, tid, false)
+            } else {
+                if let Some(old) = Map::replace(mut suspended, tid, Step::Yield(k)) {
+                    unwind_step(old)
+                }
+                Array::push(mut st.ready, tid)
+            }
+        }
+        Step::Sleep(ms, k) -> {
+            if sched_is_task_cancelled(ref st, tid) && !sched_is_shielded(ref st, tid) {
+                unwind_ctl(k)
+                sched_mark_done(mut st, tid, false)
+            } else if ms <= 0 {
+                if let Some(old) = Map::replace(mut suspended, tid, Step::Yield(k)) {
+                    unwind_step(old)
+                }
+                Array::push(mut st.ready, tid)
+            } else {
+                st.timers[tid] = now + ms
+                if let Some(old) = Map::replace(mut suspended, tid, Step::Sleep(ms, k)) {
+                    unwind_step(old)
+                }
+            }
+        }
+        Step::Await(target_id, k) -> {
+            if sched_is_task_cancelled(ref st, tid) && !sched_is_shielded(ref st, tid) {
+                unwind_ctl(k)
+                sched_mark_done(mut st, tid, false)
+            } else if Map::contains(ref st.done_ok, target_id) {
+                if let Some(old) = Map::replace(mut suspended, tid, Step::Await(target_id, k)) {
+                    unwind_step(old)
+                }
+                Array::push(mut st.ready, tid)
+            } else {
+                if !Map::contains(ref st.awaiters, target_id) {
+                    st.awaiters[target_id] = []
+                }
+                if Map::contains(ref st.awaiters, target_id) {
+                    Array::push(mut st.awaiters[target_id], tid)
+                }
+                if let Some(old) = Map::replace(mut suspended, tid, Step::Await(target_id, k)) {
+                    unwind_step(old)
+                }
+            }
+        }
+        Step::PopScope(sid, k) -> {
+            if !sched_scope_has_live_children(ref st, sid) {
+                if let Some(old) = Map::replace(mut suspended, tid, Step::PopScope(sid, k)) {
+                    unwind_step(old)
+                }
+                Array::push(mut st.ready, tid)
+            } else {
+                if !Map::contains(ref st.scope_waiters, sid) {
+                    st.scope_waiters[sid] = []
+                }
+                if Map::contains(ref st.scope_waiters, sid) {
+                    Array::push(mut st.scope_waiters[sid], tid)
+                }
+                if let Some(old) = Map::replace(mut suspended, tid, Step::PopScope(sid, k)) {
+                    unwind_step(old)
+                }
+            }
+        }
+        Step::WaitIo(fd, kind, k) -> {
+            if sched_is_task_cancelled(ref st, tid) && !sched_is_shielded(ref st, tid) {
+                unwind_ctl(k)
+                sched_mark_done(mut st, tid, false)
+            } else {
+                st.io_wait_fd[tid] = fd
+                st.io_wait_kind[tid] = kind
+                if let Some(old) = Map::replace(mut suspended, tid, Step::WaitIo(fd, kind, k)) {
+                    unwind_step(old)
+                }
+            }
+        }
+    }
+}
+
+fn sched_resume_one(mut st: SchedState, mut suspended: [int: Step], tid: int, now: int) -> () {
+    if Map::contains(ref st.done_ok, tid) {
+        return ()
+    }
+    if sched_is_task_cancelled(ref st, tid) && !sched_is_shielded(ref st, tid) {
+        if let Some(step) = Map::remove(mut suspended, tid) {
+            unwind_step(step)
+        }
+        sched_mark_done(mut st, tid, false)
+        return ()
+    }
+    let Some(step) = Map::remove(mut suspended, tid) else { return () }
+    st.current_tid = tid
+    let next_step = match step {
+        Step::Done -> Step::Done
+        Step::Yield(k) -> k()
+        Step::Sleep(_, k) -> k()
+        Step::PopScope(_, k) -> k()
+        Step::WaitIo(_, _, k) -> k()
+        Step::Await(target_id, k) -> {
+            let ok = match st.done_ok?[target_id] {
+                Some(v) -> v
+                None -> false
+            }
+            k(ok)
+        }
+    }
+    sched_handle_step(mut st, mut suspended, tid, now, next_step)
+}
+
+fn sched_wake_timers(mut st: SchedState, now: int) -> () {
+    let keys = Map::keys(ref st.timers)
+    for 0..len(keys) as i {
+        if let Some(tid) = keys?[i] {
+            if let Some(deadline) = st.timers?[tid] {
+                if deadline <= now {
+                    let _ = Map::remove(mut st.timers, tid)
+                    Array::push(mut st.ready, tid)
+                }
+            }
+        }
+    }
+}
+
+fn sched_next_deadline(ref st: SchedState) -> ?int {
+    let keys = Map::keys(ref st.timers)
+    var best: ?int = None
+    for 0..len(keys) as i {
+        if let Some(tid) = keys?[i] {
+            if let Some(dl) = st.timers?[tid] {
+                match best {
+                    None -> { best = Some(dl) }
+                    Some(cur) -> {
+                        if dl < cur {
+                            best = Some(dl)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+fn sched_wake_io_fd(mut st: SchedState, io_tids: []int, rfd: int) -> () {
+    for 0..len(io_tids) as ti {
+        if let Some(wtid) = io_tids?[ti] {
+            if st.io_wait_fd?[wtid] == Some(rfd) {
+                let _ = Map::remove(mut st.io_wait_fd, wtid)
+                let _ = Map::remove(mut st.io_wait_kind, wtid)
+                Array::push(mut st.ready, wtid)
+            }
+        }
+    }
+}
+
+fn sched_poll_io(mut st: SchedState, now: int) @io -> bool {
+    let io_tids = Map::keys(ref st.io_wait_fd)
+    let mut wait_fds: []int = []
+    let mut wait_kinds: []int = []
+    for 0..len(io_tids) as i {
+        if let Some(wtid) = io_tids?[i] {
+            if let Some(fd) = st.io_wait_fd?[wtid] {
+                let kind = match st.io_wait_kind?[wtid] {
+                    Some(k) -> k
+                    None -> 0
+                }
+                Array::push(mut wait_fds, fd)
+                Array::push(mut wait_kinds, kind)
+            }
+        }
+    }
+    let deadline = sched_next_deadline(ref st)
+    let timeout_ms = match deadline {
+        Some(dl) -> {
+            let rem = dl - now
+            if rem < 0 { 0 } else { rem }
+        }
+        None -> -1
+    }
+    if len(ref wait_fds) == 0 && deadline == None {
+        return false
+    }
+    let ready_fds = _poll_wait(ref wait_fds, ref wait_kinds, timeout_ms)
+    for 0..len(ready_fds) as ri {
+        if let Some(rfd) = ready_fds?[ri] {
+            sched_wake_io_fd(mut st, io_tids, rfd)
+        }
+    }
+    sched_wake_timers(mut st, _now_ms())
+    true
+}
+
+fn run_unit(new body: fn() @Async &up -> ()) @io -> () {
+    let mut state = new_sched_state(1)
+    let ^mut st = state
+    let mut suspended: [int: Step] = [:]
+    defer {
+        while true {
+            match Map::pop_entry(mut suspended) {
+                Some((_, step)) -> unwind_step(step)
+                None -> break
+            }
+        }
+    }
+    let root_id = st.next_task_id
+    st.next_task_id = root_id + 1
+    st.task_scope[root_id] = 0
+    let first_step = start_task(root_id, \-> body())
+    sched_handle_step(mut st, mut suspended, root_id, _now_ms(), first_step)
+    sched_drain_cancels(mut st, mut suspended)
+    while !Map::contains(ref st.done_ok, root_id) {
+        let now = _now_ms()
+        sched_wake_timers(mut st, now)
+        if len(ref st.ready) > 0 {
+            let Some(tid) = Array::pop_front(mut st.ready) else { continue }
+            if Map::contains(ref st.done_ok, tid) {
+                continue
+            }
+            if let Some(mut child) = Map::remove(mut st.unstarted, tid) {
+                let step = start_task(tid, \-> child())
+                let after = _now_ms()
+                sched_handle_step(mut st, mut suspended, tid, after, step)
+            } else {
+                sched_resume_one(mut st, mut suspended, tid, now)
+            }
+            sched_drain_cancels(mut st, mut suspended)
+        } else if !sched_poll_io(mut st, now) {
+            break
+        }
+    }
+where
+    fn start_task(tid: int, new work: fn() @Async &up -> ()) @io &up(^mut st) -> new Step {
+        st.current_tid = tid
+        with {
+            Clock::now_ms = \-> _now_ms()
+            ctl Clock::sleep_ms = \ms, k -> Step::Sleep(ms, k)
+            ctl Task::yield_now = \k -> Step::Yield(k)
+            Task::spawn_unit = \sid, new c -> {
+                let child_tid = sched_alloc_task(mut st, sid)
+                let _ = Map::replace(mut st.unstarted, child_tid, c)
+                Array::push(mut st.ready, child_tid)
+                child_tid
+            }
+            ctl Task::await_id = \wait_tid, k -> Step::Await(wait_tid, k)
+            Task::cancel_id = \ctid -> sched_request_cancel(mut st, ctid)
+            Task::push_scope = \-> sched_push_scope(mut st)
+            ctl Task::pop_scope = \sid, k -> Step::PopScope(sid, k)
+            Task::cancel_scope = \sid -> sched_cancel_scope(mut st, sid)
+            Task::set_shield = \on -> sched_set_shield(mut st, on)
+            Task::is_cancelled = \-> sched_is_cur_cancelled(ref st)
+            ctl Task::wait_io = \fd, kind, k -> Step::WaitIo(fd, kind, k)
+            Net::tcp_listen = \addr ->
+                match _tcp_listen(addr) {
+                    Ok((id, port)) -> Ok(TcpListener::(.{ id, port }))
+                    Err(e) -> Err(e)
+                }
+            Net::tcp_connect = \addr ->
+                match _tcp_connect(addr) {
+                    Ok(id) -> Ok(TcpStream::(.{ id }))
+                    Err(e) -> Err(e)
+                }
+            Net::tcp_try_accept = \listener -> _tcp_try_accept(listener.id)
+            Net::tcp_try_read = \stream, max_bytes -> _tcp_try_read(stream.id, max_bytes)
+            Net::tcp_try_write = \stream, data -> _tcp_try_write(stream.id, data)
+            Net::close_nowait = \handle_id -> _tcp_close(handle_id)
+            work()
+            Step::Done
+        }
+    }
+}
+
+-- Executes an `@Async` root task on the single-threaded host `@io` Reactor.
+--
+-- ```ril
+-- use ril/async
+-- fn demo() @io -> () {
+--     let x = Async::run(\-> {
+--         Async::sleep_ms(1)
+--         42
+--     })
+--     assert(x == 42)
+-- }
+-- ```
+pub fn run<T>(new body: fn() @Async &up -> T) @io -> T {
+    let mut root_out: ValBox<T> = ValBox<T>.{ value: None }
+    let ^mut shared_root = root_out
+    let ^mut root_work = body
+    run_unit(\-> {
+        let v = root_work()
+        shared_root.value = Some(v)
+    })
+    match shared_root.value {
+        Some(v) -> v
+        None -> panic("Async::run root task terminated without a value (possible deadlock)")
+    }
+}
+
+-- =============================================================================
+-- Pure Zero-`@io` Deterministic Simulation (`Async::simulate`)
+-- =============================================================================
+
+fn sim_parse_port(addr: str) -> new ?int {
+    let scalars = String::scalars(addr)
+    let n = len(scalars)
+    var colon = -1
+    for 0..n as i {
+        if scalars[i] == 58 {
+            colon = i
+        }
+    }
+    if colon < 0 || colon + 1 >= n {
+        return None
+    }
+    var acc = 0
+    for (colon + 1)..n as i {
+        let ch = scalars[i]
+        if ch < 48 || ch > 57 {
+            return None
+        }
+        acc = acc * 10 + (ch - 48)
+    }
+    Some(acc)
+}
+
+fn sim_next_rand(mut st: SchedState) -> int |> Nat {
+    let next = (st.rng * 1103515245 + 12345) & 2147483647
+    st.rng = next
+    next
+}
+
+fn sim_tcp_listen(mut sim: SimNet, addr: str) -> new !<TcpListener, str> {
+    match sim_parse_port(addr) {
+        None -> Err("invalid address")
+        Some(req_port) -> {
+            let id = sim.next_id
+            sim.next_id = id + 1
+            let port = if req_port == 0 { 10000 + id } else { req_port }
+            sim.port_listener[port] = id
+            sim.listener_queue[id] = []
+            sim.listener_closed[id] = false
+            Ok(TcpListener::(.{ id, port }))
+        }
+    }
+}
+
+fn sim_tcp_connect(mut sim: SimNet, addr: str) -> new !<TcpStream, str> {
+    match sim_parse_port(addr) {
+        None -> Err("invalid address")
+        Some(port) -> match sim.port_listener?[port] {
+            None -> Err("connection refused")
+            Some(lid) ->
+                if sim.listener_closed?[lid] == Some(true) {
+                    Err("connection refused")
+                } else {
+                    let cid = sim.next_id
+                    sim.next_id = cid + 1
+                    let client_id = sim.next_id
+                    sim.next_id = client_id + 1
+                    let server_id = sim.next_id
+                    sim.next_id = server_id + 1
+                    let _ = Map::replace(
+                        mut sim.conns,
+                        cid,
+                        SimConn.{ closed_a: false, closed_b: false, a_to_b: [], b_to_a: [] },
+                    )
+                    sim.stream_conn[client_id] = cid
+                    sim.stream_side[client_id] = 0
+                    sim.stream_conn[server_id] = cid
+                    sim.stream_side[server_id] = 1
+                    if !Map::contains(ref sim.listener_queue, lid) {
+                        sim.listener_queue[lid] = []
+                    }
+                    if Map::contains(ref sim.listener_queue, lid) {
+                        Array::push(mut sim.listener_queue[lid], server_id)
+                    }
+                    Ok(TcpStream::(.{ id: client_id }))
+                }
+        }
+    }
+}
+
+fn sim_tcp_try_accept(mut sim: SimNet, listener: TcpListener) -> new !<int, str> {
+    let lid = listener.id
+    if sim.listener_closed?[lid] == Some(true) {
+        Err("listener closed")
+    } else if Map::contains(ref sim.listener_queue, lid) {
+        match Array::pop_front(mut sim.listener_queue[lid]) {
+            Some(sid) -> Ok(sid)
+            None -> Ok(0)
+        }
+    } else {
+        Err("listener closed")
+    }
+}
+
+fn sim_tcp_try_read(mut sim: SimNet, stream: TcpStream) -> new !<?bytes, str> {
+    let sid = stream.id
+    match sim.stream_conn?[sid] {
+        None -> Err("stream closed")
+        Some(cid) ->
+            if Map::contains(ref sim.conns, cid) {
+                let closed_a = sim.conns[cid].closed_a
+                let closed_b = sim.conns[cid].closed_b
+                if sim.stream_side?[sid] == Some(0) {
+                    match Array::pop_front(mut sim.conns[cid].b_to_a) {
+                        Some(chunk) -> Ok(Some(chunk))
+                        None ->
+                            if closed_b {
+                                Ok(Some(String::encode_utf8("")))
+                            } else {
+                                Ok(None)
+                            }
+                    }
+                } else {
+                    match Array::pop_front(mut sim.conns[cid].a_to_b) {
+                        Some(chunk) -> Ok(Some(chunk))
+                        None ->
+                            if closed_a {
+                                Ok(Some(String::encode_utf8("")))
+                            } else {
+                                Ok(None)
+                            }
+                    }
+                }
+            } else {
+                Err("stream closed")
+            }
+    }
+}
+
+fn sim_tcp_try_write(mut sim: SimNet, stream: TcpStream, data: bytes) -> new !<int, str> {
+    let sid = stream.id
+    match sim.stream_conn?[sid] {
+        None -> Err("stream closed")
+        Some(cid) ->
+            if Map::contains(ref sim.conns, cid) {
+                let n = len(data)
+                if sim.stream_side?[sid] == Some(0) {
+                    if sim.conns[cid].closed_b {
+                        Err("broken pipe")
+                    } else {
+                        Array::push(mut sim.conns[cid].a_to_b, data)
+                        Ok(n)
+                    }
+                } else if sim.conns[cid].closed_a {
+                    Err("broken pipe")
+                } else {
+                    Array::push(mut sim.conns[cid].b_to_a, data)
+                    Ok(n)
+                }
+            } else {
+                Err("stream closed")
+            }
+    }
+}
+
+fn sim_close_nowait(mut sim: SimNet, handle_id: int) -> () {
+    if Map::contains(ref sim.listener_closed, handle_id) {
+        sim.listener_closed[handle_id] = true
+    } else if let Some(cid) = sim.stream_conn?[handle_id] {
+        if Map::contains(ref sim.conns, cid) {
+            if sim.stream_side?[handle_id] == Some(0) {
+                sim.conns[cid].closed_a = true
+            } else if sim.stream_side?[handle_id] == Some(1) {
+                sim.conns[cid].closed_b = true
+            }
+        }
+    }
+}
+
+fn sim_advance_clock(mut st: SchedState) -> bool {
+    match sched_next_deadline(ref st) {
+        Some(dl) -> {
+            if dl > st.virtual_now {
+                st.virtual_now = dl
+            }
+            sched_wake_timers(mut st, st.virtual_now)
+            true
+        }
+        None -> false
+    }
+}
+
+fn sim_pop_ready(mut st: SchedState) -> new ?int {
+    let ready_len = len(ref st.ready)
+    if ready_len <= 0 {
+        return None
+    }
+    let pick = sim_next_rand(mut st) % ready_len
+    if pick >= 0 && pick < len(ref st.ready) {
+        Some(Array::remove(mut st.ready, pick))
+    } else {
+        None
+    }
+}
+
+fn simulate_unit(seed: int, new body: fn() @Async &up -> ()) -> () {
+    let mut state = new_sched_state(seed)
+    let ^mut st = state
+    let mut sim_state = new_sim_net()
+    let ^mut sim = sim_state
+    sim.next_id = sim.next_id
+    let mut suspended: [int: Step] = [:]
+    defer {
+        while true {
+            match Map::pop_entry(mut suspended) {
+                Some((_, step)) -> unwind_step(step)
+                None -> break
+            }
+        }
+    }
+    let root_id = st.next_task_id
+    st.next_task_id = root_id + 1
+    st.task_scope[root_id] = 0
+    let first_step = start_task(root_id, \-> body())
+    sched_handle_step(mut st, mut suspended, root_id, st.virtual_now, first_step)
+    sched_drain_cancels(mut st, mut suspended)
+    while !Map::contains(ref st.done_ok, root_id) {
+        sched_wake_timers(mut st, st.virtual_now)
+        if let Some(tid) = sim_pop_ready(mut st) {
+            if Map::contains(ref st.done_ok, tid) {
+                continue
+            }
+            if let Some(mut child) = Map::remove(mut st.unstarted, tid) {
+                let step = start_task(tid, \-> child())
+                sched_handle_step(mut st, mut suspended, tid, st.virtual_now, step)
+            } else {
+                sched_resume_one(mut st, mut suspended, tid, st.virtual_now)
+            }
+            sched_drain_cancels(mut st, mut suspended)
+        } else if !sim_advance_clock(mut st) {
+            break
+        }
+    }
+where
+    fn start_task(tid: int, new work: fn() @Async &up -> ()) &up(^mut st, ^mut sim) -> new Step {
+        st.current_tid = tid
+        with {
+            Clock::now_ms = \-> st.virtual_now
+            ctl Clock::sleep_ms = \ms, k -> Step::Sleep(ms, k)
+            ctl Task::yield_now = \k -> Step::Yield(k)
+            Task::spawn_unit = \sid, new c -> {
+                let child_tid = sched_alloc_task(mut st, sid)
+                let _ = Map::replace(mut st.unstarted, child_tid, c)
+                Array::push(mut st.ready, child_tid)
+                child_tid
+            }
+            ctl Task::await_id = \wait_tid, k -> Step::Await(wait_tid, k)
+            Task::cancel_id = \ctid -> sched_request_cancel(mut st, ctid)
+            Task::push_scope = \-> sched_push_scope(mut st)
+            ctl Task::pop_scope = \sid, k -> Step::PopScope(sid, k)
+            Task::cancel_scope = \sid -> sched_cancel_scope(mut st, sid)
+            Task::set_shield = \on -> sched_set_shield(mut st, on)
+            Task::is_cancelled = \-> sched_is_cur_cancelled(ref st)
+            ctl Task::wait_io = \_fd, _kind, k -> Step::Yield(k)
+            Net::tcp_listen = \addr -> sim_tcp_listen(mut sim, addr)
+            Net::tcp_connect = \addr -> sim_tcp_connect(mut sim, addr)
+            Net::tcp_try_accept = \listener -> sim_tcp_try_accept(mut sim, listener)
+            Net::tcp_try_read = \stream, _max_bytes -> sim_tcp_try_read(mut sim, stream)
+            Net::tcp_try_write = \stream, data -> sim_tcp_try_write(mut sim, stream, data)
+            Net::close_nowait = \handle_id -> sim_close_nowait(mut sim, handle_id)
+            work()
+            Step::Done
+        }
+    }
+}
+
+-- Executes an `@Async` root task in a **pure, zero-`@io` deterministic simulator** (DST).
+-- Identical `seed` values replay the exact same task scheduling order, virtual clock jumps
+-- instantaneously to the next timer deadline, and `Net` uses an in-memory loopback network.
+--
+-- ```ril
+-- use ril/async
+-- let out = Async::simulate(42, \-> {
+--     let t0 = Async::now_ms()
+--     Async::sleep_ms(5000)
+--     Async::now_ms() - t0
+-- })
+-- assert(out == 5000)
+-- ```
+pub fn simulate<T>(seed: int, new body: fn() @Async &up -> T) -> T {
+    let mut root_out: ValBox<T> = ValBox<T>.{ value: None }
+    let ^mut shared_root = root_out
+    let ^mut root_work = body
+    simulate_unit(seed, \-> {
+        let v = root_work()
+        shared_root.value = Some(v)
+    })
+    match shared_root.value {
+        Some(v) -> v
+        None -> panic("Async::simulate root task terminated without a value (possible deadlock)")
+    }
+}

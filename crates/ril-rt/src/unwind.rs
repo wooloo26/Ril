@@ -28,6 +28,7 @@ pub struct Runtime {
     unwind_state: UnwindState,
     suspended: Vec<UnwindState>,
     pub(crate) ctl: crate::ctl::State,
+    pub(crate) reactor: crate::reactor::State,
 }
 
 const _: () = {

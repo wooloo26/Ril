@@ -1270,6 +1270,7 @@ impl Checker<'_> {
                         Ty::Unknown
                     })
             }
+            (Ty::Record(..) | Ty::Tuple(_), None) if env.checking_type_template => Ty::Unknown,
             (Ty::Record(..) | Ty::Tuple(_), None) => {
                 self.error(Code::E0324, span, "projection coordinate must be static");
                 Ty::Unknown

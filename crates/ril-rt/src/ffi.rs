@@ -113,6 +113,24 @@ runtime_functions! {
             Err(error) => file_error(rt, error),
         }
     }
+    fn ril_rt_async_now_ms(rt) -> Value { crate::reactor::now_ms(rt) }
+    fn ril_rt_async_tcp_listen(rt, addr: Value) -> Value { crate::reactor::tcp_listen(rt, addr) }
+    fn ril_rt_async_tcp_connect(rt, addr: Value) -> Value { crate::reactor::tcp_connect(rt, addr) }
+    fn ril_rt_async_tcp_try_accept(rt, listener_id: Value) -> Value {
+        crate::reactor::tcp_try_accept(rt, listener_id)
+    }
+    fn ril_rt_async_tcp_try_read(rt, stream_id: Value, max_bytes: Value) -> Value {
+        crate::reactor::tcp_try_read(rt, stream_id, max_bytes)
+    }
+    fn ril_rt_async_tcp_try_write(rt, stream_id: Value, data: Value) -> Value {
+        crate::reactor::tcp_try_write(rt, stream_id, data)
+    }
+    fn ril_rt_async_tcp_close(rt, handle_id: Value) -> Value {
+        crate::reactor::tcp_close(rt, handle_id)
+    }
+    fn ril_rt_async_poll_wait(rt, wait_fds: Value, wait_kinds: Value, timeout_ms: Value) -> Value {
+        crate::reactor::poll_wait(rt, wait_fds, wait_kinds, timeout_ms)
+    }
     fn ril_rt_to_f64(rt, value: Value) -> Value {
         if let Some(number) = rt.gc.integer(value) {
             let f = number.to_f64().unwrap_or_else(|| {

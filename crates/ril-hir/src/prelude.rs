@@ -38,7 +38,22 @@ impl Program {
         imports: &mut Vec<(ScopeId, StmtId)>,
         errors: &mut Vec<Diagnostic>,
     ) {
+        let wants_async = imports.iter().any(|&(scope, stmt)| {
+            let file_id = self.scope(scope).file;
+            let ril_syntax::syntax::StmtKind::Import(imp) =
+                &self.file(file_id).ast.stmt(stmt).value.kind
+            else {
+                return false;
+            };
+            imp.file.as_ref().is_some_and(|parts| {
+                parts.first().is_some_and(|s| s.value == "ril")
+                    && parts.get(1).is_some_and(|s| s.value == "async")
+            })
+        });
         for module in builtins::stdlib_modules() {
+            if module.import_key == "ril/async" && !wants_async {
+                continue;
+            }
             let key = PathBuf::from(module.import_key);
             if module.module_name == "Prelude" {
                 if self.scope(self.prelude).file != FileId::BUILTIN {

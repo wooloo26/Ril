@@ -945,6 +945,9 @@ impl Checker<'_> {
                 Some(ans)
             } else {
                 expected.result = op_result;
+                if is_inline_closure && expected.result_mode == Mode::New {
+                    expected.result_mode = Mode::Infer;
+                }
                 self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
                 env.pending_handler_proofs = None;
                 if !env.shadow && !is_inline_closure {

@@ -85,6 +85,94 @@ impl Builder<'_, '_> {
             let value = self.collection(argument.value)?;
             return Ok(self.runtime("ril_rt_len", vec![value]));
         }
+        if matches!(
+            intrinsic,
+            Some(Intrinsic::AsyncJoin | Intrinsic::AsyncTryJoin)
+        ) && let [tasks_arg] = args
+        {
+            let is_try = intrinsic == Some(Intrinsic::AsyncTryJoin);
+            let tasks_span = self.ast().expr(tasks_arg.value).span;
+            let tasks_ty = self
+                .global
+                .typed
+                .types
+                .get(&tasks_span)
+                .map(|t| self.concrete(t))
+                .unwrap_or(ril_sema::ty::Ty::Unknown);
+            let field_names: Vec<String> = match tasks_ty {
+                ril_sema::ty::Ty::Record(fields, _) => fields.keys().cloned().collect(),
+                _ => {
+                    return Err(self.unsupported(
+                        span,
+                        "Async::join requires a concrete record of task thunks",
+                    ));
+                }
+            };
+            let tasks_reg = self.expr(tasks_arg.value)?;
+            let thunks = self.runtime("ril_rt_array", Vec::new());
+            for field in &field_names {
+                let key = self.string(field);
+                let thunk = self.runtime("ril_rt_load", vec![tasks_reg, key]);
+                self.runtime("ril_rt_append", vec![thunks, thunk]);
+            }
+            let helper_name = if is_try {
+                "_try_join_array"
+            } else {
+                "_join_array"
+            };
+            let async_file = self.global.typed.hir.definition(id).name.span.file;
+            let helper_id = self
+                .global
+                .typed
+                .hir
+                .definitions()
+                .find(|(_, d)| d.name.value == helper_name && d.name.span.file == async_file)
+                .map(|(hid, _)| hid)
+                .ok_or_else(|| self.unsupported(span, "missing Async join helper"))?;
+            let helper_fn = self.global.queue(super::Work::Named(
+                helper_id,
+                BTreeMap::new(),
+                Vec::new(),
+                BTreeMap::new(),
+            ));
+            let helper_out = self.invoke(Target::Function(helper_fn), vec![thunks], false);
+            if !is_try {
+                let record = self.runtime("ril_rt_record", Vec::new());
+                for (idx, field) in field_names.iter().enumerate() {
+                    let idx_reg = self.integer(&idx.to_string());
+                    let val = self.runtime("ril_rt_load", vec![helper_out, idx_reg]);
+                    let key = self.string(field);
+                    self.runtime("ril_rt_store", vec![record, key, val]);
+                }
+                return Ok(record);
+            }
+            let ok_bb = self.block(0);
+            let err_bb = self.block(0);
+            let done_bb = self.block(1);
+            let ok_tag = self.string("Ok");
+            let is_ok = self.runtime("ril_rt_is_tag", vec![helper_out, ok_tag]);
+            self.terminate(Terminator::Branch {
+                condition: is_ok,
+                yes: ok_bb,
+                no: err_bb,
+            });
+            self.current = Some(ok_bb);
+            let zero = self.integer("0");
+            let arr = self.runtime("ril_rt_load", vec![helper_out, zero]);
+            let record = self.runtime("ril_rt_record", Vec::new());
+            for (idx, field) in field_names.iter().enumerate() {
+                let idx_reg = self.integer(&idx.to_string());
+                let val = self.runtime("ril_rt_load", vec![arr, idx_reg]);
+                let key = self.string(field);
+                self.runtime("ril_rt_store", vec![record, key, val]);
+            }
+            let ok_rec = self.tag("Ok", vec![record]);
+            self.terminate(Terminator::Jump(done_bb, vec![ok_rec]));
+            self.current = Some(err_bb);
+            self.terminate(Terminator::Jump(done_bb, vec![helper_out]));
+            self.current = Some(done_bb);
+            return Ok(self.result_param(done_bb));
+        }
         let values = if let Some(decl) = self.global.declaration(id) {
             self.arguments(
                 &decl.signature.params,

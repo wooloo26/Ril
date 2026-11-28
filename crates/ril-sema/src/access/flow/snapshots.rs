@@ -653,6 +653,12 @@ impl Ledger {
         definite: bool,
     ) {
         if self.storage_flow.is_some() {
+            if let StorageTarget::Entry(region) = &target
+                && !self.storage_formals.contains(&Some(region.source))
+                && !self.storage_captures.contains(&region.source)
+            {
+                return;
+            }
             let value = self.snapshot_call_graph(value);
             if let Some(flow) = &mut self.storage_flow {
                 flow.push(StorageAction::Write(

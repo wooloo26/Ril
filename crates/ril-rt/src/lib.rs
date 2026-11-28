@@ -6,6 +6,7 @@ mod gc;
 mod graph;
 mod map;
 mod num;
+mod reactor;
 mod text;
 mod unwind;
 

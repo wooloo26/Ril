@@ -625,6 +625,16 @@ impl Analyzer<'_> {
                     }
                 }
             }
+            if module == Some("Async")
+                && matches!(name, "join" | "try_join")
+                && let Some((_, _, rec)) = values.first()
+            {
+                for member in rec.members.values() {
+                    if !member.invocations.is_empty() {
+                        self.link_invocation(ctx, member);
+                    }
+                }
+            }
             return self.primitive(ctx, ledger, (name, sig), &values, args, span);
         }
         if let (Some(id), Expr::Path(path)) = (id, &callee.value)
@@ -637,6 +647,11 @@ impl Analyzer<'_> {
                 span,
                 None,
             );
+            for (_, _, value) in &values {
+                if !value.invocations.is_empty() {
+                    self.link_invocation(ctx, value);
+                }
+            }
             if let Some(handler) = ctx.handlers.get(&operation) {
                 let closures = self.known_closures(handler);
                 let entry = CallEntry {

@@ -855,6 +855,7 @@ fn stdlib_module_for_symbol(ident: &str) -> Option<&'static str> {
         "File" => Some("ril/file"),
         "Math" => Some("ril/math"),
         "Panic" => Some("ril/panic"),
+        "Async" | "Task" | "Clock" | "Net" => Some("ril/async"),
         "Reflect" => Some("ril/reflect"),
         "Array" => Some("ril/array"),
         "Map" => Some("ril/map"),

@@ -977,6 +977,19 @@ impl Checker<'_> {
                 handled.insert(label);
             }
         }
+        let handled_op_ids: HashSet<_> = handled_ops.iter().map(|(op_id, _)| *op_id).collect();
+        let all_effects: Vec<_> = self
+            .hir
+            .definitions()
+            .filter(|(_, d)| matches!(d.kind, ril_hir::DefinitionKind::Effect(_)))
+            .map(|(id, _)| (id, self.hir.effect_label(id)))
+            .collect();
+        for (eff_def, label) in all_effects {
+            let ops: Vec<_> = self.hir.effect_operations(eff_def).collect();
+            if !ops.is_empty() && ops.iter().all(|op_id| handled_op_ids.contains(op_id)) {
+                handled.insert(label);
+            }
+        }
         handled
     }
 

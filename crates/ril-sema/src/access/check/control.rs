@@ -171,7 +171,11 @@ impl Analyzer<'_> {
                 }
                 if mode == Mode::Plain {
                     if !binding_is_must_consume {
-                        self.freeze_value(ctx, ledger, &mut value, name.span);
+                        if binding_ty.is_some_and(|ty| self.program.is_value(ty)) {
+                            value = Datum::default();
+                        } else {
+                            self.freeze_value(ctx, ledger, &mut value, name.span);
+                        }
                     }
                 } else if mode != Mode::Via {
                     value.receive_binding(access);
@@ -221,10 +225,12 @@ impl Analyzer<'_> {
                     let mut child =
                         self.project_observed(ctx, ledger, &value, (coordinate, mode, span));
                     if linear_destruct {
+                        child.linear.clear();
                         for root in &mut child.roots {
+                            root.region = Region::allocation(span);
                             root.dependencies.clear();
                         }
-                        if self.program.is_must_consume(item_ty) && child.all_linear().is_empty() {
+                        if self.program.is_must_consume(item_ty) {
                             ledger.record_linear(
                                 &mut child,
                                 span,
@@ -340,14 +346,14 @@ impl Analyzer<'_> {
                     [] => {}
                     [inner] => {
                         if linear_destruct {
+                            let inner_span = self.ast(ctx.file).pattern(*inner).span;
+                            value.linear.clear();
                             for root in &mut value.roots {
+                                root.region = Region::allocation(inner_span);
                                 root.dependencies.clear();
                             }
-                            let inner_span = self.ast(ctx.file).pattern(*inner).span;
                             let inner_ty = self.ty(inner_span);
-                            if self.program.is_must_consume(inner_ty)
-                                && value.all_linear().is_empty()
-                            {
+                            if self.program.is_must_consume(inner_ty) {
                                 ledger.record_linear(
                                     &mut value,
                                     inner_span,
@@ -369,13 +375,13 @@ impl Analyzer<'_> {
                                 (coordinate, mode, span),
                             );
                             if linear_destruct {
+                                child.linear.clear();
                                 for root in &mut child.roots {
+                                    root.region = Region::allocation(span);
                                     root.dependencies.clear();
                                 }
                                 let item_ty = self.ty(span);
-                                if self.program.is_must_consume(item_ty)
-                                    && child.all_linear().is_empty()
-                                {
+                                if self.program.is_must_consume(item_ty) {
                                     ledger.record_linear(
                                         &mut child,
                                         span,
@@ -425,11 +431,15 @@ impl Analyzer<'_> {
                         (Coordinate::Index(i.to_string()), Mode::Plain, item_span),
                     );
                     if linear_destruct {
+                        child.clear_linear();
+                        child.transform(&mut |origin| {
+                            origin.dependencies.clear();
+                        });
                         for root in &mut child.roots {
-                            root.dependencies.clear();
+                            root.region = Region::allocation(item_span);
                         }
                         let item_ty = self.ty(item_span);
-                        if self.program.is_must_consume(item_ty) && child.all_linear().is_empty() {
+                        if self.program.is_must_consume(item_ty) {
                             ledger.record_linear(
                                 &mut child,
                                 item_span,

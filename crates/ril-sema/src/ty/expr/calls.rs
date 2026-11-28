@@ -551,7 +551,7 @@ impl Checker<'_> {
             return Ty::Unknown;
         };
 
-        let result = substitute(&call.result, &generics);
+        let mut result = substitute(&call.result, &generics);
         let has_meta = call.parameters.iter().any(|parameter| parameter.is_meta);
         if let Some(expect) = expected {
             self.fits(env, &result, expect);
@@ -1150,6 +1150,121 @@ impl Checker<'_> {
                     span,
                     "set element type does not support stable equality",
                 );
+            }
+            if matches!(
+                self.hir.intrinsic(known),
+                Some(ril_hir::Intrinsic::AsyncJoin | ril_hir::Intrinsic::AsyncTryJoin)
+            ) && let Some(arg0) = args.first()
+            {
+                let is_try = self.hir.intrinsic(known) == Some(ril_hir::Intrinsic::AsyncTryJoin);
+                let arg0_span = ast.expr(arg0.value).span;
+                let rec_ty = self
+                    .types
+                    .get(&arg0_span)
+                    .map(|t| self.normalize(t))
+                    .unwrap_or(Ty::Unknown);
+                let async_label = self
+                    .hir
+                    .definitions()
+                    .find(|(_, d)| {
+                        d.name.value == "Async"
+                            && matches!(d.kind, DefinitionKind::Effect(_))
+                            && d.name.span.file == self.hir.definition(known).name.span.file
+                    })
+                    .map(|(eid, _)| self.hir.effect_label(eid));
+                if let Ty::Record(fields, false) = &rec_ty {
+                    if is_try && fields.is_empty() {
+                        self.error(
+                            Code::E0301,
+                            arg0_span,
+                            "Async::try_join requires at least one task field",
+                        );
+                    }
+                    let mut first_err: Option<Ty> = None;
+                    for member in fields.values() {
+                        match self.normalize(&member.ty) {
+                            Ty::Callable(cb) if !cb.is_ctl && cb.parameters.is_empty() => {
+                                if let Some(ref async_eff) = async_label {
+                                    let effects_ok = !cb.open_effects
+                                        && !cb.direct_open_effects
+                                        && cb.effect_vars.is_empty()
+                                        && cb
+                                            .effects
+                                            .iter()
+                                            .all(|eff| self.effect_covers(async_eff, eff));
+                                    if !effects_ok {
+                                        self.error(
+                                            Code::E0534,
+                                            arg0_span,
+                                            "Async::join task thunk effects must be covered by @Async",
+                                        );
+                                    }
+                                }
+                                if is_try {
+                                    let ret = self.normalize(&cb.result);
+                                    if let Some((_, err_ty)) = ret.as_result(self.hir) {
+                                        if let Some(ref expected_err) = first_err {
+                                            if !self.equiv(env, err_ty, expected_err) {
+                                                self.error(
+                                                    Code::E0301,
+                                                    arg0_span,
+                                                    "Async::try_join task thunks must share the same error type",
+                                                );
+                                            }
+                                        } else {
+                                            first_err = Some(err_ty.clone());
+                                        }
+                                    } else {
+                                        self.error(
+                                            Code::E0301,
+                                            arg0_span,
+                                            "Async::try_join requires fallible !<T, E> task thunks",
+                                        );
+                                    }
+                                }
+                            }
+                            Ty::Unknown | Ty::Infer(_) => {}
+                            _ => {
+                                self.error(
+                                    Code::E0301,
+                                    arg0_span,
+                                    "Async::join requires a record of zero-argument fn() thunks",
+                                );
+                            }
+                        }
+                    }
+                    let def = self.hir.definition(known);
+                    if let Some(stmt) = def.stmt
+                        && let ril_syntax::syntax::StmtKind::Function(fun) =
+                            &self.ast(def.name.span.file).stmt(stmt).value.kind
+                    {
+                        let res_ty_id = fun.signature.result;
+                        let mut fn_env = Env::new(def.name.span.file, def.scope);
+                        fn_env.generics = generics
+                            .iter()
+                            .map(|(&id, arg)| {
+                                let arg = match arg {
+                                    crate::ty::GenericValue::Type(ty) => {
+                                        crate::ty::GenericValue::Type(self.normalize(ty))
+                                    }
+                                    value => value.clone(),
+                                };
+                                (id, arg)
+                            })
+                            .collect();
+                        let computed = self.type_expr(&mut fn_env, res_ty_id);
+                        result = self.normalize(&computed);
+                        if let Some(expect) = expected {
+                            self.fits(env, &result, expect);
+                        }
+                    }
+                } else if !matches!(rec_ty, Ty::Unknown | Ty::Infer(_)) {
+                    self.error(
+                        Code::E0301,
+                        arg0_span,
+                        "Async::join requires a closed record of zero-argument fn() thunks",
+                    );
+                }
             }
         }
         if !env.shadow && !generics.is_empty() {

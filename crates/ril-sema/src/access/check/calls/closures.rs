@@ -9,6 +9,7 @@ impl Analyzer<'_> {
     ) {
         let mut operations = BTreeSet::new();
         let mut installed = std::collections::BTreeMap::new();
+        let mut new_holds = Vec::new();
         for handler in handlers {
             let span = handler.operation.span;
             let operation = self
@@ -127,11 +128,30 @@ impl Analyzer<'_> {
                         "a live handler variable requires an explicit access mode",
                     );
                 }
-                ledger.holds.push((mode, value.clone()));
+                new_holds.push((mode, value.clone(), rhs.span));
             }
             if let Some(operation) = operation {
                 installed.insert(operation, value);
             }
+        }
+        for (i, &(m1, ref v1, _)) in new_holds.iter().enumerate() {
+            for &(m2, ref v2, s2) in new_holds.iter().skip(i + 1) {
+                if m1 == Mode::Shared && m2 == Mode::Shared {
+                    continue;
+                }
+                for conflict in conflicts(v2, m2, v1, m1) {
+                    self.check_conflict(
+                        ctx,
+                        conflict,
+                        None,
+                        s2,
+                        "handler overlaps an active lexical handler hold",
+                    );
+                }
+            }
+        }
+        for (mode, val, _) in new_holds {
+            ledger.holds.push((mode, val));
         }
         ctx.handlers.extend(installed);
     }
@@ -511,6 +531,15 @@ impl Analyzer<'_> {
                 .insert(Coordinate::Index(index.to_string()), value);
         }
         for &decl in &used {
+            if ctx.in_function
+                && decl.start < ctx.owner.start
+                && !ctx.formals.contains(&Some(decl))
+                && self
+                    .definition(decl)
+                    .is_some_and(|id| self.program.hir.definition(id).kind == DefinitionKind::Local)
+            {
+                self.seed(ctx, Obligation::ReadUp(decl));
+            }
             let is_must_consume = self
                 .definition(decl)
                 .and_then(|id| self.program.bindings.get(&id))

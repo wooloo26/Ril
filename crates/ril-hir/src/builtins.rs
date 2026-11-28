@@ -131,6 +131,65 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
             Some("ril_rt_file_write"),
             Some(FileWrite),
         ),
+        // Async
+        prim(
+            "Async",
+            "_now_ms",
+            Runtime,
+            Some("ril_rt_async_now_ms"),
+            Some(AsyncNowMs),
+        ),
+        prim(
+            "Async",
+            "_tcp_listen",
+            Runtime,
+            Some("ril_rt_async_tcp_listen"),
+            Some(AsyncTcpListen),
+        ),
+        prim(
+            "Async",
+            "_tcp_connect",
+            Runtime,
+            Some("ril_rt_async_tcp_connect"),
+            Some(AsyncTcpConnect),
+        ),
+        prim(
+            "Async",
+            "_tcp_try_accept",
+            Runtime,
+            Some("ril_rt_async_tcp_try_accept"),
+            Some(AsyncTcpTryAccept),
+        ),
+        prim(
+            "Async",
+            "_tcp_try_read",
+            Runtime,
+            Some("ril_rt_async_tcp_try_read"),
+            Some(AsyncTcpTryRead),
+        ),
+        prim(
+            "Async",
+            "_tcp_try_write",
+            Runtime,
+            Some("ril_rt_async_tcp_try_write"),
+            Some(AsyncTcpTryWrite),
+        ),
+        prim(
+            "Async",
+            "_tcp_close",
+            Runtime,
+            Some("ril_rt_async_tcp_close"),
+            Some(AsyncTcpClose),
+        ),
+        prim(
+            "Async",
+            "_poll_wait",
+            Runtime,
+            Some("ril_rt_async_poll_wait"),
+            Some(AsyncPollWait),
+        ),
+        prim("Async", "join", Runtime, None, Some(AsyncJoin)),
+        prim("Async", "try_join", Runtime, None, Some(AsyncTryJoin)),
         // Numeric
         prim(
             "Numeric",
@@ -405,6 +464,12 @@ const STD_SOURCES: &[(&str, &str, &str, &str)] = &[
         "ril/panic",
         "ril/std/panic.ril",
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/panic.ril")),
+    ),
+    (
+        "Async",
+        "ril/async",
+        "ril/std/async.ril",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../std/async.ril")),
     ),
 ];
 

@@ -90,6 +90,16 @@ pub enum Intrinsic {
     ReflectVariantAttrs,
     ReflectHasDefault,
     ReflectRawTypeKind,
+    AsyncNowMs,
+    AsyncTcpListen,
+    AsyncTcpConnect,
+    AsyncTcpTryAccept,
+    AsyncTcpTryRead,
+    AsyncTcpTryWrite,
+    AsyncTcpClose,
+    AsyncPollWait,
+    AsyncJoin,
+    AsyncTryJoin,
 }
 
 impl Intrinsic {
@@ -133,6 +143,16 @@ impl Intrinsic {
                 | ReflectFieldAttrs
                 | ReflectVariantAttrs
                 | ReflectRawTypeKind
+                | AsyncNowMs
+                | AsyncTcpListen
+                | AsyncTcpConnect
+                | AsyncTcpTryAccept
+                | AsyncTcpTryRead
+                | AsyncTcpTryWrite
+                | AsyncTcpClose
+                | AsyncPollWait
+                | AsyncJoin
+                | AsyncTryJoin
         )
     }
 }
