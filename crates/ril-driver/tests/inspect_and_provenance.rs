@@ -91,7 +91,7 @@ fn sealed_panic(xs: []int) -> new !<int, Panic::Error> {
     Panic::recover(\-> read_head(xs))
 }
 
-fn safe_defer(mut buf: []int, idx: int) &mut -> int {
+fn safe_defer(mut buf: []int, idx: int) -> int {
     defer Array::clear(mut buf)
     buf?[idx] ?? 0
 }
@@ -136,10 +136,9 @@ fn main() -> () {
     assert_eq!(sealed["total"], true);
     assert!(sealed.get("may_panic").is_none());
 
-    // `safe_defer` expands `&mut(buf)`, has no `may_panic` and no `defer_double_panic`
+    // `safe_defer` records mutated params, has no `may_panic` and no `defer_double_panic`
     let sd = find("safe_defer");
     assert_eq!(sd["mut"], serde_json::json!(["buf"]));
-    assert!(sd["sig"].as_str().unwrap().contains("&mut(buf)"));
     assert!(sd.get("may_panic").is_none());
     assert!(sd.get("may_abort").is_none());
 
@@ -150,7 +149,7 @@ fn main() -> () {
 
     // Hard error E0627 statically prevents panic inside `defer` (eliminating double-panic abort)
     let bad_defer_src = r#"
-fn dangerous_defer(mut buf: []int) &mut -> () {
+fn dangerous_defer(mut buf: []int) -> () {
     defer assert(len(ref buf) == 0, "not empty")
     Array::clear(mut buf)
 }
@@ -184,7 +183,7 @@ fn pick<T>(via xs: []T) -> infer ?T {
     xs?[0]
 }
 
-fn run(mut items: []int) &mut -> int {
+fn run(mut items: []int) -> int {
     var total = 0
     with {
         ctl Emit::send = \v, k -> {

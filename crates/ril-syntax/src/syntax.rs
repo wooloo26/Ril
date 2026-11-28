@@ -233,7 +233,6 @@ pub struct Obligations {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StateKind {
-    Write,
     Share,
     Capture,
     Environment,

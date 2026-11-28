@@ -21,12 +21,12 @@ pub fn from_array<T>(via items: []T) -> new Set<T> {
 }
 
 -- Inserts `value` into `set` in place (no-op if already present).
-pub fn insert<T>(mut set: Set<T>, value: T) &mut -> () {
+pub fn insert<T>(mut set: Set<T>, value: T) -> () {
     inner(mut set)[value] = ()
 }
 
 -- Removes `value` from `set` in place, returning `true` if it was present.
-pub fn remove<T>(mut set: Set<T>, value: T) &mut -> bool {
+pub fn remove<T>(mut set: Set<T>, value: T) -> bool {
     Map::remove(mut inner(mut set), value) != None
 }
 
@@ -36,7 +36,7 @@ pub fn contains<T>(via set: Set<T>, value: T) -> bool {
 }
 
 -- Removes every element from `set` in place.
-pub fn clear<T>(mut set: Set<T>) &mut -> () {
+pub fn clear<T>(mut set: Set<T>) -> () {
     Map::clear(mut inner(mut set))
 }
 

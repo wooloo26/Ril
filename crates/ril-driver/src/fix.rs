@@ -1068,19 +1068,12 @@ fn synthesize_signature_fixes(
         target_effects.dedup();
 
         // 2. State clauses reconciliation.
-        let decl_mut = callable.state.iter().any(|s| s == "mut");
         let decl_shared = callable.state.iter().any(|s| s == "^mut");
         let decl_capture = callable.state.iter().any(|s| s == "capture");
 
-        let want_mut = inferred.needs_mut || (!can_strip && decl_mut);
         let want_shared = inferred.needs_shared_mut || (!can_strip && decl_shared);
         let want_capture = inferred.needs_capture || (!can_strip && decl_capture);
 
-        if want_mut && !decl_mut {
-            added.push("&mut".into());
-        } else if !want_mut && decl_mut {
-            removed.push("&mut".into());
-        }
         if want_shared && !decl_shared {
             added.push("&^mut".into());
         } else if !want_shared && decl_shared {
@@ -1203,7 +1196,6 @@ fn synthesize_signature_fixes(
                 fun,
                 body_id,
                 &target_effects,
-                want_mut,
                 want_shared,
                 want_capture,
                 &target_up,
@@ -1302,7 +1294,6 @@ fn build_obligation_edit(
     fun: &Function,
     body_id: ril_syntax::syntax::ExprId,
     effects: &[String],
-    want_mut: bool,
     want_shared: bool,
     want_capture: bool,
     up_items: &[String],
@@ -1326,9 +1317,6 @@ fn build_obligation_edit(
     let mut parts: Vec<String> = Vec::new();
     for eff in effects {
         parts.push(format!("@{eff}"));
-    }
-    if want_mut {
-        parts.push("&mut".into());
     }
     if want_shared {
         parts.push("&^mut".into());

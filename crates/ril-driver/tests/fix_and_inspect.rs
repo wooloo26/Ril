@@ -124,8 +124,8 @@ fn fix_repairs_callsite_mode_pipeline_and_mut_signature_multipass() -> Result<()
         "expected -> new on make_items:\n{updated}"
     );
     assert!(
-        updated.contains("fn push_one(mut xs: []int) &mut -> ()"),
-        "expected &mut on push_one:\n{updated}"
+        updated.contains("fn push_one(mut xs: []int) -> ()"),
+        "expected push_one signature:\n{updated}"
     );
     assert!(
         updated.contains("Array::push(mut xs, 3)"),

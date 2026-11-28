@@ -182,7 +182,7 @@ eff Abort {
     ctl stop() -> never
 }
 
-fn early(mut log: []str) &mut -> int {
+fn early(mut log: []str) -> int {
     defer Array::push(mut log, "r1")
     defer Array::push(mut log, "r2")
     return 7

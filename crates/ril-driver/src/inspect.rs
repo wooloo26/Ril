@@ -907,20 +907,13 @@ pub fn format_expanded_signature(
         out.push_str(" &");
     }
     let summary = analysis.and_then(|a| a.summaries.get(&def_id));
-    let mut_names = summary
-        .map(|s| formal_names(&param_names, &s.writes))
-        .unwrap_or_default();
     let shared_names = summary
         .map(|s| formal_names(&param_names, &s.retained))
         .unwrap_or_default();
 
     for clause in &callable.state {
         out.push_str(" &");
-        if clause == "mut" && !mut_names.is_empty() {
-            out.push_str("mut(");
-            out.push_str(&mut_names.join(", "));
-            out.push(')');
-        } else if clause == "^mut" && !shared_names.is_empty() {
+        if clause == "^mut" && !shared_names.is_empty() {
             out.push_str("^mut(");
             out.push_str(&shared_names.join(", "));
             out.push(')');

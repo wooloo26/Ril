@@ -97,13 +97,12 @@ fn scoped() -> () {
     defer close(ref handle)
 }
 
--- @case a_cleanup_handler_write_requires_a_caller_state_clause compile-fail E0510
+-- @case a_cleanup_handler_write_exercises_mut_parameter compile-pass
 type Cell = .{ var count: int }
 eff Finalize { fn record(id: int) -> () }
 opaque type Handle(.{ id: int })
 fn close(ref resource: Handle) @Finalize -> () { Finalize::record(resource.id) }
 fn scoped(mut target: Cell) -> () {
--- ^ E0510
     with Finalize::record = \id: int -> { target.count += id }
     let handle = Handle::(.{ id: 1 })
     defer close(ref handle)
@@ -111,7 +110,7 @@ fn scoped(mut target: Cell) -> () {
 
 -- @case defer_blocks_exit_constructor_promotion_while_referenced compile-fail E0535
 opaque type Handle(.{ var id: int })
-fn close(mut h: Handle) &mut -> () { h.id = 0 }
+fn close(mut h: Handle) -> () { h.id = 0 }
 fn scoped() -> new ?Handle {
     let mut handle = Handle::(.{ id: 42 })
     defer close(mut handle)
@@ -413,9 +412,9 @@ fn update() -> []int {
 
 -- @case defer_resource_can_be_observed_and_mutated_by_helpers compile-pass
 opaque type Handle(.{ var id: int })
-fn close(mut handle: Handle) &mut -> () { handle.id = 0 }
+fn close(mut handle: Handle) -> () { handle.id = 0 }
 fn observe(ref handle: Handle) -> int { handle.id }
-fn update(mut handle: Handle) &mut -> () { handle.id += 1 }
+fn update(mut handle: Handle) -> () { handle.id += 1 }
 fn work() -> int {
     let mut handle = Handle::(.{ id: 41 })
     defer close(mut handle)
@@ -425,7 +424,7 @@ fn work() -> int {
 
 -- @case defer_mutation_satisfies_mut_use compile-pass
 opaque type Handle(.{ var id: int })
-fn close(mut handle: Handle) &mut -> () { handle.id = 0 }
+fn close(mut handle: Handle) -> () { handle.id = 0 }
 fn work() -> () {
     let mut handle = Handle::(.{ id: 42 })
     defer close(mut handle)
@@ -469,7 +468,7 @@ fn work() -> () {
 
 -- @case defer_mutation_requires_writable_binding compile-fail E0520
 opaque type Handle(.{ var id: int })
-fn close(mut handle: Handle) &mut -> () { handle.id = 42 }
+fn close(mut handle: Handle) -> () { handle.id = 42 }
 fn work() -> () {
     let frozen = Handle::(.{ id: 41 })
     defer close(mut frozen)
@@ -752,7 +751,7 @@ fn bad(xs: []int, i: int) -> int {
 }
 
 -- @case resized_array_invalidates_bounds_proof_e0362 compile-fail E0362
-fn bad(mut xs: []int, i: int) &mut -> int {
+fn bad(mut xs: []int, i: int) -> int {
     if 0 <= i && i < len(ref xs) {
         let _ = Array::pop(mut xs)
         xs[i]
@@ -781,14 +780,14 @@ fn bad(xs: []int, lo: int, hi: int) -> []int {
 }
 
 -- @case unproved_array_insert_rejected_e0362 compile-fail E0362
-fn bad(mut xs: []int, idx: int) &mut -> () {
+fn bad(mut xs: []int, idx: int) -> () {
     Array::insert(mut xs, idx, 1)
     -- ^ E0362
 }
 
 -- @case defer_allows_io_println_and_safe_ops compile-pass
 use ril/io
-fn ok(mut xs: []int, i: int) @io &mut -> () {
+fn ok(mut xs: []int, i: int) @io -> () {
     defer {
         if i >= 0 && i < len(ref xs) {
             xs[i] = 0
@@ -836,7 +835,7 @@ fn lower_bound(xs: []int, target: int) -> int |> Between<0, len(xs)> {
     lo
 }
 
-fn insert_sorted(mut xs: []int, value: int) &mut -> () {
+fn insert_sorted(mut xs: []int, value: int) -> () {
     let idx = lower_bound(clone(ref xs), value)
     Array::insert(mut xs, idx, value)
 }
@@ -895,7 +894,7 @@ fn bad_nat(x: int) -> int |> Nat {
 }
 
 -- @case static_proof_defer_mutation_invalidates_return_proof compile-fail E0323
-fn bad_defer(mut xs: []int |> NonEmpty) &mut -> int |> InBounds<xs> {
+fn bad_defer(mut xs: []int |> NonEmpty) -> int |> InBounds<xs> {
     defer Array::clear(mut xs)
     0
     -- ^ E0323
@@ -924,7 +923,7 @@ pub fn leaked(a: int, b |> PrivateNz) -> int { a / b }
 -- ^ E0910
 
 -- @case static_proof_bounds_intrinsic_unproved_is_e0362 compile-fail E0362
-fn bad_swap(mut xs: []int, i: int) &mut -> () {
+fn bad_swap(mut xs: []int, i: int) -> () {
     Array::swap(mut xs, i, 0)
     -- ^ E0362
 }
@@ -950,7 +949,7 @@ fn lookup_via_safe_index(m: [str: int], k: str) -> int {
     }
 }
 
-fn mutate_proved_map(mut m: [str: int], k: str) &mut -> int {
+fn mutate_proved_map(mut m: [str: int], k: str) -> int {
     m[k] = 1
     m[k] += 2
     let lit = ["a": 10, "b": 20]
@@ -969,7 +968,7 @@ fn set_in_proof(s: Set<str>, x: str |> In<s>) -> bool {
     Set::contains(s, x)
 }
 
-fn set_membership_flow(mut s: Set<str>, x: str) &mut -> bool {
+fn set_membership_flow(mut s: Set<str>, x: str) -> bool {
     Set::insert(mut s, x)
     let ok = set_in_proof(clone(ref s), x)
     let snap = clone(ref s)
@@ -979,7 +978,7 @@ fn set_membership_flow(mut s: Set<str>, x: str) &mut -> bool {
     ok
 }
 
-fn remove_distinct_key_preserves_other(mut m: [str: int]) &mut -> int {
+fn remove_distinct_key_preserves_other(mut m: [str: int]) -> int {
     m["a"] = 1
     m["b"] = 2
     let _ = Map::remove(mut m, "b")
@@ -987,7 +986,7 @@ fn remove_distinct_key_preserves_other(mut m: [str: int]) &mut -> int {
 }
 
 -- @case map_remove_unknown_key_invalidates_contains compile-fail E0362
-fn bad_remove(mut m: [str: int], k1: str, k2: str) &mut -> int {
+fn bad_remove(mut m: [str: int], k1: str, k2: str) -> int {
     m[k1] = 1
     let _ = Map::remove(mut m, k2)
     m[k1]
@@ -995,7 +994,7 @@ fn bad_remove(mut m: [str: int], k1: str, k2: str) &mut -> int {
 }
 
 -- @case map_pop_entry_invalidates_contains compile-fail E0362
-fn bad_pop(mut m: [str: int]) &mut -> int {
+fn bad_pop(mut m: [str: int]) -> int {
     m["a"] = 1
     let _ = Map::pop_entry(mut m)
     m["a"]
@@ -1004,7 +1003,7 @@ fn bad_pop(mut m: [str: int]) &mut -> int {
 
 -- @case set_remove_invalidates_in_proof compile-fail E0323
 fn need_in(s: Set<str>, x: str |> In<s>) -> bool { Set::contains(s, x) }
-fn bad_set(mut s: Set<str>, x: str) &mut -> bool {
+fn bad_set(mut s: Set<str>, x: str) -> bool {
     Set::insert(mut s, x)
     let _ = Set::remove(mut s, x)
     need_in(clone(ref s), x)
@@ -1083,13 +1082,13 @@ fn is_pos_strict(x: int) -> bool |> Implies<Positive<x>> {
     x > 10
 }
 
-fn ensure_key(mut m: [str: int], k: str) &mut -> () |> Ensures<In<k, m>> {
+fn ensure_key(mut m: [str: int], k: str) -> () |> Ensures<In<k, m>> {
     if !Map::contains(ref m, k) {
         m[k] = 0
     }
 }
 
-fn use_combinators(xs: []int, a: int, b: int, x: int, mut m: [str: int], k: str) &mut -> int {
+fn use_combinators(xs: []int, a: int, b: int, x: int, mut m: [str: int], k: str) -> int {
     let part: []int = if is_valid_slice(a, b, xs) { xs[a..b] } else { [] }
     let q = if is_pos_strict(x) { 100 / x } else { 0 }
     ensure_key(mut m, k)
@@ -1145,7 +1144,7 @@ fn read_balance(ref s: Scoped<Tx>) -> int {
     inner(ref s).balance
 }
 
-fn run_tx(mut tx: Tx) &mut -> int {
+fn run_tx(mut tx: Tx) -> int {
     with_scoped(mut tx, \mut s -> {
         let before = read_balance(ref s)
         inner(mut s).balance += 10
@@ -1290,7 +1289,7 @@ fn bad(h: Holder) -> Holder {
 
 -- @case type_invariant_forbids_inner_mut_is_e0406 compile-fail E0406
 type NonEmptyList([]int) |> NonEmpty
-fn bad(mut xs: NonEmptyList) &mut -> () {
+fn bad(mut xs: NonEmptyList) -> () {
     let _ = Array::pop(mut inner(mut xs))
     -- ^ E0406
 }
@@ -1348,7 +1347,7 @@ fn lookup_explicit(m: [str: int], k: In<m, [str: int]>) -> int { m[k] }
 fn in_range_cmp(x: int, lo: int, hi: int) -> bool |> Reflects<x >= lo && x <= hi> {
     x >= lo && x <= hi
 }
-fn push_nonempty(mut xs: []int, v: int) &mut -> () |> Ensures<len(xs) > 0> {
+fn push_nonempty(mut xs: []int, v: int) -> () |> Ensures<len(xs) > 0> {
     Array::push(mut xs, v)
 }
 fn caller(xs: []int, m: [str: int], k: str) -> int {

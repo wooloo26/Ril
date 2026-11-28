@@ -902,10 +902,11 @@ impl Checker<'_> {
                     self.writes_place(env, argument.value, span);
                 }
             }
-        } else if call
-            .state
-            .iter()
-            .any(|clause| clause == "mut" || clause == "^mut")
+        } else if call.state.iter().any(|clause| clause == "^mut")
+            || call
+                .parameters
+                .iter()
+                .any(|p| matches!(p.mode, Mode::Mut | Mode::Shared))
         {
             for argument in args {
                 let arg_ty = self

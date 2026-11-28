@@ -13,15 +13,13 @@ impl Analyzer<'_> {
             return;
         };
         self.charge_call_effects(ctx, ledger, sig, None, span);
-        if sig.state.iter().any(|s| s == "mut" || s == "^mut") {
-            for (index, _, value) in args {
-                if sig
-                    .parameters
-                    .get(*index)
-                    .is_some_and(|p| matches!(p.mode, Mode::Mut | Mode::Shared))
-                {
-                    self.mutate(ctx, ledger, value, span);
-                }
+        for (index, _, value) in args {
+            if sig
+                .parameters
+                .get(*index)
+                .is_some_and(|p| matches!(p.mode, Mode::Mut | Mode::Shared))
+            {
+                self.mutate(ctx, ledger, value, span);
             }
         }
     }

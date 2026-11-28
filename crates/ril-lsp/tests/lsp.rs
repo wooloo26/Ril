@@ -870,7 +870,7 @@ fn lsp_hover_inlay_and_e0627_surface_implicit_behavior_and_provenance() -> Resul
         "    if n < 0 { panic(\"neg\") }\n",
         "    if n == 0 { 0 } else { 1 + strict_rec(n - 1) }\n",
         "}\n",
-        "fn flush_batch(mut buf: []int, idx: int) &mut -> int {\n",
+        "fn flush_batch(mut buf: []int, idx: int) -> int {\n",
         "    defer assert(len(ref buf) == 0, \"unflushed\")\n",
         "    let head = buf?[idx] ?? 0\n",
         "    Array::clear(mut buf)\n",
@@ -980,7 +980,7 @@ fn lsp_hover_inlay_and_e0627_surface_implicit_behavior_and_provenance() -> Resul
         "unexpected strict_rec hover: {rec_hover}"
     );
 
-    // Inlay hints show `(buf)` after `&mut`, implicit `@panic @abort @diverge ` on `strict_rec`,
+    // Inlay hints show implicit `@panic @abort @diverge ` on `strict_rec`,
     // and `@io @diverge &up(mut out)` on `log_push` closure
     let hints = frames
         .get(4)
@@ -991,10 +991,6 @@ fn lsp_hover_inlay_and_e0627_surface_implicit_behavior_and_provenance() -> Resul
         .iter()
         .filter_map(|h| h.get("label").and_then(Value::as_str))
         .collect();
-    assert!(
-        labels.contains(&"(buf)"),
-        "expected `(buf)` &mut expansion hint, got: {labels:?}"
-    );
     assert!(
         labels
             .iter()

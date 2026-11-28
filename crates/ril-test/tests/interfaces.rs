@@ -436,7 +436,7 @@ pub type Leaf = fn(new Shelf) -> new Out
 pub type Slot = .{ var action: Leaf }
 pub type Frame = .{ var action: Leaf, stamp: int }
 pub type Writer = fn() &up -> ()
-pub type ReadAfter = fn(mut Slot, fn(mut Slot) &mut -> ()) &mut -> Leaf
+pub type ReadAfter = fn(mut Slot, fn(mut Slot) -> ()) -> Leaf
 pub type Controls = .{ ^mut select: Writer, ^mut store: Writer }
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
@@ -450,69 +450,69 @@ pub fn nested() -> .{ actions: []Leaf } { let fixed = .{ actions: [freeze] }; fi
 pub fn identity(action: Leaf) -> Leaf { action }
 pub fn from_callback(make: fn() -> Leaf) -> Leaf { make() }
 pub fn from_callback_with(make: fn(Leaf) -> Leaf) -> Leaf { make(freeze) }
-pub fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
-pub fn append(mut actions: []Leaf) &mut -> () { Array::push(mut actions, freeze) }
+pub fn install(mut slot: Slot) -> () { slot.action = freeze }
+pub fn append(mut actions: []Leaf) -> () { Array::push(mut actions, freeze) }
 pub fn appender(^mut actions: []Leaf) &capture &^mut &return(^mut actions) -> new Writer {
     \-> Array::push(mut actions, freeze)
 }
-pub fn invoke(mut action: Writer) &mut -> () { action() }
-pub fn repeat(mut action: Writer, times: int) &mut -> () {
+pub fn invoke(mut action: Writer) -> () { action() }
+pub fn repeat(mut action: Writer, times: int) -> () {
     for 0..times as _ { action() }
 }
-pub fn maybe_invoke(mut action: Writer, condition: bool) &mut -> () {
+pub fn maybe_invoke(mut action: Writer, condition: bool) -> () {
     if condition { action() }
 }
-pub fn reset(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> () {
+pub fn reset(mut slot: Slot, install: fn(mut Slot) -> ()) -> () {
     install(mut slot)
     slot.action = count
 }
-pub fn reset_then_install(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> () {
+pub fn reset_then_install(mut slot: Slot, install: fn(mut Slot) -> ()) -> () {
     slot.action = count
     install(mut slot)
 }
-pub fn read_after(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
+pub fn read_after(mut slot: Slot, install: fn(mut Slot) -> ()) -> Leaf {
     install(mut slot)
     slot.action
 }
-pub fn read_before(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
+pub fn read_before(mut slot: Slot, install: fn(mut Slot) -> ()) -> Leaf {
     let saved = slot.action
     install(mut slot)
     saved
 }
-pub fn read_between(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
+pub fn read_between(mut slot: Slot, install: fn(mut Slot) -> ()) -> Leaf {
     install(mut slot)
     let saved = slot.action
     slot.action = count
     saved
 }
-pub fn destructure_after(mut slot: Slot, install: fn(mut Slot) &mut -> ()) &mut -> Leaf {
+pub fn destructure_after(mut slot: Slot, install: fn(mut Slot) -> ()) -> Leaf {
     install(mut slot)
     let .{ action } = slot
     action
 }
-pub fn read_either(mut slot: Slot, install: fn(mut Slot) &mut -> (), flag: bool) &mut -> Leaf {
+pub fn read_either(mut slot: Slot, install: fn(mut Slot) -> (), flag: bool) -> Leaf {
     let saved = slot.action
     install(mut slot)
     if flag { saved } else { slot.action }
 }
-pub fn array_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
+pub fn array_after(mut actions: []Leaf, install: fn(mut []Leaf) -> ()) -> Leaf {
     install(mut actions)
     if len(ref actions) > 1 { actions[1] } else { count }
 }
-pub fn slice_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
+pub fn slice_after(mut actions: []Leaf, install: fn(mut []Leaf) -> ()) -> Leaf {
     install(mut actions)
     if len(ref actions) >= 2 {
         let selected = actions[1..2]
         selected[0]
     } else { count }
 }
-pub fn rest_after(mut actions: []Leaf, install: fn(mut []Leaf) &mut -> ()) &mut -> Leaf {
+pub fn rest_after(mut actions: []Leaf, install: fn(mut []Leaf) -> ()) -> Leaf {
     install(mut actions)
     let [_, ..selected] = actions else { panic("missing first") }
     if len(selected) > 0 { selected[0] } else { count }
 }
 pub fn make_reader() -> ReadAfter {
-    \mut slot: Slot, install: fn(mut Slot) &mut -> () -> { install(mut slot); slot.action }
+    \mut slot: Slot, install: fn(mut Slot) -> () -> { install(mut slot); slot.action }
 }
 pub fn copy_to(^mut slot: Slot, action: Leaf) &capture &^mut &return(^mut slot, action) -> new Writer {
     \-> { slot.action = action }
@@ -546,8 +546,8 @@ pub fn read_frame(base: Frame) -> Frame { derive(base) \mut d -> { d.action = co
     let interface = Driver.interface(&library).unwrap().encode().unwrap();
     let wrapper = br#"
 use library/snapshot
-pub fn invoke(mut action: Snapshot::Writer) &mut -> () { Snapshot::invoke(mut action) }
-pub fn read_after(mut slot: Snapshot::Slot, install: fn(mut Snapshot::Slot) &mut -> ()) &mut -> Snapshot::Leaf {
+pub fn invoke(mut action: Snapshot::Writer) -> () { Snapshot::invoke(mut action) }
+pub fn read_after(mut slot: Snapshot::Slot, install: fn(mut Snapshot::Slot) -> ()) -> Snapshot::Leaf {
     Snapshot::read_after(mut slot, install)
 }
 pub fn appender(^mut actions: []Snapshot::Leaf) &capture &^mut &return(^mut actions) -> new Snapshot::Writer {
@@ -743,8 +743,8 @@ fn freeze(new shelf: Snapshot::Shelf) -> new Snapshot::Out {{ Snapshot::Out::Fro
 fn count(new shelf: Snapshot::Shelf) -> new Snapshot::Out {{ Snapshot::Out::Count(shelf.item.count) }}
 fn make() -> Snapshot::Leaf {{ freeze }}
 fn keep(action: Snapshot::Leaf) -> Snapshot::Leaf {{ action }}
-fn install(mut slot: Snapshot::Slot) &mut -> () {{ slot.action = freeze }}
-fn clear(mut slot: Snapshot::Slot) &mut -> () {{ slot.action = count }}
+fn install(mut slot: Snapshot::Slot) -> () {{ slot.action = freeze }}
+fn clear(mut slot: Snapshot::Slot) -> () {{ slot.action = count }}
 fn observe() -> int {{
     let mut live = Snapshot::Cell.{{ count: 1 }}
     live.count += 1
@@ -788,29 +788,29 @@ pub type Out { Frozen(Shelf); Count(int) }
 pub type Action = fn(new Shelf) -> new Out
 pub type Slot = .{ var action: Action }
 pub type Holder = .{ var ^mut slot: Slot }
-pub type Swap = fn(mut Holder) &mut -> ()
-pub type Edit = fn(mut Holder, Swap) &mut -> ()
+pub type Swap = fn(mut Holder) -> ()
+pub type Edit = fn(mut Holder, Swap) -> ()
 pub type Batch = .{ var ^mut items: []Action }
-pub type ReplaceBatch = fn(mut Batch) &mut -> ()
+pub type ReplaceBatch = fn(mut Batch) -> ()
 pub type Extend = fn() &up -> ()
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 pub fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
-pub fn swap(mut holder: Holder) &mut -> () { holder.slot = Slot.{ action: count } }
-fn paint(mut slot: Slot) &mut -> () { slot.action = freeze }
-pub fn write_after(mut holder: Holder, replace: Swap) &mut -> () {
+pub fn swap(mut holder: Holder) -> () { holder.slot = Slot.{ action: count } }
+fn paint(mut slot: Slot) -> () { slot.action = freeze }
+pub fn write_after(mut holder: Holder, replace: Swap) -> () {
     replace(mut holder)
     holder.slot.action = freeze
 }
-pub fn delegate(mut holder: Holder, replace: Swap) &mut -> () {
+pub fn delegate(mut holder: Holder, replace: Swap) -> () {
     replace(mut holder)
     paint(mut holder.slot)
 }
-pub fn write_saved(mut holder: Holder, replace: Swap) &mut -> () {
+pub fn write_saved(mut holder: Holder, replace: Swap) -> () {
     let ^mut saved = holder.slot
     replace(mut holder)
     saved.action = freeze
 }
-pub fn write_between(mut holder: Holder, replace: Swap) &mut -> () {
+pub fn write_between(mut holder: Holder, replace: Swap) -> () {
     replace(mut holder)
     let ^mut saved = holder.slot
     replace(mut holder)
@@ -820,37 +820,37 @@ pub fn writer() -> Edit {
     \mut holder: Holder, replace: Swap -> { replace(mut holder); holder.slot.action = freeze }
 }
 fn one() -> new []Action { [count] }
-pub fn replace_one(mut batch: Batch) &mut -> () { batch.items = one() }
-pub fn replace_two(mut batch: Batch) &mut -> () { batch.items = [count, count] }
-pub fn append_twice(mut batch: Batch, replace: ReplaceBatch) &mut -> () {
+pub fn replace_one(mut batch: Batch) -> () { batch.items = one() }
+pub fn replace_two(mut batch: Batch) -> () { batch.items = [count, count] }
+pub fn append_twice(mut batch: Batch, replace: ReplaceBatch) -> () {
     replace(mut batch)
     Array::push(mut batch.items, count)
     Array::push(mut batch.items, freeze)
 }
-pub fn unrelated(mut batch: Batch, replace: ReplaceBatch) &mut -> Action {
+pub fn unrelated(mut batch: Batch, replace: ReplaceBatch) -> Action {
     let mut local = [count]
     replace(mut batch)
     Array::push(mut local, count)
     Array::push(mut local, freeze)
     local[1]
 }
-pub fn append_pair(mut items: []Action) &mut -> () {
+pub fn append_pair(mut items: []Action) -> () {
     Array::push(mut items, count)
     Array::push(mut items, freeze)
 }
-pub fn append_selected(mut items: []Action) &mut -> Action {
+pub fn append_selected(mut items: []Action) -> Action {
     append_pair(mut items)
     if len(ref items) > 1 { items[1] } else { count }
 }
-pub fn append_branch(mut items: []Action, flag: bool) &mut -> () {
+pub fn append_branch(mut items: []Action, flag: bool) -> () {
     if flag { Array::push(mut items, count) } else { Array::push(mut items, freeze) }
     Array::push(mut items, count)
 }
-pub fn append_fixed(mut items: []Action) &mut -> () {
+pub fn append_fixed(mut items: []Action) -> () {
     for 0..2 as _ { Array::push(mut items, count) }
     Array::push(mut items, freeze)
 }
-pub fn append_variable(mut items: []Action, times: int) &mut -> () {
+pub fn append_variable(mut items: []Action, times: int) -> () {
     for 0..times as _ { Array::push(mut items, count) }
     Array::push(mut items, freeze)
 }
@@ -868,17 +868,17 @@ pub fn extender(^mut items: []Action) &capture &^mut &return(^mut items) -> new 
         forwarding.entry.clone(),
         br#"
 use library/storage
-pub fn write_after(mut holder: Storage::Holder, replace: Storage::Swap) &mut -> () {
+pub fn write_after(mut holder: Storage::Holder, replace: Storage::Swap) -> () {
     Storage::write_after(mut holder, replace)
 }
-pub fn write_between(mut holder: Storage::Holder, replace: Storage::Swap) &mut -> () {
+pub fn write_between(mut holder: Storage::Holder, replace: Storage::Swap) -> () {
     Storage::write_between(mut holder, replace)
 }
 pub fn writer() -> Storage::Edit { Storage::writer() }
-pub fn append_twice(mut batch: Storage::Batch, replace: Storage::ReplaceBatch) &mut -> () {
+pub fn append_twice(mut batch: Storage::Batch, replace: Storage::ReplaceBatch) -> () {
     Storage::append_twice(mut batch, replace)
 }
-pub fn append_pair(mut items: []Storage::Action) &mut -> () { Storage::append_pair(mut items) }
+pub fn append_pair(mut items: []Storage::Action) -> () { Storage::append_pair(mut items) }
 "#
         .to_vec(),
     );
@@ -1243,13 +1243,13 @@ pub fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 pub fn duplicate(actions: []Action) -> new []Action { clone(actions) }
 pub fn twice(actions: []Action) -> new []Action { duplicate(duplicate(actions)) }
 pub fn pair() -> new Pair { clone(Pair.{ item: Cell.{ count: 1 }, tag: 0 }) }
-pub fn append_count(mut actions: []Action) &mut -> () { Array::push(mut actions, count) }
-pub fn append_freeze(mut actions: []Action) &mut -> () { Array::push(mut actions, freeze) }
-pub fn after(mut actions: []Action, edit: fn(mut []Action) &mut -> ()) &mut -> new []Action {
+pub fn append_count(mut actions: []Action) -> () { Array::push(mut actions, count) }
+pub fn append_freeze(mut actions: []Action) -> () { Array::push(mut actions, freeze) }
+pub fn after(mut actions: []Action, edit: fn(mut []Action) -> ()) -> new []Action {
     edit(mut actions)
     clone(ref actions)
 }
-pub fn after_local(edit: fn(mut []Action) &mut -> ()) -> new []Action {
+pub fn after_local(edit: fn(mut []Action) -> ()) -> new []Action {
     let mut actions = [count]
     edit(mut actions)
     clone(ref actions)
@@ -1348,32 +1348,32 @@ pub type Shelf = .{ ^mut item: Cell }
 pub type Out { Frozen(Shelf); Count(int) }
 pub type Action = fn(new Shelf) -> new Out
 pub type Pair = .{ left: []Action, right: []Action }
-pub type Update = fn(mut Derived<Pair>) &mut -> ()
-pub type EditItems = fn(mut []Action) &mut -> ()
+pub type Update = fn(mut Derived<Pair>) -> ()
+pub type EditItems = fn(mut []Action) -> ()
 pub type Slot = .{ var action: Action }
-pub type StateUpdate = fn(mut Derived<[]int>) &mut &up -> ()
+pub type StateUpdate = fn(mut Derived<[]int>) &up -> ()
 pub fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
-pub fn extend(mut draft: Derived<Pair>) &mut -> () {
+pub fn extend(mut draft: Derived<Pair>) -> () {
     Array::push(mut draft.left, count)
     Array::push(mut draft.left, freeze)
 }
-pub fn extend_safe(mut draft: Derived<Pair>) &mut -> () {
+pub fn extend_safe(mut draft: Derived<Pair>) -> () {
     Array::push(mut draft.left, count)
 }
 pub fn forward(base: Pair, edit: Update) -> Pair { derive(base, edit) }
 pub fn twice(base: Pair, first: Update, second: Update) -> Pair {
     forward(forward(base, first), second)
 }
-fn update_draft(mut draft: Derived<Pair>, edit: Update) &mut -> () { edit(mut draft) }
+fn update_draft(mut draft: Derived<Pair>, edit: Update) -> () { edit(mut draft) }
 pub fn forward_inside(base: Pair, edit: Update) -> Pair {
     derive(base) \mut draft -> {
         Array::push(mut draft.left, count)
         update_draft(mut draft, edit)
     }
 }
-pub fn append_freeze(mut items: []Action) &mut -> () { Array::push(mut items, freeze) }
-fn update_items(mut draft: Derived<Pair>, edit: EditItems) &mut -> () {
+pub fn append_freeze(mut items: []Action) -> () { Array::push(mut items, freeze) }
+fn update_items(mut draft: Derived<Pair>, edit: EditItems) -> () {
     Array::push(mut draft.left, count)
     edit(mut draft.left)
 }
@@ -1393,10 +1393,10 @@ pub fn finished() -> Pair {
 pub fn slot_updater(^mut slot: Slot, action: Action) &capture &^mut &return(^mut slot, action) -> new StateUpdate {
     \mut draft: Derived<[]int> -> { Array::push(mut draft, 2); slot.action = action }
 }
-pub fn edit_slot(mut slot: Slot, action: Action) &mut -> []int {
+pub fn edit_slot(mut slot: Slot, action: Action) -> []int {
     derive([1]) \mut draft -> { Array::push(mut draft, 2); slot.action = action }
 }
-pub fn edit_through(mut slot: Slot, edit: fn(mut Slot) &mut -> ()) &mut -> []int {
+pub fn edit_through(mut slot: Slot, edit: fn(mut Slot) -> ()) -> []int {
     derive([1]) \mut draft -> { Array::push(mut draft, 2); edit(mut slot) }
 }
 pub fn forward_state(base: []int, edit: StateUpdate) -> []int {
@@ -1550,7 +1550,7 @@ fn correlated_callback_mode_offers_survive_interface_only_calls() {
     };
     let provider_source = br#"
 pub type Cell = .{ var count: int }
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
 pub fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
 pub fn dispatch(action: fn(via Cell, via Cell) -> (), flag: bool) -> int {
     let mut left = Cell.{ count: 1 }
@@ -1746,7 +1746,7 @@ fn joint_via_restrictions_survive_interface_only_forwarding() {
 
     let provider_source = br#"
 pub type Cell = .{ var count: int }
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
 pub fn combine(via left: Cell, via right: Cell) -> () { edit(mut left, ref right) }
 "#;
     let mut provider = VirtualPackage::new(Unit::Lib);
@@ -1953,7 +1953,7 @@ fn recursive_allocation_graphs_survive_interface_replay() {
 pub type Node(.{ var value: int, var ^mut next: ?Node })
 pub type Shelf = .{ var mut head: Node }
 pub type Pair = .{ var ^mut left: Node, var ^mut right: Node }
-pub fn build(^mut tail: Node, count: int) &mut &^mut &return(^mut tail) -> new Node {
+pub fn build(^mut tail: Node, count: int) &^mut &return(^mut tail) -> new Node {
     var ^mut head = tail
     for 0..count as i {
         let mut node = Node::(.{ value: i, next: Some(^mut head) })
@@ -1963,22 +1963,22 @@ pub fn build(^mut tail: Node, count: int) &mut &^mut &return(^mut tail) -> new N
     head.value += 1
     Node::(.{ value: 0, next: Some(^mut head) })
 }
-pub fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &mut &^mut -> () {
+pub fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &^mut -> () {
     shelf.head = build(^mut tail, count)
 }
-pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &mut &^mut -> () {
+pub fn publish(mut pair: Pair, ^mut tail: Node, count: int) &^mut -> () {
     let mut head = build(^mut tail, count)
     head.value += 1
     pair.left = ^mut head
     pair.right = ^mut head
 }
-pub fn through(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &mut &^mut -> infer Node {
+pub fn through(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &^mut -> infer Node {
     action(build(^mut tail, count))
 }
-pub fn relay(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &mut &^mut -> infer Node {
+pub fn relay(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int) &^mut -> infer Node {
     through(action, ^mut tail, count)
 }
-pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int, first: bool) &mut &^mut -> infer Node {
+pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count: int, first: bool) &^mut -> infer Node {
     if first { action(build(^mut tail, count)) } else { action(build(^mut tail, count)) }
 }
 "#;
@@ -2091,7 +2091,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
                 let source = format!(
                     "use library/chain\n\
                      fn identity(via node: Chain::Node) -> infer Chain::Node {{ node }}\n\
-                     fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
+                     fn copy(mut target: Chain::Node, ref reader: Chain::Node) -> () {{ target.value = reader.value }}\n\
                      fn run(count: int) -> () {{\n\
                         let mut tail = Chain::Node::(.{{ value: 1, next: None }})\n\
                         {setup}\n{spare}\n{read}\n\
@@ -2123,7 +2123,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
             let source = format!(
                 "use library/chain\n\
                  fn project(via head: Chain::Node) -> infer Chain::Node {{ {projection} }}\n\
-                 fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () {{ target.value = reader.value }}\n\
+                 fn copy(mut target: Chain::Node, ref reader: Chain::Node) -> () {{ target.value = reader.value }}\n\
                  fn run(count: int) -> () {{\n\
                     let mut tail = Chain::Node::(.{{ value: 1, next: None }})\n\
                     let ref found = ref Chain::relay(project, ^mut tail, count)\n\
@@ -2152,7 +2152,7 @@ pub fn choose(via action: fn(via Node) @& -> infer Node, ^mut tail: Node, count:
             client.entry.clone(),
             br#"
 use library/chain
-fn copy(mut target: Chain::Node, ref reader: Chain::Node) &mut -> () { target.value = reader.value }
+fn copy(mut target: Chain::Node, ref reader: Chain::Node) -> () { target.value = reader.value }
 fn run(count: int) -> () {
     let mut tail = Chain::Node::(.{ value: 1, next: None })
     let mut first = Chain::Node::(.{ value: 2, next: None })
@@ -2197,8 +2197,8 @@ use pkg/model
 pub type Cell = Model::Cell
 pub type Shelf = Model::Shelf
 pub type ReadShelf = .{ var ref item: Cell }
-pub fn store_ref(ref source: Cell, mut shelf: ReadShelf) &mut -> () { shelf.item = source }
-pub fn replace(mut shelf: Shelf, ^mut next: Cell) &mut &^mut -> ref(shelf) Cell {
+pub fn store_ref(ref source: Cell, mut shelf: ReadShelf) -> () { shelf.item = source }
+pub fn replace(mut shelf: Shelf, ^mut next: Cell) &^mut -> ref(shelf) Cell {
     let ref previous = ref shelf.item
     shelf.item = ^mut next
     previous
@@ -2218,7 +2218,7 @@ pub fn observe_after(via action: fn(via Cell) @& -> int, via cell: Cell) -> int 
     let result = action(cell)
     result + cell.count
 }
-pub fn change_member(mut shelf: .{ via item: Cell }) &mut -> () { shelf.item.count += 1 }
+pub fn change_member(mut shelf: .{ via item: Cell }) -> () { shelf.item.count += 1 }
 "#
         .to_vec(),
     );
@@ -2236,7 +2236,7 @@ pub fn change_member(mut shelf: .{ via item: Cell }) &mut -> () { shelf.item.cou
     for (source, expected) in [
         (
             r#"
-fn replace_and_read(mut shelf: Store::Shelf, ^mut next: Store::Cell) &mut &^mut -> ref(next) Store::Cell {
+fn replace_and_read(mut shelf: Store::Shelf, ^mut next: Store::Cell) &^mut -> ref(next) Store::Cell {
     let replace = Store::replace
     let ref previous = replace(mut shelf, ^mut next)
     assert(previous.count >= 0)
@@ -2253,7 +2253,7 @@ fn check_new() -> int {
         ),
         (
             r#"
-fn relay(ref source: Store::Cell, mut shelf: Store::ReadShelf) &mut -> () {
+fn relay(ref source: Store::Cell, mut shelf: Store::ReadShelf) -> () {
     Store::store_ref(ref source, mut shelf)
 }
 "#,
@@ -2261,7 +2261,7 @@ fn relay(ref source: Store::Cell, mut shelf: Store::ReadShelf) &mut -> () {
         ),
         (
             r#"
-fn relay(mut source: Store::Cell, mut shelf: Store::ReadShelf) &mut -> () {
+fn relay(mut source: Store::Cell, mut shelf: Store::ReadShelf) -> () {
     source.count += 1
     let store = Store::store_ref
     store(ref source, mut shelf)
@@ -2271,7 +2271,7 @@ fn relay(mut source: Store::Cell, mut shelf: Store::ReadShelf) &mut -> () {
         ),
         (
             r#"
-fn after_call(mut shelf: Store::Shelf, ^mut next: Store::Cell) &mut &^mut -> ref(next) Store::Cell {
+fn after_call(mut shelf: Store::Shelf, ^mut next: Store::Cell) &^mut -> ref(next) Store::Cell {
     Store::replace(mut shelf, ^mut next)
 }
 "#,
@@ -2279,7 +2279,7 @@ fn after_call(mut shelf: Store::Shelf, ^mut next: Store::Cell) &mut &^mut -> ref
         ),
         (
             r#"
-fn replace_twice(mut shelf: Store::Shelf, ^mut discarded: Store::Cell, ^mut next: Store::Cell) &mut &^mut -> () {
+fn replace_twice(mut shelf: Store::Shelf, ^mut discarded: Store::Cell, ^mut next: Store::Cell) &^mut -> () {
     shelf.item = ^mut discarded
     let _ = Store::replace(mut shelf, ^mut next)
 }
@@ -2294,7 +2294,7 @@ fn incompatible(ref cell: Store::Cell) -> () { Store::change(ref cell) }
         ),
         (
             r#"
-fn unreachable_write(mut cell: Store::Cell) &mut -> () {
+fn unreachable_write(mut cell: Store::Cell) -> () {
     Store::never_returns()
     cell.count += 1
 }
@@ -2354,7 +2354,7 @@ fn invalid(ref cell: Store::Cell) -> int { Store::apply(change, ref cell).count 
         ),
         (
             r#"
-fn relay(mut shelf: .{ via item: Store::Cell }) &mut -> () { Store::change_member(mut shelf) }
+fn relay(mut shelf: .{ via item: Store::Cell }) -> () { Store::change_member(mut shelf) }
 fn invalid() -> () {
     let mut shelf = .{ item: Store::Cell.{ count: 42 } }
     relay(mut shelf)

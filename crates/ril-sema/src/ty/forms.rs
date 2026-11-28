@@ -892,7 +892,6 @@ impl Checker<'_> {
         let mut state = Vec::new();
         for clause in &signature.obligations.state {
             let name = match clause.kind {
-                StateKind::Write => "mut",
                 StateKind::Share => "^mut",
                 StateKind::Capture => "capture",
                 StateKind::Environment => "up",

@@ -364,7 +364,7 @@ fn main() -> () {
 
 -- @case abstract_mutable_callable_writes_its_formal run-pass backend=both
 type Tick = fn() &up -> int
-fn tick(mut callback: Tick) &mut -> int { callback() }
+fn tick(mut callback: Tick) -> int { callback() }
 fn main() -> () {
     var count = 0
     let ^mut callback = \-> { count += 1; count }
@@ -517,8 +517,8 @@ fn main() -> () {
 
 -- @case mutable_cleanup_changes_the_callers_resource run-pass backend=both
 opaque type Handle(.{ var id: int })
-fn close(mut handle: Handle) &mut -> () { handle.id = 42 }
-fn scope(mut handle: Handle) &mut -> () {
+fn close(mut handle: Handle) -> () { handle.id = 42 }
+fn scope(mut handle: Handle) -> () {
     defer close(mut handle)
     let before = handle.id
     assert(before == 41)

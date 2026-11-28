@@ -748,7 +748,11 @@ impl Analyzer<'_> {
                         || signature
                             .state
                             .iter()
-                            .any(|state| matches!(state.as_str(), "mut" | "^mut" | "up"))
+                            .any(|state| matches!(state.as_str(), "^mut" | "up"))
+                        || signature
+                            .parameters
+                            .iter()
+                            .any(|p| matches!(p.mode, Mode::Mut | Mode::Shared))
                 }) || receiver
                     .roots
                     .iter()
@@ -779,11 +783,9 @@ impl Analyzer<'_> {
             }
         }
         if let Some(sig) = sig {
-            if sig.state.iter().any(|state| state == "mut") {
-                for (_, mode, value) in &values {
-                    if matches!(mode, Mode::Mut | Mode::Shared) {
-                        self.mutate(ctx, ledger, value, span);
-                    }
+            for (_, mode, value) in &values {
+                if matches!(mode, Mode::Mut | Mode::Shared) {
+                    self.mutate(ctx, ledger, value, span);
                 }
             }
             if (sig.result_mode == Mode::Infer || (carries_callable && !sig.is_ctl))

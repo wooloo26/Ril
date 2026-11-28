@@ -1,25 +1,25 @@
 -- Standard Array module: compiler primitives plus self-hosted Ril combinators.
 
 -- Appends `item` to the end of `xs` in place.
-pub fn push<T>(mut xs: [via]T, via item: T) &mut -> ()
+pub fn push<T>(mut xs: [via]T, via item: T) -> ()
 
 -- Removes and returns the last element of `xs`, or `None` if empty.
 -- Supports destructive extraction from arrays holding must-consume values.
-pub fn pop<T>(mut xs: [via]T) &mut -> new ?T
+pub fn pop<T>(mut xs: [via]T) -> new ?T
 
 -- Removes and returns the first element of `xs`, or `None` if empty.
 -- Supports destructive extraction from arrays holding must-consume values.
-pub fn pop_front<T>(mut xs: [via]T) &mut -> new ?T
+pub fn pop_front<T>(mut xs: [via]T) -> new ?T
 
 -- Swaps the elements at `i` and `j` in `xs` in place.
-pub fn swap<T>(mut xs: [via]T, i: InBounds<xs>, j: InBounds<xs>) &mut -> ()
+pub fn swap<T>(mut xs: [via]T, i: InBounds<xs>, j: InBounds<xs>) -> ()
 
 -- Inserts `item` at `index` in `xs`, shifting subsequent elements right.
-pub fn insert<T>(mut xs: [via]T, index: Between<0, len(xs)>, via item: T) &mut -> ()
+pub fn insert<T>(mut xs: [via]T, index: Between<0, len(xs)>, via item: T) -> ()
 
 -- Removes and returns the element at `index` in `xs`, shifting subsequent elements left.
 -- Supports destructive extraction from arrays holding must-consume values.
-pub fn remove<T>(mut xs: [via]T, index: InBounds<xs>) &mut -> T
+pub fn remove<T>(mut xs: [via]T, index: InBounds<xs>) -> T
 
 -- Returns the first element of `xs`, or `None` if empty.
 pub fn first<T>(via xs: []T) &return(xs) -> new ?T {
@@ -46,14 +46,14 @@ pub fn repeat<T>(value: T, count: Nat) &return(value) -> new []T |> Len<count> {
 }
 
 -- Removes every element from `xs` in place.
-pub fn clear<T>(mut xs: [via]T) &mut -> () {
+pub fn clear<T>(mut xs: [via]T) -> () {
     for 0..len(ref xs) as _ {
         let _ = pop(mut xs)
     }
 }
 
 -- Sorts `xs` in ascending order in place (stable insertion sort; `f64` `NaN` sorts last).
-pub fn sort<T: int | f64 | str | bytes>(mut xs: []T) &mut -> () {
+pub fn sort<T: int | f64 | str | bytes>(mut xs: []T) -> () {
     let n = len(ref xs)
     for 1..n as i {
         var j = i

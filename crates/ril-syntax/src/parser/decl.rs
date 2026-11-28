@@ -482,7 +482,13 @@ impl Parser<'_> {
             } else if self.eat("&") {
                 let start = self.last;
                 let kind = match self.text() {
-                    "mut" => Some(StateKind::Write),
+                    "mut" if self.current().tight_left => {
+                        return Err(self.error(
+                            Code::E0120,
+                            start.join(self.current().span),
+                            "`&mut` state clause has been removed; `mut` parameters imply mutation automatically (keep `&^mut` for retained shared writers)",
+                        ));
+                    }
                     "^mut" => Some(StateKind::Share),
                     "capture" => Some(StateKind::Capture),
                     "up" => Some(StateKind::Environment),

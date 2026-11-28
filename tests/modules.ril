@@ -153,7 +153,7 @@ pub fn pop_front<T>(xs: []T) -> ?T
 -- @file pkg/main.ril
 use pkg/array
 -- @file pkg/array.ril
-pub fn pop_front<T>(mut xs: [via]T) &mut -> new ?T
+pub fn pop_front<T>(mut xs: [via]T) -> new ?T
 -- ^ E0902
 
 -- @case registered_prelude_unwind_ctl_signature_must_match compile-fail E0909 unit=lib
@@ -238,7 +238,7 @@ pub fn value() -> int { 42 }
 -- @file pkg/main.ril
 use ril/array
 -- @file ril/array.ril
-pub fn push<T>(mut xs: [via]T, via item: T) &mut -> ()
+pub fn push<T>(mut xs: [via]T, via item: T) -> ()
 pub fn bad() -> new []int {
     let mut out: []int = []
     Array::push(mut out, 1)

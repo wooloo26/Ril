@@ -534,7 +534,6 @@ impl<'src, 'a> Printer<'src, 'a> {
 
     fn print_state_clause(&mut self, clause: &StateClause, _limit_end: usize) -> DocId {
         match clause.kind {
-            StateKind::Write => self.arena.text("&mut"),
             StateKind::Share => self.arena.text("&^mut"),
             StateKind::Capture => self.arena.text("&capture"),
             StateKind::Environment => {

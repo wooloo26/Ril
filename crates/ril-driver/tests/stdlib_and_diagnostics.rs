@@ -376,8 +376,8 @@ fn wave_b_stdlib_primitives_set_sort_first_class_and_named_args() -> Result<(), 
             Code::E0520,
         ),
         (
-            "fn f(mut xs: []int) -> () { Array::sort(mut xs) }\nfn main() -> () { let mut xs = [1]; f(mut xs) }\n",
-            Code::E0510,
+            "fn f(mut xs: []int) &mut -> () { Array::sort(mut xs) }\n",
+            Code::E0120,
         ),
         (
             "fn main() -> () { let mut xs = [true, false]; Array::sort(mut xs) }\n",
@@ -551,7 +551,7 @@ fn wave_d_effects_guards_recover_panic_and_ctl() -> Result<(), String> {
         fn make_box() -> new Box { .{ var v: 7 } }
         fn take_plain(f: fn() -> Box) -> int { f().v }
         fn make_ref_reader(ref b: Box) &capture &return(ref b) -> new fn() &up(ref) -> int { \-> b.v }
-        fn take_up(mut f: fn() &up -> int) &mut -> int { f() }
+        fn take_up(mut f: fn() &up -> int) -> int { f() }
         fn ref_alias(ref a: Box, ref b: Box = a) -> int { b.v }
         fn take_eff(f: fn() @Tag -> int) -> bool {
             let _ = f

@@ -512,7 +512,6 @@ impl Analyzer<'_> {
             })
         };
         for (state, actual) in [
-            ("mut", exercised(&summary.writes)),
             ("^mut", exercised(&summary.retained)),
             ("capture", summary.captures),
         ] {

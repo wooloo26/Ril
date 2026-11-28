@@ -332,7 +332,7 @@ impl<'program> Analyzer<'program> {
                                 }
                             }
                         }
-                    } else if sig.is_some_and(|sig| sig.state.iter().any(|state| state == "mut")) {
+                    } else if matches!(mode, Mode::Mut | Mode::Shared) {
                         self.seed(ctx, Obligation::Write(source));
                     }
                 }

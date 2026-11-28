@@ -141,7 +141,7 @@ fn bad() -> () {
 -- @case shared_writer_forbids_downgrade_across_unhandled_ctl compile-fail E0523
 eff Yield { ctl emit() -> () }
 type Box = .{ var v: int }
-fn touch(mut b: Box) @Yield &mut -> () {
+fn touch(mut b: Box) @Yield -> () {
     Yield::emit()
     b.v += 1
 }

@@ -107,7 +107,7 @@ fn escaping_and_loop_carried_objects_preserve_identity_and_gc_roots() {
     let source = r#"
 use ril/io
 type Node = .{ var label: str, var value: int }
-fn bump(mut n: Node) &mut -> int {
+fn bump(mut n: Node) -> int {
     n.value += 10
     n.value
 }

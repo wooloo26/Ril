@@ -61,7 +61,7 @@ pub(crate) fn inlay_hints(state: &mut LspState, params: &Value) -> Value {
                     }
                 }
             }
-            // 2. Expand ambiguous bare `&mut` on functions with >=2 parameters + implicit `@panic`/`@abort`/`@diverge`.
+            // 2. Implicit `@panic`/`@abort`/`@diverge` behavior tags.
             StmtKind::Function(function) => {
                 if let Some(analysis) = analysis.as_deref()
                     && let Some(def_id) = typed
@@ -72,24 +72,6 @@ pub(crate) fn inlay_hints(state: &mut LspState, params: &Value) -> Value {
                     let header_end = function
                         .body
                         .map_or(stmt.span.end, |b| file.ast.expr(b).span.start);
-                    if function.signature.params.len() >= 2 {
-                        let (mut_params, _) =
-                            ril_driver::inspect::expanded_mut_params(&typed, analysis, def_id);
-                        if !mut_params.is_empty()
-                            && let Some(header) = text.get(function.name.span.end..header_end)
-                            && let Some(pos) = find_bare_mut_clause(header)
-                        {
-                            let abs = function.name.span.end + pos + 4;
-                            let (line, col) = offset_to_line_col(&text, abs);
-                            hints.push(json!({
-                                "position": { "line": line, "character": col },
-                                "label": format!("({})", mut_params.join(", ")),
-                                "kind": 2, // Parameter
-                                "paddingLeft": false,
-                                "paddingRight": false
-                            }));
-                        }
-                    }
                     if let Some(behavior) = analysis.behavior.summaries.get(&def_id) {
                         let implicit = implicit_behavior_tags(behavior);
                         if !implicit.is_empty()
@@ -194,24 +176,6 @@ fn implicit_behavior_tags(behavior: &ril_sema::behavior::BehaviorSummary) -> Vec
         tags.push("@diverge");
     }
     tags
-}
-
-fn find_bare_mut_clause(header: &str) -> Option<usize> {
-    let bytes = header.as_bytes();
-    let mut i = 0;
-    while i + 4 <= bytes.len() {
-        if bytes.get(i..i + 4) == Some(b"&mut") {
-            let next = bytes.get(i + 4).copied();
-            if !matches!(
-                next,
-                Some(b'(' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
-            ) {
-                return Some(i);
-            }
-        }
-        i += 1;
-    }
-    None
 }
 
 fn parse_request_range(text: &str, params: &Value) -> Option<(usize, usize)> {

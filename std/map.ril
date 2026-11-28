@@ -3,19 +3,19 @@
 use ril/array
 
 -- Inserts or overwrites the entry for `key` with `value` in `map`.
-pub fn insert<K, V>(mut map: [K: via V], key: K, via value: V) &mut -> ()
+pub fn insert<K, V>(mut map: [K: via V], key: K, via value: V) -> ()
 
 -- Inserts `value` for `key` in `map`, returning the previous value (`Some(old)`) if present.
 -- Supports linear must-consume values without silently dropping overwritten entries.
-pub fn replace<K, V>(mut map: [K: via V], key: K, via value: V) &mut -> new ?V
+pub fn replace<K, V>(mut map: [K: via V], key: K, via value: V) -> new ?V
 
 -- Removes the entry for `key` from `map` and returns its previous value, or `None` if absent.
 -- Supports destructive extraction from maps holding must-consume values.
-pub fn remove<K, V>(mut map: [K: via V], key: K) &mut -> new ?V
+pub fn remove<K, V>(mut map: [K: via V], key: K) -> new ?V
 
 -- Removes and returns the last inserted `(key, value)` entry from `map`, or `None` if empty.
 -- Supports draining maps holding must-consume values in a `while let` loop.
-pub fn pop_entry<K, V>(mut map: [K: via V]) &mut -> new ?(K, V)
+pub fn pop_entry<K, V>(mut map: [K: via V]) -> new ?(K, V)
 
 -- Reports whether `map` contains an entry for `key`.
 -- Supports maps holding must-consume values without copying or projecting entries.
@@ -35,7 +35,7 @@ pub fn values<K, V>(via map: [K: V]) &return(map) -> new []V |> SameLen<map> {
 }
 
 -- Removes every entry from `map` in place.
-pub fn clear<K, V>(mut map: [K: via V]) &mut -> () {
+pub fn clear<K, V>(mut map: [K: via V]) -> () {
     let mut ks: []K = []
     for map as (k, _) {
         Array::push(mut ks, k)

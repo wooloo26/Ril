@@ -18,7 +18,7 @@ fn update() -> () {
 }
 
 -- @case immutable_root_cannot_supply_a_mutable_argument compile-fail E0520
-fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn edit(mut cell: Cell) -> () { cell.count += 1 }
 fn update() -> () {
     let cell = Cell.{ count: 1 }
     edit(mut cell)
@@ -50,7 +50,7 @@ fn update() -> () {
 }
 
 -- @case observer_root_cannot_supply_a_mutable_argument compile-fail E0520
-fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn edit(mut cell: Cell) -> () { cell.count += 1 }
 fn update() -> () {
     let mut cell = Cell.{ count: 1 }
     let ref view = ref cell
@@ -141,7 +141,7 @@ fn update() -> int {
 }
 
 -- @case temporary_mutable_parameter_cannot_form_shared_alias compile-fail E0528
-fn update(mut cell: Cell) &mut -> () {
+fn update(mut cell: Cell) -> () {
     let ^mut alias = cell
     -- ^ E0528
     alias.count += 1
@@ -149,13 +149,13 @@ fn update(mut cell: Cell) &mut -> () {
 
 -- @case an_existing_shared_member_can_be_received_from_a_mutable_parameter compile-pass
 type Holder = .{ ^mut child: Cell }
-fn update(mut holder: Holder) &mut -> () {
+fn update(mut holder: Holder) -> () {
     let ^mut alias = holder.child
     alias.count += 1
 }
 
 -- @case mutable_receiver_resumes_after_scoped_call compile-pass
-fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+fn edit(mut cell: Cell) -> () { cell.count += 1 }
 fn update() -> int {
     let mut cell = Cell.{ count: 1 }
     edit(mut cell)
@@ -170,14 +170,14 @@ fn update() -> int {
     -- ^ E0523
     cell.count
     where
-        fn edit(mut borrowed: Cell) &up(var mut cell) &mut -> () {
+        fn edit(mut borrowed: Cell) &up(var mut cell) -> () {
             cell = Cell.{ count: 2 }
             borrowed.count += 1
         }
 }
 
 -- @case a_view_of_a_mutable_argument_is_unavailable_after_its_call compile-fail E0204
-fn edit(mut cell: Cell) &mut -> () {
+fn edit(mut cell: Cell) -> () {
     let ref observer = ref cell
     cell.count += 1
     assert(observer.count > 1)
@@ -271,7 +271,7 @@ fn update() -> () {
 }
 
 -- @case a_conditional_overlapping_pair_cannot_receive_exclusive_mut_arguments compile-fail E0523
-fn pair(mut left: Cell, mut right: Cell) &mut -> () {
+fn pair(mut left: Cell, mut right: Cell) -> () {
     left.count += 1
     right.count += 1
 }
@@ -342,7 +342,7 @@ fn increment() -> int {
 }
 
 -- @case writable_parameter_compile_pass compile-pass
-fn increment(mut cell: Cell) &mut -> int {
+fn increment(mut cell: Cell) -> int {
     cell.count += 1
     cell.count
 }
@@ -356,8 +356,8 @@ fn cycle(mut cell: Cell) -> () { cycle(mut cell) }
 -- ^ E0527
 
 -- @case mutual_recursion_has_grounded_writer compile-pass
-fn first(mut cell: Cell, n: int) &mut -> () { second(mut cell, n) }
-fn second(mut cell: Cell, n: int) &mut -> () {
+fn first(mut cell: Cell, n: int) -> () { second(mut cell, n) }
+fn second(mut cell: Cell, n: int) -> () {
     if n < 1 { cell.count = n } else { first(mut cell, n - 1) }
 }
 
@@ -380,14 +380,12 @@ fn bad() -> () {
     -- ^ E0501
 }
 
--- @case missing_write_clause compile-fail E0510
-fn missing(mut cell: Cell) -> () { cell.count = 2 }
--- ^ E0510
--- @forbid E0527
+-- @case removed_amp_mut_clause_is_e0120 compile-fail E0120
+fn bad_amp_mut(mut cell: Cell) &mut -> () { cell.count = 2 }
+--                             ^ E0120
 
--- @case excessive_write_clause compile-fail E0529
-fn unnecessary(cell: Cell) &mut -> () {}
--- ^ E0529
+-- @case mut_param_without_amp_mut_compiles compile-pass
+fn ok_mut(mut cell: Cell) -> () { cell.count = 2 }
 
 -- @case returning_fresh_requires_new_annotation compile-fail E0544
 fn create() -> Cell { Cell.{ count: 0 } }
@@ -397,7 +395,7 @@ fn create() -> Cell { Cell.{ count: 0 } }
 fn create() -> new Cell { Cell.{ count: 0 } }
 
 -- @case overlapping_mut_writers compile-fail E0523
-fn incr(mut a: Cell, mut b: Cell) &mut -> () { a.count += 1; b.count += 1 }
+fn incr(mut a: Cell, mut b: Cell) -> () { a.count += 1; b.count += 1 }
 fn call() -> () {
     let mut cell = Cell.{ count: 0 }
     incr(mut cell, mut cell)
@@ -405,7 +403,7 @@ fn call() -> () {
 }
 
 -- @case overlapping_read_write compile-fail E0524
-fn copy(mut a: Cell, ref b: Cell) &mut -> () { a.count = b.count }
+fn copy(mut a: Cell, ref b: Cell) -> () { a.count = b.count }
 fn run() -> () {
     let mut cell = Cell.{ count: 0 }
     copy(mut cell, ref cell)
@@ -419,7 +417,7 @@ fn run() -> int {
     work(mut cell)
     -- ^ E0524
     where
-        fn work(mut input: Cell) &mut &up(ref view) -> int {
+        fn work(mut input: Cell) &up(ref view) -> int {
             input.count += 1
             view.count
         }
@@ -455,7 +453,7 @@ fn run() -> int {
     let mut b = Cell.{ count: 2 }
     work(mut a)
     where
-        fn work(mut input: Cell) &mut &up(mut b) -> int {
+        fn work(mut input: Cell) &up(mut b) -> int {
             input.count += 1
             b.count += 1
             input.count + b.count
@@ -472,14 +470,14 @@ fn run(ref cell: Cell) -> int {
 
 -- @case mutable_formal_cannot_supply_a_retained_writer compile-fail E0528
 fn keep(^mut item: Cell) -> ^mut(item) Cell { item }
-fn bad(mut item: Cell) &mut -> ^mut(item) Cell {
+fn bad(mut item: Cell) -> ^mut(item) Cell {
     item.count += 1
     keep(^mut item)
     -- ^ E0528
 }
 
 -- @case mutable_formal_cannot_return_new_qualification compile-fail E0528
-fn bad(mut item: Cell) &mut -> new Cell { item.count += 1; item }
+fn bad(mut item: Cell) -> new Cell { item.count += 1; item }
 -- ^ E0528
 
 -- @case anonymous_mutable_formal_cannot_return_new_qualified_authority compile-fail E0528
@@ -490,7 +488,7 @@ fn run() -> () {
 
 -- @case mutable_formal_can_forward_an_existing_shared_member compile-pass
 fn keep(^mut item: Cell) -> ^mut(item) Cell { item }
-fn saved(mut holder: .{ var reads: int, ^mut child: Cell }) &mut -> ^mut(holder) Cell {
+fn saved(mut holder: .{ var reads: int, ^mut child: Cell }) -> ^mut(holder) Cell {
     holder.reads += 1
     keep(^mut holder.child)
 }
@@ -510,7 +508,7 @@ fn read(ref a: Cell, ref b: Cell) -> int { a.count + b.count }
 fn run(ref item: Cell) -> int { read(ref item, ref item) }
 
 -- @case two_mutable_arguments_can_use_disjoint_sources compile-pass
-fn update(mut a: Cell, mut b: Cell) &mut -> () {
+fn update(mut a: Cell, mut b: Cell) -> () {
     a.count += 1
     b.count += 2
 }
@@ -535,8 +533,8 @@ fn run() -> int {
 
 -- @case shared_participant_can_yield_a_nested_call_scoped_mut_argument compile-pass
 type SharedPair = .{ ^mut left: Cell, ^mut right: Cell }
-fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
-fn retain_pair(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new SharedPair {
+fn edit(mut cell: Cell) -> () { cell.count += 1 }
+fn retain_pair(^mut left: Cell, ^mut right: Cell) &^mut &return(^mut left, ^mut right) -> new SharedPair {
     edit(mut left)
     SharedPair.{ left: ^mut left, right: ^mut right }
 }
@@ -548,7 +546,7 @@ fn run() -> int {
 }
 
 -- @case exclusive_argument_cannot_overlap_a_shared_argument compile-fail E0523
-fn edit_and_retain(mut writer: Cell, ^mut retained: Cell) &mut -> ^mut(retained) Cell {
+fn edit_and_retain(mut writer: Cell, ^mut retained: Cell) -> ^mut(retained) Cell {
     writer.count += 1
     retained
 }
@@ -561,7 +559,7 @@ fn run() -> int {
 }
 
 -- @case shared_formal_and_capture_may_alias_during_a_nested_mut_call compile-fail E0524
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
 fn run() -> int {
     let mut cell = Cell.{ count: 1 }
     let ^mut alias = cell
@@ -569,7 +567,7 @@ fn run() -> int {
     saved.count += 1
     cell.count
     where
-        fn retain(^mut input: Cell) &mut &up(^mut alias) -> ^mut(input) Cell {
+        fn retain(^mut input: Cell) &up(^mut alias) -> ^mut(input) Cell {
             alias.count += 1
             edit(mut input, ref alias)
             -- ^ E0524
@@ -578,7 +576,7 @@ fn run() -> int {
 }
 
 -- @case read_only_capture_is_disjoint_from_shared_formal compile-pass
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
 fn run() -> int {
     let mut cell = Cell.{ count: 1 }
     let mut other = Cell.{ count: 2 }
@@ -588,7 +586,7 @@ fn run() -> int {
     saved.count += 1
     cell.count
     where
-        fn retain(^mut input: Cell) &mut &up(ref alias) -> ^mut(input) Cell {
+        fn retain(^mut input: Cell) &up(ref alias) -> ^mut(input) Cell {
             edit(mut input, ref alias)
             input
         }
@@ -596,7 +594,7 @@ fn run() -> int {
 
 -- @case inferred_writable_capture_may_alias_a_shared_formal compile-fail E0524
 type Shelf = .{ var ^mut value: Cell }
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
 fn run() -> int {
     let mut cell = Cell.{ count: 1 }
     let ^mut alias = cell
@@ -613,7 +611,7 @@ fn run() -> int {
 
 -- @case inferred_read_only_capture_is_disjoint_from_shared_formal compile-pass
 type Shelf = .{ var ^mut value: Cell }
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
 fn run() -> int {
     let mut cell = Cell.{ count: 1 }
     let mut other = Cell.{ count: 2 }
@@ -630,8 +628,8 @@ fn run() -> int {
 
 -- @case distinct_shared_formals_do_not_prove_independence_for_a_nested_call compile-fail E0524
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
-fn retain(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new Pair {
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
+fn retain(^mut left: Cell, ^mut right: Cell) &^mut &return(^mut left, ^mut right) -> new Pair {
     edit(mut left, ref right)
     -- ^ E0524
     Pair.{ left: ^mut left, right: ^mut right }
@@ -639,15 +637,15 @@ fn retain(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut 
 
 -- @case separate_exclusive_fields_of_one_shared_formal_can_be_passed_as_mut compile-pass
 type Pair = .{ mut left: Cell, mut right: Cell }
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
-fn retain(^mut pair: Pair) &mut -> ^mut(pair) Pair {
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
+fn retain(^mut pair: Pair) -> ^mut(pair) Pair {
     edit(mut pair.left, ref pair.right)
     pair
 }
 
 -- @case passing_separate_containers_as_mut_preserves_their_shared_member_mode compile-pass
 type Holder = .{ ^mut item: Cell }
-fn update(mut first: Holder, mut second: Holder) &mut -> () {
+fn update(mut first: Holder, mut second: Holder) -> () {
     first.item.count += 1
     second.item.count += 1
 }
@@ -660,8 +658,8 @@ fn run() -> () {
 
 -- @case separate_container_mut_arguments_do_not_prove_their_shared_members_independent compile-fail E0524
 type Holder = .{ ^mut item: Cell }
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
-fn update(mut first: Holder, mut second: Holder) &mut -> () {
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
+fn update(mut first: Holder, mut second: Holder) -> () {
     second.item.count += 1
     edit(mut first.item, ref second.item)
     -- ^ E0524
@@ -669,8 +667,8 @@ fn update(mut first: Holder, mut second: Holder) &mut -> () {
 
 -- @case separate_shared_members_of_one_formal_may_alias compile-fail E0524
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }
-fn edit(mut writer: Cell, ref reader: Cell) &mut -> () { writer.count += reader.count }
-fn update(mut pair: Pair) &mut -> () {
+fn edit(mut writer: Cell, ref reader: Cell) -> () { writer.count += reader.count }
+fn update(mut pair: Pair) -> () {
     edit(mut pair.left, ref pair.right)
     -- ^ E0524
 }
@@ -688,8 +686,8 @@ fn run() -> int {
 }
 
 -- @case nested_mutable_call_proves_the_outer_use compile-pass
-fn update(mut item: Cell) &mut -> () { item.count += 1 }
-fn relay(mut item: Cell) &mut -> () { update(mut item) }
+fn update(mut item: Cell) -> () { item.count += 1 }
+fn relay(mut item: Cell) -> () { update(mut item) }
 fn run() -> int {
     let mut item = Cell.{ count: 3 }
     relay(mut item)
@@ -697,7 +695,7 @@ fn run() -> int {
 }
 
 -- @case reachable_write_on_one_alternative_satisfies_mutable_use compile-pass
-fn update(mut item: Cell, modify: bool) &mut -> int {
+fn update(mut item: Cell, modify: bool) -> int {
     if modify { item.count += 1 }
     item.count
 }
@@ -709,7 +707,7 @@ fn relay(^mut item: Cell) -> ^mut(item) Cell { keep(^mut item) }
 -- @case nested_shared_forwarding_cannot_retain_a_scoped_writer compile-fail E0528
 fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 fn relay(^mut cell: Cell) -> ^mut(cell) Cell { retain(^mut cell) }
-fn invalid(mut cell: Cell) &mut -> () {
+fn invalid(mut cell: Cell) -> () {
     cell.count += 1
     let ^mut kept = relay(^mut cell)
     -- ^ E0528
@@ -723,7 +721,7 @@ fn relay(mut cell: Cell) -> int { leaf(mut cell) }
 -- ^ E0527
 
 -- @case retaining_a_local_alias_keeps_its_formal_authority compile-pass
-fn keep(^mut source: Cell) &mut -> ^mut(source) Cell {
+fn keep(^mut source: Cell) -> ^mut(source) Cell {
     let ^mut alias = source
     alias.count += 1
     alias
@@ -734,14 +732,14 @@ fn keep(^mut a: Cell, ^mut b: Cell) -> ^mut(a) Cell { a }
 -- ^ E0527
 
 -- @case call_markers_must_match_a_mutable_formal compile-fail E0406
-fn update(mut item: Cell) &mut -> () { item.count += 1 }
+fn update(mut item: Cell) -> () { item.count += 1 }
 fn run(ref item: Cell) -> () {
     update(ref item)
     -- ^ E0406
 }
 
 -- @case mutable_formal_is_a_fixed_slot compile-fail E0502
-fn reset(mut item: Cell) &mut -> () {
+fn reset(mut item: Cell) -> () {
     item = Cell.{ count: 0 }
     -- ^ E0502
     item.count += 1
@@ -763,7 +761,7 @@ fn run(ref item: Cell) -> int {
 
 -- @case a_plain_argument_requires_a_snapshot compile-fail E0535
 fn read(item: Cell) -> int { item.count }
-fn run(mut item: Cell) &mut -> int {
+fn run(mut item: Cell) -> int {
     item.count += 1
     read(item)
     -- ^ E0535
@@ -777,7 +775,7 @@ fn run() -> int {
 }
 
 -- @case a_mutable_formal_cannot_be_read_from_its_caller compile-fail E0204
-fn edit(mut borrowed: Cell) &mut -> () { borrowed.count += 1 }
+fn edit(mut borrowed: Cell) -> () { borrowed.count += 1 }
 fn run() -> int {
     let mut cell = Cell.{ count: 1 }
     edit(mut cell)
@@ -787,7 +785,7 @@ fn run() -> int {
 
 -- @case published_mutation_has_no_retention compile-pass unit=lib no-prelude
 pub type Cell = .{ var count: int }
-pub fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
+pub fn edit(mut cell: Cell) -> () { cell.count += 1 }
 
 -- @case published_root_retention_does_not_write compile-pass unit=lib no-prelude
 pub type Cell = .{ var count: int }
@@ -803,8 +801,8 @@ pub fn retain(^mut left: Cell, ^mut right: Cell) &^mut &return(^mut left, ^mut r
 -- @case published_nested_mut_call_writes_only_its_formal compile-pass unit=lib no-prelude
 pub type Cell = .{ var count: int }
 pub type Pair = .{ ^mut left: Cell, ^mut right: Cell }
-fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
-pub fn retain(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new Pair {
+fn edit(mut cell: Cell) -> () { cell.count += 1 }
+pub fn retain(^mut left: Cell, ^mut right: Cell) &^mut &return(^mut left, ^mut right) -> new Pair {
     edit(mut left)
     Pair.{ left: ^mut left, right: ^mut right }
 }
@@ -854,10 +852,9 @@ fn make() &capture -> fn(int) -> int { \number -> number + 1 }
 fn pack(source: Cell) -> new (Cell, int) { (source, 0) }
 -- ^ E0510
 
--- @case retaining_a_writer_does_not_exercise_a_write_clause compile-fail E0529
+-- @case retaining_a_writer_compiles_with_shared_clause compile-pass
 type Box = .{ ^mut item: Cell }
-fn pack(^mut item: Cell) &mut &^mut &return(^mut item) -> new Box { Box.{ item: ^mut item } }
--- ^ E0529
+fn pack(^mut item: Cell) &^mut &return(^mut item) -> new Box { Box.{ item: ^mut item } }
 
 -- @case retaining_a_contained_writer_requires_its_state_clause compile-fail E0510
 type Box = .{ ^mut item: Cell }
@@ -865,7 +862,7 @@ fn pack(^mut item: Cell) &return(^mut item) -> new Box { Box.{ item: ^mut item }
 -- ^ E0510
 
 -- @case independent_allocations compile-pass
-fn copy(mut a: Cell, ref b: Cell) &mut -> () { a.count = b.count }
+fn copy(mut a: Cell, ref b: Cell) -> () { a.count = b.count }
 fn run() -> () {
     let mut a = Cell.{ count: 0 }
     let b = Cell.{ count: 1 }
@@ -876,12 +873,12 @@ fn run() -> () {
 fn keep(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 
 -- @case shared_parameter_not_retained compile-fail E0527
-fn edit(^mut cell: Cell) &mut -> () { cell.count = 2 }
+fn edit(^mut cell: Cell) -> () { cell.count = 2 }
 -- ^ E0527
 
 -- @case overwriting_a_publication_ends_retention compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn overwrite(mut shelf: Shelf, ^mut incoming: Cell, ^mut replacement: Cell) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut incoming: Cell, ^mut replacement: Cell) &^mut -> () {
 -- ^ E0527
     shelf.item = ^mut incoming
     shelf.item = ^mut replacement
@@ -890,7 +887,7 @@ fn overwrite(mut shelf: Shelf, ^mut incoming: Cell, ^mut replacement: Cell) &mut
 -- @case overwriting_an_ancestor_ends_nested_retention compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
 type Holder = .{ var mut shelf: Shelf }
-fn overwrite(mut holder: Holder, ^mut incoming: Cell, ^mut replacement: Cell) &mut &^mut -> () {
+fn overwrite(mut holder: Holder, ^mut incoming: Cell, ^mut replacement: Cell) &^mut -> () {
 -- ^ E0527
     holder.shelf.item = ^mut incoming
     holder.shelf = Shelf.{ item: ^mut replacement }
@@ -899,16 +896,16 @@ fn overwrite(mut holder: Holder, ^mut incoming: Cell, ^mut replacement: Cell) &m
 -- @case publication_survives_in_a_caller_member compile-pass
 type Shelf = .{ var ^mut item: Cell }
 type Holder = .{ mut shelf: Shelf }
-fn store(mut holder: Holder, ^mut source: Cell) &mut &^mut -> () {
+fn store(mut holder: Holder, ^mut source: Cell) &^mut -> () {
     holder.shelf.item = ^mut source
 }
 
 -- @case a_caller_can_overwrite_retention_from_a_callee compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn publish(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () {
+fn publish(mut shelf: Shelf, ^mut source: Cell) &^mut -> () {
     shelf.item = ^mut source
 }
-fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &^mut -> () {
 -- ^ E0527
     publish(mut shelf, ^mut discarded)
     shelf.item = ^mut retained
@@ -916,10 +913,10 @@ fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &mut &
 
 -- @case a_callee_can_overwrite_retention_from_its_caller compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn publish(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () {
+fn publish(mut shelf: Shelf, ^mut source: Cell) &^mut -> () {
     shelf.item = ^mut source
 }
-fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &^mut -> () {
 -- ^ E0527
     shelf.item = ^mut discarded
     publish(mut shelf, ^mut retained)
@@ -927,11 +924,11 @@ fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell) &mut &
 
 -- @case a_recursive_callee_can_guarantee_replacement compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn publish(mut shelf: Shelf, ^mut source: Cell, recur: bool) &mut &^mut -> () {
+fn publish(mut shelf: Shelf, ^mut source: Cell, recur: bool) &^mut -> () {
     if recur { publish(mut shelf, ^mut source, false) }
     else { shelf.item = ^mut source }
 }
-fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell, recur: bool) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell, recur: bool) &^mut -> () {
 -- ^ E0527
     shelf.item = ^mut discarded
     publish(mut shelf, ^mut retained, recur)
@@ -939,17 +936,17 @@ fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell, recur:
 
 -- @case mutual_recursion_guarantees_a_store_but_can_change_its_source compile-fail E0527
 type Shelf = .{ var ^mut left: Cell, var ^mut right: Cell }
-fn publish(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell, recur: bool) &mut &^mut -> () {
+fn publish(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell, recur: bool) &^mut -> () {
     if recur { relay(mut shelf, ^mut b, ^mut a) }
     else {
         shelf.left = ^mut a
         shelf.right = ^mut b
     }
 }
-fn relay(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell) &mut &^mut -> () {
+fn relay(mut shelf: Shelf, ^mut a: Cell, ^mut b: Cell) &^mut -> () {
     publish(mut shelf, ^mut a, ^mut b, false)
 }
-fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut first: Cell, ^mut second: Cell, recur: bool) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut first: Cell, ^mut second: Cell, recur: bool) &^mut -> () {
 -- ^ E0527
     shelf.left = ^mut discarded
     publish(mut shelf, ^mut first, ^mut second, recur)
@@ -957,11 +954,11 @@ fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut first: Cell, ^mut seco
 
 -- @case recursive_callee_can_return_without_replacing_the_old_source compile-pass
 type Shelf = .{ var ^mut item: Cell }
-fn publish(mut shelf: Shelf, ^mut source: Cell, n: int) &mut &^mut -> () {
+fn publish(mut shelf: Shelf, ^mut source: Cell, n: int) &^mut -> () {
     if n > 0 { publish(mut shelf, ^mut source, n - 1) }
     else if n == 0 { shelf.item = ^mut source }
 }
-fn relay(mut shelf: Shelf, ^mut original: Cell, ^mut replacement: Cell, n: int) &mut &^mut -> () {
+fn relay(mut shelf: Shelf, ^mut original: Cell, ^mut replacement: Cell, n: int) &^mut -> () {
     shelf.item = ^mut original
     publish(mut shelf, ^mut replacement, n)
 }
@@ -975,7 +972,7 @@ fn spin(mut item: Cell) -> () {
 
 -- @case a_local_closure_retains_the_parameter_it_stores compile-pass
 type Shelf = .{ var ^mut item: Cell }
-fn overwrite(mut shelf: Shelf, ^mut kept: Cell) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut kept: Cell) &^mut -> () {
     let store = \mut dst: Shelf, ^mut value: Cell -> { dst.item = ^mut value }
     store(mut shelf, ^mut kept)
 }
@@ -988,7 +985,7 @@ fn overwrite(
     -- ^ E0527
     ^mut kept: Cell,
     flag: bool
-) &mut &^mut -> () {
+) &^mut -> () {
     shelf.item = ^mut discarded
     let first = \mut dst: Shelf, ^mut value: Cell -> { dst.item = ^mut value }
     let second = \mut dst: Shelf, ^mut value: Cell -> { dst.item = ^mut value }
@@ -998,20 +995,20 @@ fn overwrite(
 
 -- @case a_named_callable_alias_retains_the_parameter_it_stores compile-pass
 type Shelf = .{ var ^mut item: Cell }
-fn store(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+fn store(mut shelf: Shelf, ^mut value: Cell) &^mut -> () {
     shelf.item = ^mut value
 }
-fn relay(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+fn relay(mut shelf: Shelf, ^mut value: Cell) &^mut -> () {
     let write = store
     write(mut shelf, ^mut value)
 }
 
 -- @case selected_named_aliases_can_guarantee_a_storage_update compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn first(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+fn first(mut shelf: Shelf, ^mut value: Cell) &^mut -> () {
     shelf.item = ^mut value
 }
-fn second(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+fn second(mut shelf: Shelf, ^mut value: Cell) &^mut -> () {
     shelf.item = ^mut value
 }
 fn overwrite(
@@ -1020,7 +1017,7 @@ fn overwrite(
     -- ^ E0527
     ^mut kept: Cell,
     flag: bool
-) &mut &^mut -> () {
+) &^mut -> () {
     shelf.item = ^mut discarded
     let write = if flag { first } else { second }
     write(mut shelf, ^mut kept)
@@ -1028,13 +1025,13 @@ fn overwrite(
 
 -- @case selected_named_aliases_can_preserve_a_prior_store compile-pass
 type Shelf = .{ var ^mut item: Cell, var ^mut spare: Cell }
-fn first(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+fn first(mut shelf: Shelf, ^mut value: Cell) &^mut -> () {
     shelf.item = ^mut value
 }
-fn second(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+fn second(mut shelf: Shelf, ^mut value: Cell) &^mut -> () {
     shelf.spare = ^mut value
 }
-fn overwrite(mut shelf: Shelf, ^mut previous: Cell, ^mut next: Cell, flag: bool) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut previous: Cell, ^mut next: Cell, flag: bool) &^mut -> () {
     shelf.item = ^mut previous
     let write = if flag { first } else { second }
     write(mut shelf, ^mut next)
@@ -1042,7 +1039,7 @@ fn overwrite(mut shelf: Shelf, ^mut previous: Cell, ^mut next: Cell, flag: bool)
 
 -- @case a_named_function_and_closure_can_guarantee_the_same_store compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn replace(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+fn replace(mut shelf: Shelf, ^mut value: Cell) &^mut -> () {
     shelf.item = ^mut value
 }
 fn overwrite(
@@ -1051,9 +1048,9 @@ fn overwrite(
     -- ^ E0527
     ^mut retained: Cell,
     choose_named: bool
-) &mut &^mut -> () {
+) &^mut -> () {
     shelf.item = ^mut discarded
-    let write: fn(mut Shelf, ^mut Cell) &mut &^mut -> () =
+    let write: fn(mut Shelf, ^mut Cell) &^mut -> () =
         if choose_named { replace } else {
             \mut shelf: Shelf, ^mut value: Cell -> { shelf.item = ^mut value }
         }
@@ -1068,7 +1065,7 @@ fn diverge() -> () {
         break
     }
 }
-fn change(mut cell: Cell) &mut -> () {
+fn change(mut cell: Cell) -> () {
 -- ^ E0527
     diverge()
     cell.count += 1
@@ -1076,14 +1073,14 @@ fn change(mut cell: Cell) &mut -> () {
 
 -- @case each_reachable_loop_break_preserves_its_recursive_store compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn publish(mut shelf: Shelf, ^mut source: Cell, recur: bool) &mut &^mut -> () {
+fn publish(mut shelf: Shelf, ^mut source: Cell, recur: bool) &^mut -> () {
     while true {
         if recur { publish(mut shelf, ^mut source, false) }
         else { shelf.item = ^mut source }
         break
     }
 }
-fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell, recur: bool) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell, recur: bool) &^mut -> () {
 -- ^ E0527
     shelf.item = ^mut discarded
     publish(mut shelf, ^mut retained, recur)
@@ -1091,10 +1088,10 @@ fn overwrite(mut shelf: Shelf, ^mut discarded: Cell, ^mut retained: Cell, recur:
 
 -- @case conditional_callee_update_keeps_the_unmodified_retention_path compile-pass
 type Shelf = .{ var ^mut item: Cell }
-fn publish(mut shelf: Shelf, ^mut source: Cell, enabled: bool) &mut &^mut -> () {
+fn publish(mut shelf: Shelf, ^mut source: Cell, enabled: bool) &^mut -> () {
     if enabled { shelf.item = ^mut source }
 }
-fn relay(mut shelf: Shelf, ^mut original: Cell, ^mut replacement: Cell, enabled: bool) &mut &^mut -> () {
+fn relay(mut shelf: Shelf, ^mut original: Cell, ^mut replacement: Cell, enabled: bool) &^mut -> () {
     shelf.item = ^mut original
     publish(mut shelf, ^mut replacement, enabled)
 }
@@ -1102,16 +1099,16 @@ fn relay(mut shelf: Shelf, ^mut original: Cell, ^mut replacement: Cell, enabled:
 -- @case named_relay_preserves_the_destination_of_a_publication compile-pass
 type Shelf = .{ var ^mut item: Cell }
 type Holder = .{ mut shelf: Shelf }
-fn publish(mut shelf: Shelf, ^mut source: Cell) &mut &^mut -> () {
+fn publish(mut shelf: Shelf, ^mut source: Cell) &^mut -> () {
     shelf.item = ^mut source
 }
-fn relay(mut holder: Holder, ^mut source: Cell) &mut &^mut -> () {
+fn relay(mut holder: Holder, ^mut source: Cell) &^mut -> () {
     publish(mut holder.shelf, ^mut source)
 }
 
 -- @case publication_on_one_return_path_is_retention compile-pass
 type Shelf = .{ var ^mut item: Cell }
-fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool) &mut &^mut -> () {
+fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool) &^mut -> () {
     shelf.item = ^mut source
     if stop { return }
     shelf.item = ^mut replacement
@@ -1119,7 +1116,7 @@ fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool
 
 -- @case publication_on_a_panicking_path_is_retention compile-pass
 type Shelf = .{ var ^mut item: Cell }
-fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool) &mut &^mut -> () {
+fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool) &^mut -> () {
     shelf.item = ^mut source
     if stop { panic("stop") }
     shelf.item = ^mut replacement
@@ -1127,7 +1124,7 @@ fn store(mut shelf: Shelf, ^mut source: Cell, ^mut replacement: Cell, stop: bool
 
 -- @case overwriting_on_every_continuing_arm_ends_retention compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn overwrite(mut shelf: Shelf, ^mut incoming: Cell, ^mut replacement: Cell, left: bool) &mut &^mut -> () {
+fn overwrite(mut shelf: Shelf, ^mut incoming: Cell, ^mut replacement: Cell, left: bool) &^mut -> () {
 -- ^ E0527
     shelf.item = ^mut incoming
     if left { shelf.item = ^mut replacement } else { shelf.item = ^mut replacement }
@@ -1201,7 +1198,7 @@ fn run() -> int {
     saved.count += 1
     saved.count
     where
-        fn publish(mut source: Cell) &up(var ^mut saved) &mut &^mut -> () {
+        fn publish(mut source: Cell) &up(var ^mut saved) &^mut -> () {
             source.count += 1
             saved = ^mut source
             -- ^ E0528
@@ -1209,14 +1206,14 @@ fn run() -> int {
 }
 
 -- @case local_sharing_does_not_retain_a_parameter compile-fail E0527
-fn update(^mut source: Cell) &mut -> () {
+fn update(^mut source: Cell) -> () {
 -- ^ E0527
     let ^mut alias = ^mut source
     alias.count += 1
 }
 
 -- @case new_container_writes_existing_member compile-pass
-fn update(new cells: [^mut]Cell) &mut -> int {
+fn update(new cells: [^mut]Cell) -> int {
     if len(ref cells) == 0 { return 0 }
     cells[0].count += 1
     cells[0].count
@@ -1226,7 +1223,7 @@ fn use_cell() -> int {
     update([^mut local])
 }
 
--- @case new_container_does_not_discharge_existing_member_writes compile-fail E0510
+-- @case new_container_existing_member_writes_compiles compile-pass
 fn update(new cells: [^mut]Cell) -> int {
     if len(ref cells) == 0 { return 0 }
     cells[0].count += 1
@@ -1245,7 +1242,7 @@ fn allocate(unused: Cell) &return(unused) -> new []Cell { [Cell.{ count: 0 }] }
 
 -- @case replaced_member_is_not_from_old_formal_entry compile-fail E0545
 type Holder = .{ var ref visible: Cell }
-fn overwrite(mut holder: Holder, ref other: Cell) &mut -> ref(holder) Cell {
+fn overwrite(mut holder: Holder, ref other: Cell) -> ref(holder) Cell {
     -- ^ E0545
     holder.visible = other
     holder.visible
@@ -1254,22 +1251,22 @@ fn overwrite(mut holder: Holder, ref other: Cell) &mut -> ref(holder) Cell {
 -- @case replaced_member_is_in_new_call_entry compile-pass
 type Holder = .{ var ref visible: Cell }
 fn see(ref holder: Holder) -> ref(holder) Cell { holder.visible }
-fn overwrite(mut holder: Holder, ref other: Cell) &mut -> ref(other) Cell {
+fn overwrite(mut holder: Holder, ref other: Cell) -> ref(other) Cell {
     holder.visible = other
     see(ref holder)
 }
 
 -- @case conditional_replacement_preserves_both_origins compile-pass
 type Holder = .{ var ref visible: Cell }
-fn overwrite(flag: bool, mut holder: Holder, ref other: Cell) &mut -> ref(holder | other) Cell {
+fn overwrite(flag: bool, mut holder: Holder, ref other: Cell) -> ref(holder | other) Cell {
     if flag { holder.visible = other }
     holder.visible
 }
 
 -- @case replaced_member_participates_in_call_overlap compile-fail E0524
 type Holder = .{ var ref visible: Cell }
-fn copy(mut target: Cell, ref reader: Holder) &mut -> () { target.count = reader.visible.count }
-fn overlap(mut holder: Holder, mut target: Cell) &mut -> () {
+fn copy(mut target: Cell, ref reader: Holder) -> () { target.count = reader.visible.count }
+fn overlap(mut holder: Holder, mut target: Cell) -> () {
     holder.visible = ref target
     copy(mut target, ref holder)
     -- ^ E0524
@@ -1278,7 +1275,7 @@ fn overlap(mut holder: Holder, mut target: Cell) &mut -> () {
 -- @case call_entry_graph_includes_later_argument_preparation compile-pass
 type Holder = .{ var ref visible: Cell }
 fn see(ref holder: Holder, _marker: ()) -> ref(holder) Cell { holder.visible }
-fn overwrite(mut holder: Holder, ref other: Cell) &mut -> ref(other) Cell {
+fn overwrite(mut holder: Holder, ref other: Cell) -> ref(other) Cell {
     see(ref holder, { holder.visible = other; () })
 }
 
@@ -2084,7 +2081,7 @@ fn edit() -> int {
 
 -- @case exact_fields_are_separate_mutable_arguments compile-pass
 type Pair = .{ mut first: Cell, mut second: Cell }
-fn edit(mut a: Cell, mut b: Cell) &mut -> () { a.count += 1; b.count += 1 }
+fn edit(mut a: Cell, mut b: Cell) -> () { a.count += 1; b.count += 1 }
 fn update() -> () {
     let mut pair = Pair.{ first: Cell.{ count: 1 }, second: Cell.{ count: 2 } }
     edit(mut pair.first, mut pair.second)
@@ -2115,7 +2112,7 @@ fn update() -> int {
 -- @case nested_shared_replacement_keeps_writable_outer_layers compile-pass
 type Layer = .{ var ^mut saved: Cell, ^mut writable: Cell, ref observed: Cell, snapshot: Cell }
 type Frame = .{ mut middle: .{ mut inner: Layer } }
-fn rewrite(mut frame: Frame, ^mut source: Cell) &mut &^mut -> int {
+fn rewrite(mut frame: Frame, ^mut source: Cell) &^mut -> int {
     frame.middle.inner.saved = ^mut source
     frame.middle.inner.saved.count += 1
     frame.middle.inner.writable.count += 1
@@ -2125,7 +2122,7 @@ fn rewrite(mut frame: Frame, ^mut source: Cell) &mut &^mut -> int {
 -- @case a_nested_ref_is_readonly_under_writable_layers compile-fail E0520
 type Layer = .{ ^mut writable: Cell, ref observed: Cell }
 type Frame = .{ mut middle: .{ mut inner: Layer } }
-fn change(mut frame: Frame) &mut -> () {
+fn change(mut frame: Frame) -> () {
     frame.middle.inner.writable.count += 1
     frame.middle.inner.observed.count += 1
     -- ^ E0520
@@ -2134,7 +2131,7 @@ fn change(mut frame: Frame) &mut -> () {
 -- @case a_nested_snapshot_is_readonly_under_writable_layers compile-fail E0520
 type Layer = .{ ^mut writable: Cell, snapshot: Cell }
 type Frame = .{ mut middle: .{ mut inner: Layer } }
-fn change(mut frame: Frame) &mut -> () {
+fn change(mut frame: Frame) -> () {
     frame.middle.inner.writable.count += 1
     frame.middle.inner.snapshot.count += 1
     -- ^ E0520
@@ -2218,7 +2215,7 @@ fn observe() -> int {
 }
 
 -- @case a_call_scoped_writer_cannot_be_frozen compile-fail E0535
-fn freeze(mut source: Cell) &mut -> Cell {
+fn freeze(mut source: Cell) -> Cell {
     source.count += 1
     let snapshot = source
     -- ^ E0535
@@ -2310,7 +2307,7 @@ fn change() -> int {
 
 -- @case replacing_a_ref_member_keeps_it_readonly compile-fail E0520
 type Shelf = .{ var ref item: Cell }
-fn replace(mut shelf: Shelf, ref value: Cell) &mut -> () {
+fn replace(mut shelf: Shelf, ref value: Cell) -> () {
     shelf.item = value
     shelf.item.count += 1
     -- ^ E0520
@@ -2318,7 +2315,7 @@ fn replace(mut shelf: Shelf, ref value: Cell) &mut -> () {
 
 -- @case a_mutable_path_cannot_implicitly_fill_a_ref_member compile-fail E0357
 type Shelf = .{ var ref item: Cell }
-fn replace(mut shelf: Shelf, mut value: Cell) &mut -> () {
+fn replace(mut shelf: Shelf, mut value: Cell) -> () {
     value.count += 1
     shelf.item = value
     -- ^ E0357
@@ -2435,7 +2432,7 @@ fn inspect() -> int {
 
 -- @case replacing_a_shared_member_requires_acknowledgment compile-fail E0510
 type Shelf = .{ var ^mut item: Cell }
-fn replace(mut shelf: Shelf, ^mut value: Cell) &mut &^mut -> () {
+fn replace(mut shelf: Shelf, ^mut value: Cell) &^mut -> () {
     shelf.item = value
     -- ^ E0510
 }
@@ -2456,7 +2453,7 @@ fn replace() -> int {
 }
 
 -- @case replacing_a_shared_element_requires_acknowledgment compile-fail E0510
-fn replace(mut items: [^mut]Cell, ^mut value: Cell) &mut &^mut -> () {
+fn replace(mut items: [^mut]Cell, ^mut value: Cell) &^mut -> () {
     if len(ref items) > 0 {
         items[0] = value
         -- ^ E0510
@@ -2465,19 +2462,19 @@ fn replace(mut items: [^mut]Cell, ^mut value: Cell) &mut &^mut -> () {
 
 -- @case each_shared_replacement_branch_can_acknowledge_the_same_source compile-pass
 type Shelf = .{ var ^mut item: Cell }
-fn replace(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
+fn replace(mut shelf: Shelf, ^mut value: Cell, flag: bool) &^mut -> () {
     shelf.item = if flag { ^mut value } else { (^mut value) }
 }
 
 -- @case one_shared_replacement_branch_cannot_acknowledge_another compile-fail E0510
 type Shelf = .{ var ^mut item: Cell }
-fn replace(mut shelf: Shelf, ^mut value: Cell, flag: bool) &mut &^mut -> () {
+fn replace(mut shelf: Shelf, ^mut value: Cell, flag: bool) &^mut -> () {
     shelf.item = if flag { ^mut value } else { value }
     -- ^ E0510
 }
 
 -- @case unknown_index_cannot_prove_separation compile-fail E0523
-fn edit(mut a: Cell, mut b: Cell) &mut -> () { a.count += 1; b.count += 1 }
+fn edit(mut a: Cell, mut b: Cell) -> () { a.count += 1; b.count += 1 }
 fn update(index: int) -> () {
     let mut cells: [mut]Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
     if 0 <= index && index < len(ref cells) {
@@ -2486,21 +2483,15 @@ fn update(index: int) -> () {
     }
 }
 
--- @case aborting_write_still_requires_write_clause compile-fail E0510
-fn edit(mut cell: Cell) -> never {
-    cell.count += 1
-    panic("stop")
-}
-
 -- @case aborting_writer_declares_the_write compile-pass
-fn edit(mut cell: Cell) &mut -> never {
+fn edit(mut cell: Cell) -> never {
     cell.count += 1
     panic("stop")
 }
 
 -- @case call_scoped_writer_cannot_be_stored_as_a_ref compile-fail E0604
 type Shelf = .{ var ref item: Cell }
-fn edit_and_save(mut source: Cell, mut shelf: Shelf) &mut -> () {
+fn edit_and_save(mut source: Cell, mut shelf: Shelf) -> () {
     source.count += 1
     shelf.item = ref source
     -- ^ E0604
@@ -2508,15 +2499,15 @@ fn edit_and_save(mut source: Cell, mut shelf: Shelf) &mut -> () {
 
 -- @case forwarded_call_scoped_ref_cannot_be_published compile-fail E0604
 type Shelf = .{ var ref item: Cell }
-fn save(ref source: Cell, mut shelf: Shelf) &mut -> () { shelf.item = source }
-fn relay(mut source: Cell, mut shelf: Shelf) &mut -> () {
+fn save(ref source: Cell, mut shelf: Shelf) -> () { shelf.item = source }
+fn relay(mut source: Cell, mut shelf: Shelf) -> () {
     source.count += 1
     save(ref source, mut shelf)
     -- ^ E0604
 }
 
 -- @case collection_insertion_cannot_store_a_call_scoped_ref compile-fail E0604
-fn store(mut source: Cell, mut readers: [ref]Cell, mut entries: [str: ref Cell]) &mut -> () {
+fn store(mut source: Cell, mut readers: [ref]Cell, mut entries: [str: ref Cell]) -> () {
     source.count += 1
     Array::push(mut readers, ref source)
     -- ^ E0604
@@ -2525,13 +2516,13 @@ fn store(mut source: Cell, mut readers: [ref]Cell, mut entries: [str: ref Cell])
 }
 
 -- @case collection_insertion_accepts_an_existing_ref compile-pass
-fn store(ref source: Cell, mut readers: [ref]Cell, mut entries: [str: ref Cell]) &mut -> () {
+fn store(ref source: Cell, mut readers: [ref]Cell, mut entries: [str: ref Cell]) -> () {
     Array::push(mut readers, ref source)
     Map::insert(mut entries, "source", ref source)
 }
 
 -- @case replacing_a_reference_slot_removes_its_old_origin compile-pass
-fn copy(mut target: Cell, ref source: Cell) &mut -> () { target.count = source.count }
+fn copy(mut target: Cell, ref source: Cell) -> () { target.count = source.count }
 fn update() -> () {
     let mut previous = Cell.{ count: 1 }
     let mut current = Cell.{ count: 2 }
@@ -2546,7 +2537,7 @@ fn loop_forever() -> never { while true {} }
 fn recurse_forever() -> never { recurse_forever() }
 
 -- @case exclusive_arguments_remain_disjoint_when_branches_swap_them compile-pass
-fn edit(mut left: Cell, mut right: Cell) &mut -> () {
+fn edit(mut left: Cell, mut right: Cell) -> () {
     left.count += 1
     right.count += 1
 }
@@ -2564,7 +2555,7 @@ fn update(swap: bool) -> () {
 
 -- @case cyclic_arguments_share_a_reachable_descendant compile-fail E0523
 type Node(.{ var count: int, var ^mut next: ?Node })
-fn edit(mut left: Node, mut right: Node) &mut -> () {
+fn edit(mut left: Node, mut right: Node) -> () {
     left.count += 1
     right.count += 1
 }
@@ -2586,9 +2577,9 @@ fn edit(new original: Cell) -> int {
 }
 fn run() -> int { edit(make()) }
 
--- @case factory_writes_to_a_later_instance_cannot_justify_state compile-fail E0529
+-- @case factory_writes_to_a_later_instance_compiles compile-pass
 fn make() -> new Cell { Cell.{ count: 1 } }
-fn edit(new original: Cell) &mut -> int {
+fn edit(new original: Cell) -> int {
     let mut fresh = make()
     fresh.count += 1
     original.count + fresh.count
@@ -2596,7 +2587,7 @@ fn edit(new original: Cell) &mut -> int {
 fn run() -> int { edit(make()) }
 
 -- @case while_backedge_can_make_arguments_overlap compile-fail E0524
-fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn copy(mut target: Cell, ref reader: Cell) -> () { target.count = reader.count }
 fn update(again: bool) -> int {
     let mut target = Cell.{ count: 0 }
     let other = Cell.{ count: 1 }
@@ -2610,7 +2601,7 @@ fn update(again: bool) -> int {
 }
 
 -- @case for_continue_carries_aliases_to_the_next_iteration compile-fail E0524
-fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn copy(mut target: Cell, ref reader: Cell) -> () { target.count = reader.count }
 fn update() -> int {
     let mut target = Cell.{ count: 0 }
     let other = Cell.{ count: 1 }
@@ -2625,7 +2616,7 @@ fn update() -> int {
 }
 
 -- @case a_single_iteration_for_does_not_revisit_the_body compile-pass
-fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn copy(mut target: Cell, ref reader: Cell) -> () { target.count = reader.count }
 fn update() -> int {
     let mut target = Cell.{ count: 0 }
     let other = Cell.{ count: 1 }
@@ -2639,7 +2630,7 @@ fn update() -> int {
 }
 
 -- @case loop_aliases_can_take_multiple_iterations_to_reach_the_call compile-fail E0524
-fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn copy(mut target: Cell, ref reader: Cell) -> () { target.count = reader.count }
 fn update(again: bool) -> int {
     let mut target = Cell.{ count: 0 }
     let mut other = Cell.{ count: 0 }
@@ -2659,21 +2650,21 @@ fn update(again: bool) -> int {
 
 -- @case only_break_paths_contribute_to_normal_loop_storage compile-fail E0527
 type Shelf = .{ var ^mut item: Cell }
-fn replace(mut shelf: Shelf, ^mut replacement: Cell, again: bool) &mut &^mut -> () {
+fn replace(mut shelf: Shelf, ^mut replacement: Cell, again: bool) &^mut -> () {
     while true {
         if again { continue }
         shelf.item = ^mut replacement
         break
     }
 }
-fn update(mut shelf: Shelf, ^mut discarded: Cell, ^mut replacement: Cell, again: bool) &mut &^mut -> () {
+fn update(mut shelf: Shelf, ^mut discarded: Cell, ^mut replacement: Cell, again: bool) &^mut -> () {
 -- ^ E0527
     shelf.item = ^mut discarded
     replace(mut shelf, ^mut replacement, again)
 }
 
 -- @case the_previous_iterations_branch_keeps_carried_arguments_disjoint compile-pass
-fn add(mut left: Cell, mut right: Cell) &mut -> () {
+fn add(mut left: Cell, mut right: Cell) -> () {
     left.count += 1
     right.count += 1
 }
@@ -2698,7 +2689,7 @@ fn update(again: bool, swap: bool) -> () {
 -- @case shared_chain_keeps_deep_aliases_after_the_loop compile-fail E0524
 -- @forbid E0531
 type Node(.{ var value: int, var ^mut next: ?Node })
-fn copy(mut target: Node, ref reader: Node) &mut -> () {
+fn copy(mut target: Node, ref reader: Node) -> () {
     target.value = reader.value
 }
 fn run(count: int) -> int {
@@ -3386,7 +3377,7 @@ sub Fs {
         Ok(File::(.{ path, written: 0 }))
     }
     pub fn path(ref f: File) -> str { inner(ref f).path }
-    pub fn write(mut f: File, n: int) &mut -> () {
+    pub fn write(mut f: File, n: int) -> () {
         inner(mut f).written = inner(ref f).written + n
     }
     pub fn close(f: File) -> int {
@@ -3407,7 +3398,7 @@ sub Net {
         Conn::(.{ id, sent })
     }
     pub fn id(ref c: Conn<Connected>) -> int { inner(ref c).id }
-    pub fn send(mut c: Conn<Connected>, n: int) &mut -> () {
+    pub fn send(mut c: Conn<Connected>, n: int) -> () {
         inner(mut c).sent = inner(ref c).sent + n
     }
     pub fn close_connected(c: Conn<Connected>) -> int {
@@ -3511,7 +3502,7 @@ fn bad(ref t: Ticket) -> int {
 -- @case linear_consume_through_mut_param_rejected compile-fail E0528
 opaque linear type File(.{ var n: int })
 fn close(f: File) -> int { inner(f).n }
-fn bad(mut f: File) &mut -> int {
+fn bad(mut f: File) -> int {
 -- ^ E0528
     inner(mut f).n = 1
     close(f)

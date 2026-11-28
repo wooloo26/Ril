@@ -111,8 +111,8 @@ type Slot = .{ var action: Action }
 fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
-fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
-fn reset(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> () {
+fn install(mut slot: Slot) -> () { slot.action = freeze }
+fn reset(mut slot: Slot, write: fn(mut Slot) -> ()) -> () {
     write(mut slot)
     slot.action = count
 }
@@ -135,24 +135,24 @@ type Slot = .{ var action: Action }
 fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
-fn install(mut slot: Slot) &mut -> () { slot.action = freeze }
-fn clear(mut slot: Slot) &mut -> () { slot.action = count }
-fn read_before(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> Action {
+fn install(mut slot: Slot) -> () { slot.action = freeze }
+fn clear(mut slot: Slot) -> () { slot.action = count }
+fn read_before(mut slot: Slot, write: fn(mut Slot) -> ()) -> Action {
     let saved = slot.action
     write(mut slot)
     saved
 }
-fn read_between(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> Action {
+fn read_between(mut slot: Slot, write: fn(mut Slot) -> ()) -> Action {
     write(mut slot)
     let saved = slot.action
     slot.action = count
     saved
 }
-fn invoke_after_fresh(mut slot: Slot, write: fn(mut Slot) &mut -> (), value: int) &mut -> int {
+fn invoke_after_fresh(mut slot: Slot, write: fn(mut Slot) -> (), value: int) -> int {
     write(mut slot)
     out_val(slot.action(Shelf.{ item: ^mut Cell.{ count: value } }))
 }
-fn read_after(mut slot: Slot, write: fn(mut Slot) &mut -> ()) &mut -> Action {
+fn read_after(mut slot: Slot, write: fn(mut Slot) -> ()) -> Action {
     write(mut slot)
     slot.action
 }
@@ -174,21 +174,21 @@ type Shelf = .{ ^mut item: Cell }
 type Out { Frozen(Shelf); Count(int) }
 type Slot = .{ var action: fn(new Shelf) -> new Out }
 type Holder = .{ var ^mut slot: Slot }
-type Swap = fn(mut Holder) &mut -> ()
+type Swap = fn(mut Holder) -> ()
 fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
-fn swap(mut holder: Holder) &mut -> () { holder.slot = Slot.{ action: count } }
-fn write_after(mut holder: Holder, replace: Swap) &mut -> () {
+fn swap(mut holder: Holder) -> () { holder.slot = Slot.{ action: count } }
+fn write_after(mut holder: Holder, replace: Swap) -> () {
     replace(mut holder)
     holder.slot.action = freeze
 }
-fn write_saved(mut holder: Holder, replace: Swap) &mut -> () {
+fn write_saved(mut holder: Holder, replace: Swap) -> () {
     let ^mut saved = holder.slot
     replace(mut holder)
     saved.action = freeze
 }
-fn write_between(mut holder: Holder, replace: Swap) &mut -> () {
+fn write_between(mut holder: Holder, replace: Swap) -> () {
     replace(mut holder)
     let ^mut saved = holder.slot
     replace(mut holder)
@@ -215,12 +215,12 @@ type Cell = .{ var count: int }
 type Shelf = .{ ^mut item: Cell }
 type Out { Frozen(Shelf); Count(int) }
 type Action = fn(new Shelf) -> new Out
-type Update = fn(mut Derived<[]Action>) &mut -> ()
+type Update = fn(mut Derived<[]Action>) -> ()
 fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
 fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
-fn append_count(mut draft: Derived<[]Action>) &mut -> () { Array::push(mut draft, count) }
-fn append_freeze(mut draft: Derived<[]Action>) &mut -> () { Array::push(mut draft, freeze) }
+fn append_count(mut draft: Derived<[]Action>) -> () { Array::push(mut draft, count) }
+fn append_freeze(mut draft: Derived<[]Action>) -> () { Array::push(mut draft, freeze) }
 fn forward(base: []Action, edit: Update) -> []Action { derive(base, edit) }
 fn main() -> () {
     let mut live = Cell.{ count: 41 }
@@ -302,7 +302,7 @@ type Action = fn(new Shelf) -> new Out
 fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
 fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
-fn extend(mut items: []Action) &mut -> () {
+fn extend(mut items: []Action) -> () {
     for 0..2 as _ { Array::push(mut items, count) }
     Array::push(mut items, freeze)
 }
@@ -330,14 +330,14 @@ type Shelf = .{ ^mut item: Cell }
 type Out { Frozen(Shelf); Count(int) }
 type Action = fn(new Shelf) -> new Out
 type Batch = .{ var ^mut items: []Action }
-type Replace = fn(mut Batch) &mut -> ()
+type Replace = fn(mut Batch) -> ()
 fn out_val(o: Out) -> int { match o { Out::Frozen(s) -> s.item.count + 100; Out::Count(n) -> n } }
 fn count(new shelf: Shelf) -> new Out { Out::Count(shelf.item.count) }
 fn freeze(new shelf: Shelf) -> new Out { Out::Frozen(shelf) }
 fn one() -> new []Action { [count] }
-fn replace_one(mut batch: Batch) &mut -> () { batch.items = one() }
-fn replace_two(mut batch: Batch) &mut -> () { batch.items = [count, count] }
-fn append_twice(mut batch: Batch, replace: Replace) &mut -> () {
+fn replace_one(mut batch: Batch) -> () { batch.items = one() }
+fn replace_two(mut batch: Batch) -> () { batch.items = [count, count] }
+fn append_twice(mut batch: Batch, replace: Replace) -> () {
     replace(mut batch)
     Array::push(mut batch.items, count)
     Array::push(mut batch.items, freeze)
@@ -360,8 +360,8 @@ fn main() -> () {
 -- @case aliased_shared_formals_preserve_identity_through_a_nested_mut_call run-pass backend=both
 type Cell = .{ var count: int }
 type Pair = .{ ^mut left: Cell, ^mut right: Cell }
-fn edit(mut cell: Cell) &mut -> () { cell.count += 1 }
-fn retain(^mut left: Cell, ^mut right: Cell) &mut &^mut &return(^mut left, ^mut right) -> new Pair {
+fn edit(mut cell: Cell) -> () { cell.count += 1 }
+fn retain(^mut left: Cell, ^mut right: Cell) &^mut &return(^mut left, ^mut right) -> new Pair {
     edit(mut left)
     Pair.{ left: ^mut left, right: ^mut right }
 }
@@ -400,7 +400,7 @@ fn main() -> () {
 
 -- @case loop_allocations_are_fresh_and_promote_at_block_exit_each_iteration run-pass backend=both
 type Cell = .{ var count: int }
-fn copy(mut target: Cell, ref reader: Cell) &mut -> () { target.count = reader.count }
+fn copy(mut target: Cell, ref reader: Cell) -> () { target.count = reader.count }
 fn main() -> () {
     let mut initial = Cell.{ count: 0 }
     initial.count += 1
@@ -433,7 +433,7 @@ fn main() -> () {
 
 -- @case loops_can_grow_shared_recursive_data run-pass backend=both
 type Node(.{ var value: int, var ^mut next: ?Node })
-fn copy(mut target: Node, ref reader: Node) &mut -> () { target.value = reader.value }
+fn copy(mut target: Node, ref reader: Node) -> () { target.value = reader.value }
 fn read(count: int) -> int {
     let mut tail = Node::(.{ value: 4, next: None })
     tail.value += 1
@@ -460,7 +460,7 @@ fn main() -> () { assert(read(80) == 78) }
 
 -- @case callback_forwarded_chain_keeps_the_callers_tail run-pass backend=both
 type Link(.{ var value: int, var ^mut next: ?Link })
-fn build(^mut tail: Link, count: int) &mut &^mut &return(^mut tail) -> new Link {
+fn build(^mut tail: Link, count: int) &^mut &return(^mut tail) -> new Link {
     var ^mut head = tail
     for 0..count as i {
         let mut node = Link::(.{ value: i, next: Some(^mut head) })
@@ -470,7 +470,7 @@ fn build(^mut tail: Link, count: int) &mut &^mut &return(^mut tail) -> new Link 
     head.value += 1
     Link::(.{ value: 0, next: Some(^mut head) })
 }
-fn forward(via action: fn(via Link) @& -> infer Link, ^mut tail: Link, count: int) &mut &^mut -> infer Link {
+fn forward(via action: fn(via Link) @& -> infer Link, ^mut tail: Link, count: int) &^mut -> infer Link {
     action(build(^mut tail, count))
 }
 fn identity(via chain: Link) -> infer Link { chain }
@@ -527,7 +527,7 @@ fn select(ref holder: .{ via child: Cell }) -> infer Cell {
     let via child = identity(holder.child)
     child
 }
-fn change(mut holder: .{ via child: Cell }) &mut -> () { holder.child.count += 1 }
+fn change(mut holder: .{ via child: Cell }) -> () { holder.child.count += 1 }
 fn main() -> () {
     let mut holder = .{ mut child: Cell.{ count: 41 } }
     let ref selected = select(ref holder)
@@ -617,7 +617,7 @@ fn main() -> () {
 -- @case callee_store_keeps_prepared_return_source_and_updates_the_caller run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ var ^mut item: Cell }
-fn replace(mut shelf: Shelf, ^mut next: Cell) &mut &^mut -> ref(shelf) Cell {
+fn replace(mut shelf: Shelf, ^mut next: Cell) &^mut -> ref(shelf) Cell {
     let ref previous = ref shelf.item
     shelf.item = ^mut next
     previous
@@ -652,7 +652,7 @@ fn main() -> () {
 -- @case recursive_store_preserves_the_call_entry_view run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ var ^mut item: Cell }
-fn replace(mut shelf: Shelf, ^mut next: Cell, depth: int) &mut &^mut -> ref(shelf) Cell {
+fn replace(mut shelf: Shelf, ^mut next: Cell, depth: int) &^mut -> ref(shelf) Cell {
     if depth > 0 { replace(mut shelf, ^mut next, depth - 1) }
     else {
         let ref previous = ref shelf.item
@@ -689,7 +689,7 @@ fn main() -> () {
 -- @case named_callable_alias_keeps_the_entry_view_and_writes_the_caller_slot run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ var ^mut item: Cell }
-fn replace(mut shelf: Shelf, ^mut next: Cell) &mut &^mut -> ref(shelf) Cell {
+fn replace(mut shelf: Shelf, ^mut next: Cell) &^mut -> ref(shelf) Cell {
     let ref previous = ref shelf.item
     shelf.item = ^mut next
     previous
@@ -1260,10 +1260,10 @@ fn main() -> () {
 -- @case via_forwarding_propagates_shared_retention_to_the_caller run-pass backend=both
 type Cell = .{ var count: int }
 type Shelf = .{ var ^mut item: Cell }
-fn store(^mut value: Cell, mut shelf: Shelf) &mut &^mut -> () {
+fn store(^mut value: Cell, mut shelf: Shelf) &^mut -> () {
     shelf.item = ^mut value
 }
-fn relay(^mut value: Cell, mut shelf: Shelf) &mut &^mut -> () {
+fn relay(^mut value: Cell, mut shelf: Shelf) &^mut -> () {
     store(^mut value, mut shelf)
 }
 fn main() -> () {
@@ -1437,7 +1437,7 @@ sub Resources {
         Ok(File::(.{ path, written: 0 }))
     }
     pub fn path(ref f: File) -> str { inner(ref f).path }
-    pub fn write(mut f: File, n: int) &mut -> () {
+    pub fn write(mut f: File, n: int) -> () {
         inner(mut f).written = inner(ref f).written + n
     }
     pub fn close(f: File) -> int {
@@ -1448,7 +1448,7 @@ sub Resources {
     pub opaque linear type Fd(int)
     pub fn make_fd(n: int) -> Fd { Fd::(n) }
     pub fn raw_fd(ref f: Fd) -> int { inner(ref f) }
-    pub fn touch_fd(mut f: Fd) &mut -> int { inner(mut f) + 1 }
+    pub fn touch_fd(mut f: Fd) -> int { inner(mut f) + 1 }
     pub fn close_fd(f: Fd) -> int { inner(f) }
 }
 
@@ -1462,7 +1462,7 @@ sub Net {
         Conn::(.{ id, sent })
     }
     pub fn id(ref c: Conn<Connected>) -> int { inner(ref c).id }
-    pub fn send(mut c: Conn<Connected>, n: int) &mut -> () {
+    pub fn send(mut c: Conn<Connected>, n: int) -> () {
         inner(mut c).sent = inner(ref c).sent + n
     }
     pub fn close(c: Conn<Connected>) -> int {

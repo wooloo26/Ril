@@ -271,7 +271,7 @@ fn port(route: ?Route) -> int { (route?.pair).1 }
 fn read(values: [str: int]) -> int { values["key"] }
 
 -- @case map_compound_assignment_is_rejected compile-fail E0362
-fn update(mut values: [str: int]) &mut -> () { values["key"] += 1 }
+fn update(mut values: [str: int]) -> () { values["key"] += 1 }
 
 -- @case clone_rejects_a_callable_root compile-fail E0301
 fn count() -> int { 42 }
