@@ -13,7 +13,7 @@ fn relay<T>(via value: T) -> infer T {
     item
 }
 
-fn make_cells() -> new []Cell |> Len(1) { [Cell.{ value: 1 }] }
+fn make_cells() -> new []Cell |> Len<1> { [Cell.{ value: 1 }] }
 
 fn receive_cells() -> () {
     let mut cells: [mut]Cell = make_cells() -- New elements receive writable access.
@@ -117,7 +117,7 @@ sub Fs {
     pub opaque linear type File(.{ path: str, var written: int })
     pub fn open(path: str) -> new !<File, str> { Ok(File::(.{ path, written: 0 })) }
     pub fn path(ref f: File) -> str { inner(ref f).path }
-    pub fn write(mut f: File, n: int) &mut -> () { inner(mut f).written += n }
+    pub fn write(mut f: File, n: int) -> () { inner(mut f).written += n }
     pub fn close(f: File) -> int { let File::(.{ written, .. }) = f; written }
 }
 
@@ -131,18 +131,17 @@ fn log_and_close() -> new !<str, str> {
 
 ```ril
 -- Zero-cost static proofs, immutable type-level invariants, proved map indexing,
--- exact slice length conservation, and statically proved 'unreachable()'.
-type Port(int) |> Between(1, 65535)
-type MinLen = \T |> LenTarget, xs: T, n: int -> if len(xs) >= n { <()> } else { <never> }
+-- exact slice length conservation, and DBM-proved branch exhaustiveness.
+type Port(int) |> Between<1, 65535>
+type MinLen = \xs: T, n: int, T |> LenTarget -> if len(xs) >= n { <()> } else { <never> }
 
-fn lookup_port(cfg: [str: Port], key: str |> In(cfg)) -> int |> Positive {
-    let p = cfg[key]                        -- Proved present by 'In(cfg)'
+fn lookup_port(cfg: [str: Port], key: In<cfg>) -> Positive {
+    let p = cfg[key]                        -- Proved present by 'In<cfg>'
     inner(p)                                -- Proved > 0 by 'Port' invariant
 }
 
-fn head_pair(xs: []int |> MinLen(2)) -> int {
+fn head_pair(xs: []int |> MinLen<2>) -> int {
     let pair = xs[0..2]                     -- Exact slice length conservation: len(pair) == 2
-    if len(pair) != 2 { unreachable() }     -- Stays total (no @panic); proved dead by DBM
     pair[0] + pair[1]
 }
 ```

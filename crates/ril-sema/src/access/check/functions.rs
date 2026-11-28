@@ -414,13 +414,12 @@ impl Analyzer<'_> {
                 .into_iter()
                 .flatten()
                 .collect(),
-            mode_calls: Some(
-                self.mode_call_summaries
-                    .remove(&fun.owner)
-                    .into_iter()
-                    .flatten()
-                    .collect(),
-            ),
+            mode_calls: self
+                .mode_call_summaries
+                .remove(&fun.owner)
+                .into_iter()
+                .flatten()
+                .collect(),
             callback_returns: fun
                 .returns
                 .iter()

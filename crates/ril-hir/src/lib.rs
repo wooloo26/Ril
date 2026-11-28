@@ -61,7 +61,6 @@ pub enum Intrinsic {
     CompileErrorCode,
     HasKey,
     Panic,
-    Unreachable,
     Print,
     FileRead,
     FileWrite,
@@ -101,7 +100,6 @@ impl Intrinsic {
         matches!(
             self,
             Panic
-                | Unreachable
                 | HasKey
                 | CompileError
                 | CompileErrorCode

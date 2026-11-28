@@ -40,7 +40,7 @@ impl Analyzer<'_> {
                 .invocations
                 .iter()
                 .all(|invocation| matches!(invocation.mode, InvocationMode::Input(_)))
-            && summary.mode_calls.as_ref().is_none_or(Vec::is_empty)
+            && summary.mode_calls.is_empty()
             && summary.callback_returns.is_empty()
             && summary
                 .storage_updates
@@ -70,13 +70,11 @@ impl Analyzer<'_> {
                 relevant.insert(idx);
             }
         }
-        if let Some(calls) = &summary.mode_calls {
-            for call in calls {
-                for (_, expr) in &call.arguments {
-                    for axis in expr.axes() {
-                        if let Some(idx) = mode_axis_idx(axis) {
-                            relevant.insert(idx);
-                        }
+        for call in &summary.mode_calls {
+            for (_, expr) in &call.arguments {
+                for axis in expr.axes() {
+                    if let Some(idx) = mode_axis_idx(axis) {
+                        relevant.insert(idx);
                     }
                 }
             }
@@ -189,13 +187,11 @@ impl Analyzer<'_> {
                         .copied()
                 }
             };
-            if let Some(calls) = &mut summary.mode_calls {
-                for call in &mut *calls {
-                    call.specialize(&axis_input);
-                }
-                calls.sort_unstable();
-                calls.dedup();
+            for call in &mut summary.mode_calls {
+                call.specialize(&axis_input);
             }
+            summary.mode_calls.sort_unstable();
+            summary.mode_calls.dedup();
             for result in &mut summary.callback_returns {
                 result.specialize(&input);
             }

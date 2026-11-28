@@ -88,7 +88,6 @@ impl Checker<'_> {
                 Err(Signal::Error(Code::E0830, span, "static assertion failed"))
             }
             ("panic", _) => Err(defect(span, "static evaluation panicked")),
-            ("unreachable", []) => Err(defect(span, "static evaluation reached unreachable()")),
             ("has_key", [Value::Map(entries), key]) => Ok(Value::Bool(
                 entries.iter().any(|(stored, _)| ieee_equal(stored, key)),
             )),

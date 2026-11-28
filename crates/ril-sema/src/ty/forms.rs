@@ -153,9 +153,7 @@ impl Checker<'_> {
                             self.error(
                                 Code::E0306,
                                 original_span,
-                                format!(
-                                    "{name} uses angle brackets `<...>` rather than call parentheses `(...)`"
-                                ),
+                                format!("{name} expects angle-bracket arguments `<...>`"),
                             );
                         }
                         syntax::Expr::Path(path) => {
@@ -231,7 +229,7 @@ impl Checker<'_> {
             self.error(
                 Code::E0306,
                 span,
-                "static proof type functions use angle brackets `<...>` rather than call parentheses `(...)`",
+                "static proof type functions expect angle-bracket arguments `<...>`",
             );
             return;
         }

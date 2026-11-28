@@ -18,7 +18,7 @@ fn lib_package(source: &str) -> VirtualPackage {
 }
 
 #[test]
-fn binary_rili_v32_roundtrip_and_tamper_detection() -> Result<(), String> {
+fn binary_rili_roundtrip_and_tamper_detection() -> Result<(), String> {
     let lib = lib_package(
         "pub fn double(x: int) -> int { x + x }\n\
          pub meta fn scale() -> int { 7 }\n",
@@ -26,7 +26,7 @@ fn binary_rili_v32_roundtrip_and_tamper_detection() -> Result<(), String> {
     let iface = Driver
         .interface(&lib)
         .map_err(|diags| format!("interface failed: {diags:?}"))?;
-    assert_eq!(iface.format_version, 3);
+    assert_eq!(iface.format_version, 1);
     assert!(!iface.codegen_abi_hash.is_empty());
 
     let bin = iface.encode().map_err(|e| format!("encode failed: {e}"))?;

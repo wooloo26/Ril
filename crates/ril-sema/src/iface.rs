@@ -25,7 +25,7 @@ use crate::{
 };
 
 const BINARY_MAGIC: &[u8; 5] = b"RILI\x00";
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Interface {

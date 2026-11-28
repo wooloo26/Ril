@@ -9,7 +9,7 @@ pub use flow::{Access, Coordinate};
 pub use modes::{CallbackModeCall, ModeAxis, ModeExpression, ModeStep};
 pub use via::{ViaDomain, ViaRow, ViaRows};
 
-use std::{borrow::Cow, collections::BTreeMap};
+use std::collections::BTreeMap;
 
 use ril_hir::DefinitionId;
 use ril_source::diag::Diagnostic;
@@ -36,8 +36,8 @@ pub struct Summary {
     pub effects: Vec<String>,
     pub effect_uses: Vec<EffectUse>,
     pub invocations: Vec<Invocation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode_calls: Option<Vec<CallbackModeCall>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mode_calls: Vec<CallbackModeCall>,
     pub invoked: Vec<usize>,
     pub callback_returns: Vec<CallbackReturn>,
     pub storage_updates: Vec<StorageUpdate>,
@@ -57,11 +57,8 @@ pub struct Summary {
 }
 
 impl Summary {
-    pub fn offered_mode_calls(&self) -> Cow<'_, [CallbackModeCall]> {
-        self.mode_calls.as_deref().map_or_else(
-            || Cow::Owned(modes::legacy_mode_calls(&self.invocations)),
-            Cow::Borrowed,
-        )
+    pub fn offered_mode_calls(&self) -> &[CallbackModeCall] {
+        &self.mode_calls
     }
 
     fn normalize_invocations(&mut self) {

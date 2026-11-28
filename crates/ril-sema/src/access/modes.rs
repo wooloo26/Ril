@@ -1,8 +1,6 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
-use super::{Access, Coordinate, Input, Invocation, InvocationMode};
+use super::{Access, Coordinate, Input};
 
 /// A root or member mode parameter in a callable's signature.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -138,56 +136,4 @@ impl CallbackModeCall {
                 },
             )
     }
-}
-
-/// Older interfaces store the marginal root offers. The possible calls are
-/// their Cartesian product because the interface gives no correlation.
-pub(super) fn legacy_mode_calls(invocations: &[Invocation]) -> Vec<CallbackModeCall> {
-    let mut receivers = BTreeMap::<_, BTreeMap<_, Vec<_>>>::new();
-    for invocation in invocations {
-        receivers
-            .entry(invocation.receiver)
-            .or_default()
-            .entry(invocation.parameter)
-            .or_default()
-            .push(invocation.mode);
-    }
-    let mut calls = Vec::new();
-    for (receiver, arguments) in receivers {
-        let mut combinations = vec![Vec::new()];
-        for (parameter, modes) in arguments {
-            combinations = combinations
-                .into_iter()
-                .flat_map(|prefix| {
-                    modes.iter().map(move |mode| {
-                        let mut arguments = prefix.clone();
-                        let axis = ModeAxis {
-                            parameter,
-                            path: Vec::new(),
-                        };
-                        let mode = match mode {
-                            InvocationMode::Input(input) => ModeExpression::Input(*input),
-                            InvocationMode::Formal(parameter) => ModeExpression::Axis(ModeAxis {
-                                parameter: *parameter,
-                                path: Vec::new(),
-                            }),
-                        };
-                        arguments.push((axis, mode));
-                        arguments
-                    })
-                })
-                .collect();
-        }
-        calls.extend(combinations.into_iter().map(|arguments| CallbackModeCall {
-            receiver: ModeAxis {
-                parameter: receiver,
-                path: Vec::new(),
-            },
-            recursive_path: None,
-            arguments,
-        }));
-    }
-    calls.sort_unstable();
-    calls.dedup();
-    calls
 }

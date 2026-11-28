@@ -1583,13 +1583,12 @@ pub fn visit(node: Node) -> int {
     provider.insert(provider.entry.clone(), provider_source.to_vec());
     let interface = Driver.interface(&provider).unwrap().encode().unwrap();
     let decoded = Interface::decode(&interface).unwrap();
-    assert!(decoded.functions.values().any(|export| {
-        export
-            .summary
-            .mode_calls
-            .as_ref()
-            .is_some_and(|calls| calls.len() == 2)
-    }));
+    assert!(
+        decoded
+            .functions
+            .values()
+            .any(|export| export.summary.mode_calls.len() == 2)
+    );
     assert!(decoded.functions.values().any(|export| {
         export
             .summary

@@ -2497,7 +2497,7 @@ assert(reset_node(Node.{ val: 9 }) == 0)
 ```
 
 - **Local Containment**: Writes and `^mut` sharing confined to non-escaping local `var` / `let mut` allocations—and writes confined to the `new` subgraphs of a `new` parameter—stay local; the function remains outwardly pure.
-- **Parameter Mutation (no `&mut` clause)**: Parameter mutation is already declared directly by `mut` / `^mut` parameter modes (and `E0527` requires reachable writable use on `mut` parameters); there is no redundant `&mut` state clause (`E0120`).
+- **Parameter Mutation**: Mutating a parameter is declared directly by its `mut` / `^mut` parameter mode (`E0527` requires reachable writable use on `mut` parameters).
 - **`&^mut` (`E0510`)**: Required when a `^mut` parameter (or locally allocated shared root) is retained into another parameter, escaping closure environment, or escaping non-root structure (root `-> ^mut(x) T` already accounts for its own retention).
 - **`&capture` (`E0510`)**: Required when a named `fn` returns or stores a newly created closure environment or escaping `ctl(...)` continuation capturing any enclosing runtime local or parameter (module/`sub` constants need zero `&capture`).
 - **Contained Immutable Sources**: `&return(x)` adds no state effect and remains part of the return provenance.

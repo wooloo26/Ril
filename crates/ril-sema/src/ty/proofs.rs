@@ -524,7 +524,7 @@ impl Checker<'_> {
                 })
             }
             Expr::Call { callee, .. } => {
-                // `compile_error` / `compile_error_code` / `panic` / `unreachable` -> `False` (never).
+                // `compile_error` / `compile_error_code` / `panic` -> `False` (never).
                 if let Expr::Path(path) = &self.ast(file).expr(*callee).value
                     && let Some(id) = self.resolve(path.span)
                     && matches!(

@@ -324,7 +324,7 @@ fn cross_package_behavior_propagates_via_rili_without_changing_abi_hash() {
 }
 
 #[test]
-fn unreachable_preserves_total_behavior_and_is_allowed_in_defer() {
+fn dbm_unsat_preserves_total_behavior_and_is_allowed_in_defer() {
     let compiler = Driver.with_options(CompileOptions::default());
     let mut pkg = VirtualPackage::new(Unit::Bin);
     pkg.insert(

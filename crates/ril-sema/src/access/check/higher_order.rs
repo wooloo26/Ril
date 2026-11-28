@@ -158,7 +158,7 @@ impl Calls {
             };
             self.invocations.insert((owner, at, owner, owner));
         }
-        for call in summary.offered_mode_calls().iter() {
+        for call in summary.offered_mode_calls() {
             if let Some(receiver) = axis_region(&call.receiver, &formals) {
                 let arguments = call
                     .arguments

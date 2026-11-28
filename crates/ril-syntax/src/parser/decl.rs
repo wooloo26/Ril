@@ -486,7 +486,7 @@ impl Parser<'_> {
                         return Err(self.error(
                             Code::E0120,
                             start.join(self.current().span),
-                            "`&mut` state clause has been removed; `mut` parameters imply mutation automatically (keep `&^mut` for retained shared writers)",
+                            "invalid state clause `&mut`; expected `&^mut`, `&capture`, `&up`, or `&return`",
                         ));
                     }
                     "^mut" => Some(StateKind::Share),

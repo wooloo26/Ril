@@ -109,7 +109,7 @@ fn private_stdlib_intrinsics_are_hidden_and_array_get_is_removed() {
             .diagnostics
             .iter()
             .any(|d| d.code == Some(Code::E0209)),
-        "expected E0209 unresolved-member error for removed Array::get, got {:?}",
+        "expected E0209 unresolved-member error for Array::get, got {:?}",
         checked.result.diagnostics
     );
 }
@@ -268,7 +268,7 @@ fn prelude_real_sums_platform_math_and_removed_aliases() -> Result<(), String> {
                 .diagnostics
                 .iter()
                 .any(|d| d.code == Some(Code::E0209)),
-            "expected E0209 for removed legacy alias `{bad}`, got {:?}",
+            "expected E0209 for unknown module member `{bad}`, got {:?}",
             checked.result.diagnostics
         );
     }
