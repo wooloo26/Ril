@@ -331,7 +331,7 @@ fn unreachable_preserves_total_behavior_and_is_allowed_in_defer() {
     pkg.insert(
         pkg.entry.clone(),
         br#"
-type HttpClass(int) |> Between(100, 599)
+type HttpClass(int) |> Between<100, 599>
 
 fn total_with_dbm_exhaustiveness(x: int, c: HttpClass) -> int {
     let base = match inner(c) {

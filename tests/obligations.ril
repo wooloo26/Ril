@@ -822,7 +822,7 @@ where
 }
 
 -- @case static_proof_lower_bound_and_insert_sorted compile-pass
-fn lower_bound(xs: []int, target: int) -> int |> Between(0, len(xs)) {
+fn lower_bound(xs: []int, target: int) -> int |> Between<0, len(xs)> {
     var lo = 0
     var hi = len(xs)
     while lo < hi {
@@ -842,7 +842,7 @@ fn insert_sorted(mut xs: []int, value: int) &mut -> () {
 }
 
 -- @case static_proof_fallible_return_and_binary_search compile-pass
-fn binary_search(xs: []int, target: int) -> new ?int |> InBounds(xs) {
+fn binary_search(xs: []int, target: int) -> new ?int |> InBounds<xs> {
     var lo = 0
     var hi = len(xs)
     while lo < hi {
@@ -895,7 +895,7 @@ fn bad_nat(x: int) -> int |> Nat {
 }
 
 -- @case static_proof_defer_mutation_invalidates_return_proof compile-fail E0323
-fn bad_defer(mut xs: []int |> NonEmpty) &mut -> int |> InBounds(xs) {
+fn bad_defer(mut xs: []int |> NonEmpty) &mut -> int |> InBounds<xs> {
     defer Array::clear(mut xs)
     0
     -- ^ E0323
@@ -930,7 +930,7 @@ fn bad_swap(mut xs: []int, i: int) &mut -> () {
 }
 
 -- @case proved_map_in_and_direct_indexing compile-pass
-fn lookup_proved(m: [str: int], k: str |> In(m)) -> int {
+fn lookup_proved(m: [str: int], k: str |> In<m>) -> int {
     m[k]
 }
 
@@ -965,7 +965,7 @@ fn mutate_proved_map(mut m: [str: int], k: str) &mut -> int {
     total
 }
 
-fn set_in_proof(s: Set<str>, x: str |> In(s)) -> bool {
+fn set_in_proof(s: Set<str>, x: str |> In<s>) -> bool {
     Set::contains(s, x)
 }
 
@@ -1003,7 +1003,7 @@ fn bad_pop(mut m: [str: int]) &mut -> int {
 }
 
 -- @case set_remove_invalidates_in_proof compile-fail E0323
-fn need_in(s: Set<str>, x: str |> In(s)) -> bool { Set::contains(s, x) }
+fn need_in(s: Set<str>, x: str |> In<s>) -> bool { Set::contains(s, x) }
 fn bad_set(mut s: Set<str>, x: str) &mut -> bool {
     Set::insert(mut s, x)
     let _ = Set::remove(mut s, x)
@@ -1012,7 +1012,7 @@ fn bad_set(mut s: Set<str>, x: str) &mut -> bool {
 }
 
 -- @case dbm_unsat_match_if_block_and_let_irrefutable compile-pass
-type HttpClass(int) |> Between(100, 599)
+type HttpClass(int) |> Between<100, 599>
 
 fn classify_http(c: HttpClass) -> str {
     match inner(c) {
@@ -1043,14 +1043,14 @@ fn sign_block_tail(x: int) -> int {
 fn irrefutable_nonempty_and_in(
     xs: []int |> NonEmpty,
     m: [str: int],
-    k: In(m),
+    k: In<m>,
 ) -> int {
     let [head, ..] = xs
     let v = m[k]
     head + v
 }
 
-fn bitwise_and_shift_bounds(v: Between(0, 65535), raw: bytes) -> Between(0, 255) {
+fn bitwise_and_shift_bounds(v: Between<0, 65535>, raw: bytes) -> Between<0, 255> {
     let hi = (v >> 8) & 0xFF
     let lo = v & 0xFF
     if len(raw) > 0 {
@@ -1074,16 +1074,16 @@ fn nan_guard(x: f64) -> int {
 
 -- @case reflects_implies_and_ensures_compile_pass compile-pass
 fn is_valid_slice(lo: int, hi: int, xs: []int) -> bool
-    |> Reflects(Between(lo, 0, hi) && AtMost(hi, len(xs)))
+    |> Reflects<Between<lo, 0, hi> && AtMost<hi, len(xs)>>
 {
     lo >= 0 && lo <= hi && hi <= len(xs)
 }
 
-fn is_pos_strict(x: int) -> bool |> Implies(Positive(x)) {
+fn is_pos_strict(x: int) -> bool |> Implies<Positive<x>> {
     x > 10
 }
 
-fn ensure_key(mut m: [str: int], k: str) &mut -> () |> Ensures(In(k, m)) {
+fn ensure_key(mut m: [str: int], k: str) &mut -> () |> Ensures<In<k, m>> {
     if !Map::contains(ref m, k) {
         m[k] = 0
     }
@@ -1098,7 +1098,7 @@ fn use_combinators(xs: []int, a: int, b: int, x: int, mut m: [str: int], k: str)
 }
 
 -- @case implies_false_branch_not_negated_is_e0361 compile-fail E0361
-fn conservative_zero(x: int) -> bool |> Implies(x == 0) {
+fn conservative_zero(x: int) -> bool |> Implies<x == 0> {
     false
 }
 fn bad_else_negation(x: int) -> int {
@@ -1111,7 +1111,7 @@ fn bad_else_negation(x: int) -> int {
 }
 
 -- @case reflects_unproved_false_branch_is_e0323 compile-fail E0323
-fn bad_reflects(x: int) -> bool |> Reflects(Positive(x)) {
+fn bad_reflects(x: int) -> bool |> Reflects<Positive<x>> {
     x > 10
     -- ^ E0323
 }
@@ -1119,8 +1119,8 @@ fn bad_reflects(x: int) -> bool |> Reflects(Positive(x)) {
 -- @case hof_callback_static_proof_compile_pass compile-pass
 fn map_indexed<T, R>(
     xs: []T,
-    via f: fn(i: InBounds(xs), x: T) @& -> R,
-) -> new []R |> SameLen(xs) {
+    via f: fn(i: InBounds<xs>, x: T) @& -> R,
+) -> new []R |> SameLen<xs> {
     let mut out: []R = []
     for 0..len(xs) as i {
         Array::push(mut out, f(i, xs[i]))
@@ -1128,12 +1128,12 @@ fn map_indexed<T, R>(
     out
 }
 
-fn add_same_len(xs: []int, ys: []int |> SameLen(xs)) -> new []int |> SameLen(xs) {
+fn add_same_len(xs: []int, ys: []int |> SameLen<xs>) -> new []int |> SameLen<xs> {
     map_indexed(xs, \i, x -> x + ys[i])
 }
 
 -- @case hof_callback_unproved_call_is_e0323 compile-fail E0323
-fn bad_hof(xs: []int, f: fn(i: InBounds(xs)) -> int) -> int {
+fn bad_hof(xs: []int, f: fn(i: InBounds<xs>) -> int) -> int {
     f(0)
     -- ^ E0323
 }
@@ -1170,19 +1170,19 @@ fn bad_inner_by_value(tx: Tx) -> Tx {
 }
 
 -- @case exact_slice_length_conservation compile-pass
-fn takes_len(xs: []int, n: int, s: []int |> Len(n)) -> int {
+fn takes_len(xs: []int, n: int, s: []int |> Len<n>) -> int {
     len(xs) + len(s)
 }
 
-fn takes_diff_len(a: int, b: int, s: []int |> Len(b - a)) -> int {
+fn takes_diff_len(a: int, b: int, s: []int |> Len<b - a>) -> int {
     a + b + len(s)
 }
 
-fn takes_same(a: []int, b: []int |> SameLen(a)) -> int {
+fn takes_same(a: []int, b: []int |> SameLen<a>) -> int {
     len(a) + len(b)
 }
 
-fn slice_conservation(xs: []int, ys: []int |> SameLen(xs), a: int, b: int) -> int {
+fn slice_conservation(xs: []int, ys: []int |> SameLen<xs>, a: int, b: int) -> int {
     var total = 0
     if 0 <= a && a <= b && b <= len(xs) {
         let s1 = xs[a..b]
@@ -1206,7 +1206,7 @@ fn slice_conservation(xs: []int, ys: []int |> SameLen(xs), a: int, b: int) -> in
 type ValidSpan = \s: .{ lo: int, hi: int } -> if s.lo <= s.hi { <()> } else { <never> }
 type Ordered = \p: (int, int) -> if p.0 <= p.1 { <()> } else { <never> }
 
-type Port(int) |> Between(1, 65535)
+type Port(int) |> Between<1, 65535>
 type Span(.{ lo: int, hi: int }) |> ValidSpan
 type Pair(int, int) |> Ordered
 type NonEmptyList<T>([]T) |> NonEmpty
@@ -1237,7 +1237,7 @@ fn replace_whole_span_in_derive(h: Holder) -> Holder {
 }
 
 -- @case type_invariant_const_violation_is_e0323 compile-fail E0323
-type Port(int) |> Between(1, 65535)
+type Port(int) |> Between<1, 65535>
 fn bad() -> Port {
     Port::(0)
     -- ^ E0323
@@ -1260,7 +1260,7 @@ fn bad() -> Pair {
 }
 
 -- @case type_invariant_opaque_no_implicit_bypass compile-fail E0301
-opaque type Port(int) |> Between(1, 65535)
+opaque type Port(int) |> Between<1, 65535>
 fn forge(x: int) -> Port { x }
 -- ^ E0301
 
@@ -1334,10 +1334,42 @@ fn bad() -> () {
 }
 
 -- @case soundness_map_insert_updates_length compile-fail E0323
-fn needs_len1(m: [str: int] |> Len(1)) -> int { len(m) }
+fn needs_len1(m: [str: int] |> Len<1>) -> int { len(m) }
 fn bad() -> int {
     let mut m: [str: int] = ["a": 1]
     m["b"] = 2
     needs_len1(clone(ref m))
     -- ^ E0323
+}
+
+-- @case angle_bracket_proof_style_a_and_comparisons compile-pass
+fn get_explicit(xs: []int, i: InBounds<xs, []int>) -> int { xs[i] }
+fn lookup_explicit(m: [str: int], k: In<m, [str: int]>) -> int { m[k] }
+fn in_range_cmp(x: int, lo: int, hi: int) -> bool |> Reflects<x >= lo && x <= hi> {
+    x >= lo && x <= hi
+}
+fn push_nonempty(mut xs: []int, v: int) &mut -> () |> Ensures<len(xs) > 0> {
+    Array::push(mut xs, v)
+}
+fn caller(xs: []int, m: [str: int], k: str) -> int {
+    let mut ys = [1]
+    push_nonempty(mut ys, 2)
+    let a = ys[0]
+    let b = if in_range_cmp(0, 0, len(xs) - 1) {
+        get_explicit(xs, 0)
+    } else {
+        0
+    }
+    let c = if Map::contains(m, k) {
+        lookup_explicit(m, k)
+    } else {
+        0
+    }
+    a + b + c
+}
+
+-- @case paren_static_proof_guard_is_e0306 compile-fail E0306
+fn bad_paren_proof(xs: []int, i: int |> InBounds(xs)) -> int {
+    --                                  ^ E0306
+    xs[i]
 }

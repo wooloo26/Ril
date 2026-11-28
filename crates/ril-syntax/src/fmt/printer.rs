@@ -460,11 +460,7 @@ impl<'src, 'a> Printer<'src, 'a> {
         let ret_ty = self.print_type(sig.result);
         tail_parts.push(ret_ty);
 
-        let skip_first_ret_guard = matches!(
-            self.ast.ty(sig.result).value,
-            Type::Proof(g) if sig.guards.first() == Some(&g)
-        );
-        for &guard in sig.guards.iter().skip(usize::from(skip_first_ret_guard)) {
+        for &guard in &sig.guards {
             let g_span = self.ast.expr(guard).span;
             let (leading, had) = self
                 .comments
@@ -626,13 +622,7 @@ impl<'src, 'a> Printer<'src, 'a> {
             }
             parts.push(self.print_type(ty));
         }
-        let skip_first_param_guard = p.ty.is_some_and(|ty| {
-            matches!(
-                self.ast.ty(ty).value,
-                Type::Proof(g) if p.guards.first() == Some(&g)
-            )
-        });
-        for &guard in p.guards.iter().skip(usize::from(skip_first_param_guard)) {
+        for &guard in &p.guards {
             parts.push(self.arena.text(" |> "));
             parts.push(self.print_expr(guard));
         }
@@ -1323,7 +1313,6 @@ impl<'src, 'a> Printer<'src, 'a> {
             Type::PatternWildcard => self.arena.text("_"),
             Type::PatternLiteral(lit) => self.print_literal(&lit),
             Type::Named(path) => self.print_path(&path),
-            Type::Proof(expr) => self.print_expr(expr),
             Type::Unit => self.arena.text("()"),
             Type::TupleAny => self.arena.text("(..)"),
             Type::Tuple(elems) => {

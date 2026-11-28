@@ -30,7 +30,7 @@ pub fn abs(x: int) -> Nat {
 }
 
 -- Returns the smaller of `a` and `b`.
-pub fn min(a: int, b: int) -> AtMost(a) |> AtMost(b) {
+pub fn min(a: int, b: int) -> AtMost<a> |> AtMost<b> {
     if a < b {
         a
     } else {
@@ -39,7 +39,7 @@ pub fn min(a: int, b: int) -> AtMost(a) |> AtMost(b) {
 }
 
 -- Returns the larger of `a` and `b`.
-pub fn max(a: int, b: int) -> AtLeast(a) |> AtLeast(b) {
+pub fn max(a: int, b: int) -> AtLeast<a> |> AtLeast<b> {
     if a > b {
         a
     } else {
@@ -48,7 +48,7 @@ pub fn max(a: int, b: int) -> AtLeast(a) |> AtLeast(b) {
 }
 
 -- Restricts `x` to the inclusive range `[lo, hi]`.
-pub fn clamp(x: int, lo: int, hi: AtLeast(lo)) -> Between(lo, hi) {
+pub fn clamp(x: int, lo: int, hi: AtLeast<lo>) -> Between<lo, hi> {
     if x < lo {
         lo
     } else if x > hi {

@@ -5,7 +5,7 @@
 linear type Token(int)
 fn drop_tok(t: Token) -> int { inner(t) }
 fn div_shift(a: int, d |> NonZero, k |> Nat) -> int { (a / d) << k }
-fn lower_bound(xs: []int, target: int) -> int |> Between(0, len(xs)) {
+fn lower_bound(xs: []int, target: int) -> int |> Between<0, len(xs)> {
     var lo = 0
     var hi = len(xs)
     while lo < hi {
@@ -542,11 +542,11 @@ fn main() -> () {
 
 -- @case proved_map_invariants_slice_and_unreachable_runtime run-pass backend=both
 type ValidSpan = \s: .{ lo: int, hi: int } -> if s.lo <= s.hi { <()> } else { <never> }
-type Port(int) |> Between(1, 65535)
+type Port(int) |> Between<1, 65535>
 type Span(.{ lo: int, hi: int }) |> ValidSpan
 
-fn get_key(m: [str: int], k: str |> In(m)) -> int { m[k] }
-fn slice_window(xs: []int, a: int, b: int |> AtLeast(a)) -> new []int |> Len(b - a) {
+fn get_key(m: [str: int], k: str |> In<m>) -> int { m[k] }
+fn slice_window(xs: []int, a: int, b: int |> AtLeast<a>) -> new []int |> Len<b - a> {
     if 0 <= a && b <= len(xs) {
         xs[a..b]
     } else {

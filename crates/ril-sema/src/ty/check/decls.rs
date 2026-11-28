@@ -239,7 +239,7 @@ impl Checker<'_> {
                     && let Some((tf_id, angle_args, span)) =
                         self.bare_proof_type_info(local.file, ty_id)
                 {
-                    self.check_static_proof_bare(&mut local, tf_id, &angle_args, span, &ty.ty);
+                    self.check_static_proof_args(&mut local, tf_id, &angle_args, span, &ty.ty);
                 }
                 for &guard in &p.guards {
                     self.check_guard(&mut local, guard, &ty.ty, &call.result, false);
@@ -282,10 +282,10 @@ impl Checker<'_> {
         if let Some((tf_id, angle_args, span)) =
             self.bare_proof_type_info(local.file, fun.signature.result)
         {
-            self.check_static_proof_bare(&mut local, tf_id, &angle_args, span, &return_subject);
+            self.check_static_proof_args(&mut local, tf_id, &angle_args, span, &return_subject);
             local
                 .return_proofs
-                .push(super::ReturnProofRef::Bare(tf_id, span));
+                .push(super::ReturnProofRef::Type(fun.signature.result));
         }
         for &guard in &fun.signature.guards {
             self.check_guard(&mut local, guard, &return_subject, &call.result, true);

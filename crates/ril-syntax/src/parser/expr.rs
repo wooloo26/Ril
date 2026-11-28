@@ -76,7 +76,7 @@ impl Parser<'_> {
         loop {
             self.layout();
             self.continue_lines(|tok| matches!(tok, "." | "?." | "|>" | "as" | "??"));
-            if context.angle && self.text().starts_with('>')
+            if context.angle && self.text().starts_with('>') && !self.angle_is_comparison()
                 || context.for_iterable && self.is("as")
                 || context.guard && matches!(self.text(), "|" | "|>" | "=")
             {
@@ -444,7 +444,14 @@ impl Parser<'_> {
                     })
                 }
                 Kind::Word(Word::Pascal | Word::Constant | Word::Value | Word::Primitive) => {
-                    let path = self.path(Angle::Expression, true)?;
+                    let angle = if context.guard
+                        && matches!(self.current().kind, Kind::Word(Word::Pascal))
+                    {
+                        Angle::Type
+                    } else {
+                        Angle::Expression
+                    };
+                    let path = self.path(angle, true)?;
                     if self.is("::") && self.next_text() == "(" {
                         if !self.tight("::") {
                             return Err(self.error(

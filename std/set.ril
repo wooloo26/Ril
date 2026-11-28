@@ -7,7 +7,7 @@ use ril/map
 pub opaque type Set<T>([T: ()])
 
 -- Creates a new empty `Set<T>`.
-pub fn empty<T>() -> new Set<T> |> Len(0) {
+pub fn empty<T>() -> new Set<T> |> Len<0> {
     Set::([:])
 }
 
@@ -41,6 +41,6 @@ pub fn clear<T>(mut set: Set<T>) &mut -> () {
 }
 
 -- Returns a new array containing all elements of `set` in insertion order.
-pub fn to_array<T>(via set: Set<T>) &return(set) -> new []T |> SameLen(set) {
+pub fn to_array<T>(via set: Set<T>) &return(set) -> new []T |> SameLen<set> {
     Map::keys(inner(set))
 }

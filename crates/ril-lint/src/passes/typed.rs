@@ -1487,7 +1487,7 @@ fn check_redundant_proof_base_types(
             continue;
         };
         if let Some(ty_id) = param.ty
-            && matches!(ast.ty(ty_id).value, Type::Proof(_))
+            && is_static_proof_type_node(typed, file_id, ty_id)
         {
             continue;
         }
@@ -1558,10 +1558,9 @@ fn check_redundant_proof_base_types(
         return;
     };
     let ret_ty_node = ast.ty(fun.signature.result);
-    if matches!(
-        ret_ty_node.value,
-        Type::Proof(_) | Type::Option(_) | Type::Result(_, _)
-    ) {
+    if matches!(ret_ty_node.value, Type::Option(_) | Type::Result(_, _))
+        || is_static_proof_type_node(typed, file_id, fun.signature.result)
+    {
         return;
     }
     if callable.is_some_and(|c| c.result.is_option(&typed.hir) || c.result.is_result(&typed.hir)) {
@@ -1597,4 +1596,37 @@ fn check_redundant_proof_base_types(
         format!("redundant return base type before `|> {guard_txt}`; write `{guard_txt}` directly"),
     )
     .with_fix(fix);
+}
+
+fn is_static_proof_type_node(
+    typed: &ril_sema::ty::TypedProgram,
+    file_id: FileId,
+    ty_id: ril_syntax::syntax::TypeId,
+) -> bool {
+    let ast = &typed.hir.file(file_id).ast;
+    let Type::Named(path) = &ast.ty(ty_id).value else {
+        return false;
+    };
+    let Some(def_id) = typed
+        .hir
+        .resolve(path.span)
+        .and_then(ril_hir::Resolution::definition)
+    else {
+        return false;
+    };
+    let def = typed.hir.definition(def_id);
+    if def.kind != ril_hir::DefinitionKind::Type {
+        return false;
+    }
+    let Some(stmt) = def.stmt else {
+        return false;
+    };
+    let def_file = def.name.span.file;
+    let StmtKind::Type(decl) = &typed.hir.file(def_file).ast.stmt(stmt).value.kind else {
+        return false;
+    };
+    matches!(
+        decl.definition,
+        ril_syntax::syntax::TypeDefinition::Function(_, _)
+    )
 }

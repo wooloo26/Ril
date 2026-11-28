@@ -996,7 +996,15 @@ impl Checker<'_> {
             }),
         }
     }
+}
 
+#[derive(Clone)]
+pub(super) enum CombinatorArg {
+    Expr(ExprId),
+    TypePath(syntax::Path),
+}
+
+impl Checker<'_> {
     // -------------------------------------------------------------------------
     // 2. Guard Extraction & Instantiation Helpers
     // -------------------------------------------------------------------------
@@ -1005,7 +1013,7 @@ impl Checker<'_> {
         &self,
         file: FileId,
         guard: ExprId,
-    ) -> Option<(ProofKind, ExprId)> {
+    ) -> Option<(ProofKind, CombinatorArg)> {
         let GuardKind::StaticProofPrimitive(id) = self.hir.classify_guard(file, guard) else {
             return None;
         };
@@ -1015,13 +1023,74 @@ impl Checker<'_> {
             "Ensures" => ProofKind::Ensures,
             _ => return None,
         };
-        let Expr::Call { args, .. } = &self.ast(file).expr(guard).value else {
+        let ast = self.ast(file);
+        let Expr::Path(path) = &ast.expr(guard).value else {
             return None;
         };
-        let [arg] = args.as_slice() else {
-            return None;
+        let seg = path.segments.last()?;
+        match seg.arguments.as_slice() {
+            [syntax::GenericArg::Value(pred)] => Some((kind, CombinatorArg::Expr(*pred))),
+            [syntax::GenericArg::Type(ty_id)] => {
+                if let Type::Named(pred_path) = &ast.ty(*ty_id).value {
+                    Some((kind, CombinatorArg::TypePath(pred_path.clone())))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn lower_combinator_arg(
+        &mut self,
+        file: FileId,
+        arg: &CombinatorArg,
+        locals: &HashMap<DefinitionId, TfLocal>,
+    ) -> Result<ProofPred<ProofAtom>, LowerError> {
+        match arg {
+            CombinatorArg::Expr(expr) => self.lower_combinator_pred(file, *expr, locals),
+            CombinatorArg::TypePath(path) => self.lower_combinator_path(file, path, locals),
+        }
+    }
+
+    fn lower_combinator_path(
+        &mut self,
+        file: FileId,
+        path: &syntax::Path,
+        locals: &HashMap<DefinitionId, TfLocal>,
+    ) -> Result<ProofPred<ProofAtom>, LowerError> {
+        let Some(tf_id) = self.resolve(path.span) else {
+            return Err(LowerError {
+                span: path.span,
+                reason: "unresolved proof combinator predicate",
+            });
         };
-        Some((kind, arg.value))
+        if self.hir.definition(tf_id).kind != ril_hir::DefinitionKind::Type {
+            return Err(LowerError {
+                span: path.span,
+                reason: "expected proof type function in combinator",
+            });
+        }
+        let angle_args = path
+            .segments
+            .last()
+            .map(|s| s.arguments.clone())
+            .unwrap_or_default();
+        let lowered = self.lower_type_fn(tf_id)?;
+        let mut sub_args = Vec::with_capacity(lowered.value_param_count);
+        for arg in angle_args.iter().take(lowered.value_param_count) {
+            let syntax::GenericArg::Value(arg_expr) = arg else {
+                return Err(LowerError {
+                    span: path.span,
+                    reason: "expected value argument in proof combinator",
+                });
+            };
+            sub_args.push(self.lower_tf_arg(file, *arg_expr, locals)?);
+        }
+        substitute_tf_pred(&lowered.pred, &sub_args).ok_or(LowerError {
+            span: path.span,
+            reason: "could not substitute proof combinator argument",
+        })
     }
 
     fn lower_combinator_pred(
@@ -1032,7 +1101,6 @@ impl Checker<'_> {
     ) -> Result<ProofPred<ProofAtom>, LowerError> {
         let ast = self.ast(file);
         let node = ast.expr(expr);
-        let span = node.span;
         match &node.value {
             Expr::Binary { op, left, right } if op.value == "&&" => {
                 let l = self.lower_combinator_pred(file, *left, locals)?;
@@ -1047,26 +1115,42 @@ impl Checker<'_> {
             Expr::Unary { op, value } if op.value == "!" => {
                 Ok(self.lower_combinator_pred(file, *value, locals)?.negate())
             }
-            Expr::Call { callee, args } => {
-                if let Expr::Path(path) = &ast.expr(*callee).value
-                    && let Some(tf_id) = self.resolve(path.span)
+            Expr::Path(path) => {
+                let path = path.clone();
+                if let Some(tf_id) = self.resolve(path.span)
                     && self.hir.definition(tf_id).kind == ril_hir::DefinitionKind::Type
                 {
-                    let args = args.clone();
-                    let lowered = self.lower_type_fn(tf_id)?;
-                    let mut sub_args = Vec::with_capacity(args.len());
-                    for arg in &args {
-                        sub_args.push(self.lower_tf_arg(file, arg.value, locals)?);
-                    }
-                    return substitute_tf_pred(&lowered.pred, &sub_args).ok_or(LowerError {
-                        span,
-                        reason: "could not substitute proof combinator argument",
-                    });
+                    return self.lower_combinator_path(file, &path, locals);
                 }
                 self.lower_tf_bool(file, expr, locals)
             }
             _ => self.lower_tf_bool(file, expr, locals),
         }
+    }
+
+    pub(super) fn extract_static_proof_angle_args(
+        &self,
+        tf_id: DefinitionId,
+        angle_args: &[syntax::GenericArg],
+    ) -> Option<Vec<Option<ExprId>>> {
+        let def = self.hir.definition(tf_id);
+        let stmt = def.stmt?;
+        let StmtKind::Type(decl) = &self.ast(def.name.span.file).stmt(stmt).value.kind else {
+            return None;
+        };
+        let TypeDefinition::Function(tf_params, _) = &decl.definition else {
+            return None;
+        };
+        let (_, Some(_), trailing) = partition_type_fn_params(tf_params) else {
+            return None;
+        };
+        let mut bound: Vec<Option<ExprId>> = vec![None; trailing.len()];
+        for (idx, slot) in bound.iter_mut().enumerate() {
+            if let Some(syntax::GenericArg::Value(expr)) = angle_args.get(idx) {
+                *slot = Some(*expr);
+            }
+        }
+        Some(bound)
     }
 
     /// Extract `(tf_id, extra_args_by_trailing_param_idx)` from a static proof guard AST node.
@@ -1085,41 +1169,15 @@ impl Checker<'_> {
         {
             node = ast.expr(*value);
         }
-        let extra_args: &[syntax::Argument] = if let Expr::Call { args, .. } = &node.value {
-            args.as_slice()
-        } else {
-            &[]
-        };
-        let def = self.hir.definition(tf_id);
-        let stmt = def.stmt?;
-        let StmtKind::Type(decl) = &self.ast(def.name.span.file).stmt(stmt).value.kind else {
+        let Expr::Path(path) = &node.value else {
             return None;
         };
-        let TypeDefinition::Function(tf_params, _) = &decl.definition else {
-            return None;
-        };
-        let (_, Some(_), trailing) = partition_type_fn_params(tf_params) else {
-            return None;
-        };
-        let mut bound: Vec<Option<ExprId>> = vec![None; trailing.len()];
-        let mut pos_idx = 0usize;
-        for arg in extra_args {
-            if let Some(label) = &arg.name {
-                if let Some(idx) = trailing.iter().position(|p| p.name.value == label.value)
-                    && let Some(slot) = bound.get_mut(idx)
-                {
-                    *slot = Some(arg.value);
-                }
-            } else {
-                while bound.get(pos_idx).is_some_and(Option::is_some) {
-                    pos_idx += 1;
-                }
-                if let Some(slot) = bound.get_mut(pos_idx) {
-                    *slot = Some(arg.value);
-                    pos_idx += 1;
-                }
-            }
-        }
+        let angle_args = path
+            .segments
+            .last()
+            .map(|s| s.arguments.as_slice())
+            .unwrap_or(&[]);
+        let bound = self.extract_static_proof_angle_args(tf_id, angle_args)?;
         Some((tf_id, bound))
     }
 
@@ -1134,9 +1192,10 @@ impl Checker<'_> {
     ) -> Vec<(DefinitionId, Vec<Option<ExprId>>, Span)> {
         let mut out = Vec::new();
         if let Some(ty_id) = param.ty
-            && let Some((tf_id, _, span)) = self.bare_proof_type_info(file, ty_id)
+            && let Some((tf_id, angle_args, span)) = self.bare_proof_type_info(file, ty_id)
+            && let Some(extra) = self.extract_static_proof_angle_args(tf_id, &angle_args)
         {
-            out.push((tf_id, Vec::new(), span));
+            out.push((tf_id, extra, span));
         }
         for &guard in &param.guards {
             if let Some((tf_id, extra)) = self.extract_static_proof_guard(file, guard) {
@@ -1152,8 +1211,10 @@ impl Checker<'_> {
         sig: &syntax::Signature,
     ) -> Vec<(DefinitionId, Vec<Option<ExprId>>, Span)> {
         let mut out = Vec::new();
-        if let Some((tf_id, _, span)) = self.bare_proof_type_info(file, sig.result) {
-            out.push((tf_id, Vec::new(), span));
+        if let Some((tf_id, angle_args, span)) = self.bare_proof_type_info(file, sig.result)
+            && let Some(extra) = self.extract_static_proof_angle_args(tf_id, &angle_args)
+        {
+            out.push((tf_id, extra, span));
         }
         for &guard in &sig.guards {
             if let Some((tf_id, extra)) = self.extract_static_proof_guard(file, guard) {
@@ -1269,10 +1330,13 @@ impl Checker<'_> {
         let return_proofs = exit_env.return_proofs.clone();
         for proof_ref in return_proofs {
             if let super::check::ReturnProofRef::Expr(guard) = proof_ref
-                && let Some((kind, pred_expr)) = self.extract_proof_combinator(exit_env.file, guard)
+                && let Some((kind, pred_arg)) = self.extract_proof_combinator(exit_env.file, guard)
             {
                 let guard_span = self.ast(exit_env.file).expr(guard).span;
-                let pred_span = self.ast(exit_env.file).expr(pred_expr).span;
+                let pred_span = match &pred_arg {
+                    CombinatorArg::Expr(e) => self.ast(exit_env.file).expr(*e).span,
+                    CombinatorArg::TypePath(p) => p.span,
+                };
                 let mut locals: HashMap<DefinitionId, TfLocal> = HashMap::new();
                 let mut arg_vals: Vec<ProofArgVal> = Vec::new();
                 for (_, def_id) in self.hir.references_within(pred_span) {
@@ -1290,8 +1354,7 @@ impl Checker<'_> {
                         arg_vals.push(ProofArgVal::Place(Place::local(def_id)));
                     }
                 }
-                let Ok(lowered_pred) =
-                    self.lower_combinator_pred(exit_env.file, pred_expr, &locals)
+                let Ok(lowered_pred) = self.lower_combinator_arg(exit_env.file, &pred_arg, &locals)
                 else {
                     self.error(
                         Code::E0323,
@@ -1412,7 +1475,18 @@ impl Checker<'_> {
                     };
                     (tf_id, extra, self.ast(exit_env.file).expr(guard).span)
                 }
-                super::check::ReturnProofRef::Bare(tf_id, span) => (tf_id, Vec::new(), span),
+                super::check::ReturnProofRef::Type(ty_id) => {
+                    let Some((tf_id, angle_args, span)) =
+                        self.bare_proof_type_info(exit_env.file, ty_id)
+                    else {
+                        continue;
+                    };
+                    let Some(extra) = self.extract_static_proof_angle_args(tf_id, &angle_args)
+                    else {
+                        continue;
+                    };
+                    (tf_id, extra, span)
+                }
             };
             let Some(ret_expr) = expr else { continue };
             let subject_expr = if is_fallible_return {
@@ -1657,7 +1731,7 @@ impl Checker<'_> {
             return;
         };
         let ret_proofs = self.return_static_proofs(def_file, &fun.signature);
-        let ret_combinators: Vec<(ProofKind, ExprId)> = fun
+        let ret_combinators: Vec<(ProofKind, CombinatorArg)> = fun
             .signature
             .guards
             .iter()
@@ -1783,8 +1857,8 @@ impl Checker<'_> {
                     }
                 }
             }
-            for (kind, pred_expr) in ret_combinators {
-                let Ok(lowered) = self.lower_combinator_pred(def_file, pred_expr, &formal_locals)
+            for (kind, pred_arg) in ret_combinators {
+                let Ok(lowered) = self.lower_combinator_arg(def_file, &pred_arg, &formal_locals)
                 else {
                     continue;
                 };
@@ -3056,14 +3130,33 @@ impl Checker<'_> {
                 path: Vec::new(),
             });
             if let Some(ty_id) = param.ty
-                && let Some((tf_id, _, span)) = self.bare_proof_type_info(file, ty_id)
+                && let Some((tf_id, angle_args, _)) = self.bare_proof_type_info(file, ty_id)
+                && let Some(extra) = self.extract_static_proof_angle_args(tf_id, &angle_args)
             {
-                let pred = self
-                    .lower_type_fn(tf_id)
-                    .ok()
-                    .and_then(|l| substitute_tf_pred(&l.pred, std::slice::from_ref(&subject)));
+                let mut sub_args = Vec::with_capacity(1 + extra.len());
+                sub_args.push(subject.clone());
+                let mut all_ok = true;
+                for opt in extra {
+                    if let Some(arg_expr) = opt {
+                        if let Ok(local_val) = self.lower_tf_arg(file, arg_expr, &param_locals) {
+                            sub_args.push(local_val);
+                        } else {
+                            all_ok = false;
+                            break;
+                        }
+                    } else {
+                        all_ok = false;
+                        break;
+                    }
+                }
+                let pred = if all_ok {
+                    self.lower_type_fn(tf_id)
+                        .ok()
+                        .and_then(|l| substitute_tf_pred(&l.pred, &sub_args))
+                } else {
+                    None
+                };
                 let fallback = self.hir.definition(tf_id).name.value.clone();
-                let _ = span;
                 param_proofs.push(ExportProof {
                     pred,
                     fallback,
@@ -3088,11 +3181,32 @@ impl Checker<'_> {
             param_idx: 0,
             path: Vec::new(),
         });
-        if let Some((tf_id, _, _)) = self.bare_proof_type_info(file, fun.signature.result) {
-            let pred = self
-                .lower_type_fn(tf_id)
-                .ok()
-                .and_then(|l| substitute_tf_pred(&l.pred, std::slice::from_ref(&ret_subject)));
+        if let Some((tf_id, angle_args, _)) = self.bare_proof_type_info(file, fun.signature.result)
+            && let Some(extra) = self.extract_static_proof_angle_args(tf_id, &angle_args)
+        {
+            let mut sub_args = Vec::with_capacity(1 + extra.len());
+            sub_args.push(ret_subject.clone());
+            let mut all_ok = true;
+            for opt in extra {
+                if let Some(arg_expr) = opt {
+                    if let Ok(local_val) = self.lower_tf_arg(file, arg_expr, &return_locals) {
+                        sub_args.push(local_val);
+                    } else {
+                        all_ok = false;
+                        break;
+                    }
+                } else {
+                    all_ok = false;
+                    break;
+                }
+            }
+            let pred = if all_ok {
+                self.lower_type_fn(tf_id)
+                    .ok()
+                    .and_then(|l| substitute_tf_pred(&l.pred, &sub_args))
+            } else {
+                None
+            };
             let fallback = self.hir.definition(tf_id).name.value.clone();
             return_proofs.push(ExportProof {
                 pred,
@@ -3378,8 +3492,8 @@ impl Checker<'_> {
         subject: TfLocal,
         locals: &HashMap<DefinitionId, TfLocal>,
     ) -> ExportProof {
-        if let Some((kind, pred_expr)) = self.extract_proof_combinator(file, guard) {
-            if let Ok(pred) = self.lower_combinator_pred(file, pred_expr, locals) {
+        if let Some((kind, pred_arg)) = self.extract_proof_combinator(file, guard) {
+            if let Ok(pred) = self.lower_combinator_arg(file, &pred_arg, locals) {
                 return ExportProof {
                     pred: Some(pred),
                     fallback: String::new(),

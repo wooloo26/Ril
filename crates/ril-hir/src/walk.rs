@@ -818,7 +818,6 @@ impl Walk<'_> {
     fn ty(&mut self, id: TypeId) {
         match &self.ast.ty(id).value {
             Type::Named(path) => self.path(path),
-            Type::Proof(_) => {}
             Type::PatternBinding(name) => {
                 self.declare(name, DefinitionKind::Generic, None, false);
             }

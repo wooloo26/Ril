@@ -336,10 +336,10 @@ pub fn after_where() -> int { 1 }
         base.compare(&compat)
     );
 
-    // Strengthening param proof (`Positive` -> `AtLeast(2)`) breaks compatibility (`E0552`).
+    // Strengthening param proof (`Positive` -> `AtLeast<2>`) breaks compatibility (`E0552`).
     let stronger_param = build_iface(
         r#"
-pub fn f(x |> AtLeast(2)) -> int |> Nat
+pub fn f(x |> AtLeast<2>) -> int |> Nat
 where
     type LocalTag = int
 {
@@ -406,17 +406,17 @@ fn type_invariants_check_rili_equivalence_and_opaque_invariants_stay_sealed() ->
     let base = build_iface(
         r#"
 pub type Port(int) |> Positive
-pub opaque type Token(int) |> Between(1, 100)
+pub opaque type Token(int) |> Between<1, 100>
 pub fn make_token() -> Token { Token::(42) }
 "#,
     )?;
 
-    // Logically equivalent non-opaque invariant (`Positive` <-> `AtLeast(1)`) AND changing opaque's
+    // Logically equivalent non-opaque invariant (`Positive` <-> `AtLeast<1>`) AND changing opaque's
     // internal invariant must stay compatible, and opaque change alone must not churn `abi_hash`!
     let equiv = build_iface(
         r#"
-pub type Port(int) |> AtLeast(1)
-pub opaque type Token(int) |> Between(1, 999)
+pub type Port(int) |> AtLeast<1>
+pub opaque type Token(int) |> Between<1, 999>
 pub fn make_token() -> Token { Token::(42) }
 "#,
     )?;
@@ -429,7 +429,7 @@ pub fn make_token() -> Token { Token::(42) }
     let opaque_only_change = build_iface(
         r#"
 pub type Port(int) |> Positive
-pub opaque type Token(int) |> Between(1, 999)
+pub opaque type Token(int) |> Between<1, 999>
 pub fn make_token() -> Token { Token::(42) }
 "#,
     )?;
@@ -438,11 +438,11 @@ pub fn make_token() -> Token { Token::(42) }
         "changing an opaque type's internal invariant must not churn abi_hash"
     );
 
-    // Strengthening a non-opaque type invariant (`Positive` -> `AtLeast(2)`) breaks callers constructing `Port::(1)` (`E0552`).
+    // Strengthening a non-opaque type invariant (`Positive` -> `AtLeast<2>`) breaks callers constructing `Port::(1)` (`E0552`).
     let stronger = build_iface(
         r#"
-pub type Port(int) |> AtLeast(2)
-pub opaque type Token(int) |> Between(1, 100)
+pub type Port(int) |> AtLeast<2>
+pub opaque type Token(int) |> Between<1, 100>
 pub fn make_token() -> Token { Token::(42) }
 "#,
     )?;
@@ -457,7 +457,7 @@ pub fn make_token() -> Token { Token::(42) }
     let weaker = build_iface(
         r#"
 pub type Port(int) |> Nat
-pub opaque type Token(int) |> Between(1, 100)
+pub opaque type Token(int) |> Between<1, 100>
 pub fn make_token() -> Token { Token::(42) }
 "#,
     )?;

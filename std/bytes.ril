@@ -3,10 +3,10 @@
 use ril/array
 
 -- Builds `bytes` from an array of byte integers, returning `None` if any element is outside `0..=255`.
-pub fn from_array(via values: []int) -> new ?bytes |> SameLen(values)
+pub fn from_array(via values: []int) -> new ?bytes |> SameLen<values>
 
 -- Copies every byte of `data` into a new `[]int` (`0..=255`).
-pub fn to_array(data: bytes) -> new []int |> SameLen(data) {
+pub fn to_array(data: bytes) -> new []int |> SameLen<data> {
     let mut out: []int = []
     for 0..len(data) as i {
         Array::push(mut out, data[i])

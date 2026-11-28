@@ -466,7 +466,7 @@ impl Parser<'_> {
         };
         let mut depth: usize = 0;
         let mut groups = Vec::new();
-        for &token in tokens {
+        for (idx, &token) in tokens.iter().enumerate() {
             match token.text(self.file) {
                 "(" => groups.push(")"),
                 "[" => groups.push("]"),
@@ -477,7 +477,8 @@ impl Parser<'_> {
                     }
                 }
                 _ if !groups.is_empty() => {}
-                "<" | "!<" => depth += 1,
+                "<" if idx == 0 || token.tight_left => depth += 1,
+                "!<" => depth += 1,
                 ">" | ">>" | ">=" | ">>=" => {
                     let count = token
                         .text(self.file)
@@ -490,6 +491,61 @@ impl Parser<'_> {
                     depth -= count;
                 }
                 ";" => break,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    pub(super) fn angle_is_comparison(&self) -> bool {
+        let cur = self.text();
+        if !matches!(cur, ">" | ">=") {
+            return false;
+        }
+        let Some(next) = self.tokens.get(self.pos + 1) else {
+            return false;
+        };
+        let next_text = next.text(self.file);
+        let starts_expr = matches!(
+            next.kind,
+            Kind::Int
+                | Kind::Float
+                | Kind::StringStart
+                | Kind::RawString
+                | Kind::Bytes
+                | Kind::RawBytes
+                | Kind::Word(Word::Value | Word::Pascal | Word::Constant)
+        ) || matches!(next_text, "(" | "[" | "-" | "!" | "~" | "true" | "false");
+        if !starts_expr {
+            return false;
+        }
+        let Some(tokens) = self.tokens.get(self.pos + 1..) else {
+            return false;
+        };
+        let mut depth: usize = 0;
+        let mut groups = Vec::new();
+        for &tok in tokens {
+            let text = tok.text(self.file);
+            match text {
+                "(" => groups.push(")"),
+                "[" => groups.push("]"),
+                ".{" | "{" => groups.push("}"),
+                ")" | "]" | "}" => {
+                    if groups.pop() != Some(text) {
+                        return false;
+                    }
+                }
+                _ if !groups.is_empty() => {}
+                "," | ";" | "->" | "|>" | "=" => return false,
+                "<" if tok.tight_left => depth += 1,
+                "!<" => depth += 1,
+                ">" | ">>" | ">=" | ">>=" => {
+                    if depth == 0 {
+                        return true;
+                    }
+                    let count = text.bytes().take_while(|&b| b == b'>').count();
+                    depth = depth.saturating_sub(count);
+                }
                 _ => {}
             }
         }

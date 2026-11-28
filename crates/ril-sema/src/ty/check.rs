@@ -243,7 +243,7 @@ pub(super) struct PendingClosureParamProof {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ReturnProofRef {
     Expr(syntax::ExprId),
-    Bare(DefinitionId, Span),
+    Type(syntax::TypeId),
 }
 
 #[derive(Clone)]

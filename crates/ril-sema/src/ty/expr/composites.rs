@@ -133,7 +133,7 @@ impl Checker<'_> {
                     self.error(
                         Code::E0362,
                         span,
-                        "map key is not statically proved present; use '?[k]', 'if Map::contains(m, k)', 'if m?[k] != None', or require '|> In(m)'",
+                        "map key is not statically proved present; use '?[k]', 'if Map::contains(m, k)', 'if m?[k] != None', or require '|> In<m>'",
                     );
                 }
             }
@@ -148,7 +148,7 @@ impl Checker<'_> {
                     self.error(
                         Code::E0362,
                         span,
-                        "index is not statically proved in bounds; use '?[i]', 'for 0..len(xs) as i', '|> InBounds(xs)', or guard '0 <= i && i < len(xs)'",
+                        "index is not statically proved in bounds; use '?[i]', 'for 0..len(xs) as i', '|> InBounds<xs>', or guard '0 <= i && i < len(xs)'",
                     );
                 }
             }

@@ -22,14 +22,6 @@ impl Checker<'_> {
         let node = self.ast(env.file).ty(id);
         let ty = match &node.value {
             Type::Named(path) => self.named_type(env, path),
-            Type::Proof(_) => {
-                self.error(
-                    Code::E0306,
-                    node.span,
-                    "static proof cannot be used as a general type",
-                );
-                Ty::Unknown
-            }
             Type::Unit => Ty::Unit,
             Type::Tuple(items) => Ty::Tuple(
                 items

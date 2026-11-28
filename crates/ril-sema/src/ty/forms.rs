@@ -148,16 +148,44 @@ impl Checker<'_> {
                         );
                     }
                     let ast = self.ast(env.file);
-                    let valid_call = matches!(
-                        &ast.expr(guard).value,
-                        syntax::Expr::Call { args, .. } if args.len() == 1
-                    );
-                    if !valid_call {
-                        self.error(
-                            Code::E0314,
-                            original_span,
-                            format!("{name} requires exactly one predicate argument"),
-                        );
+                    match &ast.expr(guard).value {
+                        syntax::Expr::Call { .. } => {
+                            self.error(
+                                Code::E0306,
+                                original_span,
+                                format!(
+                                    "{name} uses angle brackets `<...>` rather than call parentheses `(...)`"
+                                ),
+                            );
+                        }
+                        syntax::Expr::Path(path) => {
+                            let valid = path.segments.last().is_some_and(|seg| {
+                                matches!(seg.arguments.as_slice(), [GenericArg::Value(_)])
+                                    || matches!(
+                                        seg.arguments.as_slice(),
+                                        [GenericArg::Type(ty_id)]
+                                            if matches!(ast.ty(*ty_id).value, Type::Named(_))
+                                    )
+                            });
+                            if !valid {
+                                self.error(
+                                    Code::E0314,
+                                    original_span,
+                                    format!(
+                                        "{name} requires exactly one predicate argument in `<...>`"
+                                    ),
+                                );
+                            }
+                        }
+                        _ => {
+                            self.error(
+                                Code::E0314,
+                                original_span,
+                                format!(
+                                    "{name} requires exactly one predicate argument in `<...>`"
+                                ),
+                            );
+                        }
                     }
                 }
             }
@@ -199,10 +227,13 @@ impl Checker<'_> {
                 "static proof guard does not take 'ref' mode prefix",
             );
         }
-        let mut extra_args: Vec<syntax::Argument> = Vec::new();
-        if let syntax::Expr::Call { callee, args } = &node.value {
-            extra_args = args.clone();
-            node = ast.expr(*callee);
+        if matches!(&node.value, syntax::Expr::Call { .. }) {
+            self.error(
+                Code::E0306,
+                span,
+                "static proof type functions use angle brackets `<...>` rather than call parentheses `(...)`",
+            );
+            return;
         }
         let syntax::Expr::Path(path) = &node.value else {
             return;
@@ -212,7 +243,17 @@ impl Checker<'_> {
             .last()
             .map(|s| s.arguments.clone())
             .unwrap_or_default();
+        self.check_static_proof_args(env, id, &angle_args, span, subject);
+    }
 
+    pub(in crate::ty) fn check_static_proof_args(
+        &mut self,
+        env: &mut Env,
+        id: DefinitionId,
+        angle_args: &[GenericArg],
+        span: Span,
+        subject: &Ty,
+    ) {
         let def = self.hir.definition(id);
         let Some(stmt) = def.stmt else { return };
         let def_file = def.name.span.file;
@@ -242,12 +283,11 @@ impl Checker<'_> {
         tf_env.caller_scope = Some(env.effective_scope());
         tf_env.error_span = Some(span);
 
-        if angle_args.len() > type_params.len() {
-            self.error(
-                Code::E0340,
-                span,
-                "too many type arguments for static proof",
-            );
+        // Style A `<...>` argument order: trailing value args first, followed by optional explicit type args.
+        let value_arg_count = angle_args.len().min(trailing_params.len());
+        let explicit_type_args = angle_args.get(value_arg_count..).unwrap_or(&[]);
+        if explicit_type_args.len() > type_params.len() {
+            self.error(Code::E0340, span, "too many arguments for static proof");
         }
         let mut subst = std::collections::HashMap::new();
         let mut type_param_ids = Vec::new();
@@ -255,7 +295,7 @@ impl Checker<'_> {
             let Some(pid) = self.resolve(tp.name.span) else {
                 continue;
             };
-            let gv = if let Some(arg) = angle_args.get(idx) {
+            let gv = if let Some(arg) = explicit_type_args.get(idx) {
                 self.generic_argument(env, tp, arg, span)
             } else {
                 GenericValue::Type(self.fresh())
@@ -279,59 +319,18 @@ impl Checker<'_> {
             self.require(env, span, subject, &expected_subject);
         }
 
-        // Bind extra paren arguments (positional + named).
-        let mut bound_args: Vec<Option<syntax::Argument>> = vec![None; trailing_params.len()];
-        let mut positional_idx = 0usize;
-        for arg in &extra_args {
-            if let Some(label) = &arg.name {
-                let Some(pos) = trailing_params
-                    .iter()
-                    .position(|p| p.name.value == label.value)
-                else {
+        // Bind trailing value arguments from `<...>`.
+        for (idx, param) in trailing_params.iter().enumerate() {
+            if let Some(arg) = angle_args.get(idx) {
+                let GenericArg::Value(arg_expr) = arg else {
                     self.error(
-                        Code::E0339,
-                        label.span,
-                        "unknown named static proof argument",
+                        Code::E0314,
+                        span,
+                        "expected value argument for static proof parameter",
                     );
                     continue;
                 };
-                if bound_args.get(pos).is_some_and(Option::is_some) {
-                    self.error(
-                        Code::E0325,
-                        label.span,
-                        "duplicate named static proof argument",
-                    );
-                    continue;
-                }
-                if let Some(slot) = bound_args.get_mut(pos) {
-                    *slot = Some(arg.clone());
-                }
-            } else {
-                while bound_args.get(positional_idx).is_some_and(Option::is_some) {
-                    positional_idx += 1;
-                }
-                if let Some(slot) = bound_args.get_mut(positional_idx) {
-                    *slot = Some(arg.clone());
-                    positional_idx += 1;
-                } else {
-                    self.error(
-                        Code::E0314,
-                        self.ast(env.file).expr(arg.value).span,
-                        "too many static proof arguments",
-                    );
-                }
-            }
-        }
-        for (idx, param) in trailing_params.iter().enumerate() {
-            if let Some(Some(arg)) = bound_args.get(idx) {
-                let arg_span = self.ast(env.file).expr(arg.value).span;
-                if matches!(arg.mode, Mode::Mut | Mode::Shared) {
-                    self.error(
-                        Code::E0406,
-                        arg_span,
-                        "static proof argument cannot use 'mut' or '^mut'",
-                    );
-                }
+                let arg_span = self.ast(env.file).expr(*arg_expr).span;
                 let param_ty = param
                     .bound
                     .first()
@@ -341,16 +340,13 @@ impl Checker<'_> {
                 let mut arg_env = env.clone();
                 arg_env.shadow = true;
                 arg_env.effects_seen.clear();
-                let actual_arg = self.expect(&mut arg_env, arg.value, &expected_arg);
+                let _ = self.expect(&mut arg_env, *arg_expr, &expected_arg);
                 if !arg_env.effects_seen.is_empty() {
                     self.error(
                         Code::E0409,
                         arg_span,
                         "static proof argument expression must be pure",
                     );
-                }
-                if arg.mode == Mode::Ref && self.is_value_ty(env, &actual_arg) {
-                    self.error(Code::E0402, arg_span, "cannot take 'ref' of a value type");
                 }
             } else if param.default.is_none() {
                 self.error(Code::E0314, span, "missing required static proof argument");
@@ -694,8 +690,7 @@ impl Checker<'_> {
         let mut saved_bindings: Vec<(DefinitionId, Option<Ty>)> = Vec::new();
         for (idx, param) in signature.params.iter().enumerate() {
             if let Some(ty_id) = param.ty {
-                let is_proof_ty = matches!(self.ast(env.file).ty(ty_id).value, Type::Proof(_))
-                    || self.bare_proof_type_info(env.file, ty_id).is_some();
+                let is_proof_ty = self.bare_proof_type_info(env.file, ty_id).is_some();
                 if !is_proof_ty {
                     let prev_open = env.allow_open_record;
                     env.allow_open_record = named;
@@ -718,12 +713,9 @@ impl Checker<'_> {
                 continue;
             }
             let resolved = if let Some(ty_id) = param.ty {
-                if let Type::Proof(guard) = self.ast(env.file).ty(ty_id).value {
-                    self.guard_parameter(env, guard)
-                } else if let Some((tf_id, angle_args, span)) =
-                    self.bare_proof_type_info(env.file, ty_id)
+                if let Some((tf_id, angle_args, span)) = self.bare_proof_type_info(env.file, ty_id)
                 {
-                    self.static_proof_subject_type(env, tf_id, &angle_args, &[], span)
+                    self.static_proof_subject_type(env, tf_id, &angle_args, span)
                         .unwrap_or_else(|| {
                             self.error(
                                 Code::E0544,
@@ -868,12 +860,10 @@ impl Checker<'_> {
                 }
             })
             .collect();
-        let result = if let Type::Proof(guard) = self.ast(env.file).ty(signature.result).value {
-            self.guard_parameter(env, guard)
-        } else if let Some((tf_id, angle_args, span)) =
+        let result = if let Some((tf_id, angle_args, span)) =
             self.bare_proof_type_info(env.file, signature.result)
         {
-            self.static_proof_subject_type(env, tf_id, &angle_args, &[], span)
+            self.static_proof_subject_type(env, tf_id, &angle_args, span)
                 .unwrap_or_else(|| {
                     self.error(
                         Code::E0544,
@@ -1024,63 +1014,6 @@ impl Checker<'_> {
         Some((id, angle_args, node.span))
     }
 
-    pub(in crate::ty) fn check_static_proof_bare(
-        &mut self,
-        env: &mut Env,
-        id: DefinitionId,
-        angle_args: &[GenericArg],
-        span: Span,
-        subject: &Ty,
-    ) {
-        let def = self.hir.definition(id);
-        let Some(stmt) = def.stmt else { return };
-        let def_file = def.name.span.file;
-        let def_scope = def.scope;
-        let StmtKind::Type(decl) = &self.ast(def_file).stmt(stmt).value.kind else {
-            return;
-        };
-        let TypeDefinition::Function(tf_params, tf_body) = &decl.definition else {
-            return;
-        };
-        let tf_params = tf_params.clone();
-        let tf_body = *tf_body;
-        let (type_params, Some(subject_param), trailing_params) =
-            partition_type_fn_params(&tf_params)
-        else {
-            return;
-        };
-        if trailing_params.iter().any(|p| p.default.is_none()) {
-            self.error(Code::E0314, span, "missing required static proof argument");
-            return;
-        }
-        let mut tf_env = Env::new(def_file, def_scope);
-        tf_env.phase = Phase::TypeEval;
-        tf_env.caller_scope = Some(env.effective_scope());
-        tf_env.error_span = Some(span);
-        let mut subst = std::collections::HashMap::new();
-        for (idx, tp) in type_params.iter().enumerate() {
-            let Some(pid) = self.resolve(tp.name.span) else {
-                continue;
-            };
-            let gv = if let Some(arg) = angle_args.get(idx) {
-                self.generic_argument(env, tp, arg, span)
-            } else {
-                GenericValue::Type(self.fresh())
-            };
-            subst.insert(pid, gv.clone());
-            tf_env.generics.insert(pid, gv);
-        }
-        let subject_param_ty = subject_param
-            .bound
-            .first()
-            .map(|&ty| self.type_expr(&mut tf_env, ty))
-            .unwrap_or(Ty::Unknown);
-        let expected_subject = super::check::substitute(&subject_param_ty, &subst);
-        self.require(env, span, subject, &expected_subject);
-        let mut seen = HashSet::new();
-        self.check_static_proof_shape(id, def_file, tf_body, span, &mut seen);
-    }
-
     fn guard_parameter(&mut self, env: &Env, guard: syntax::ExprId) -> Ty {
         let ast = self.ast(env.file);
         let mut node = ast.expr(guard);
@@ -1089,9 +1022,7 @@ impl Checker<'_> {
         {
             node = ast.expr(*value);
         }
-        let mut extra_args: Vec<syntax::Argument> = Vec::new();
-        if let syntax::Expr::Call { callee, args } = &node.value {
-            extra_args = args.clone();
+        if let syntax::Expr::Call { callee, .. } = &node.value {
             node = ast.expr(*callee);
         }
         let node_span = node.span;
@@ -1112,7 +1043,7 @@ impl Checker<'_> {
                     _ => Vec::new(),
                 };
                 if let Some(inferred) =
-                    self.static_proof_subject_type(env, id, &angle_args, &extra_args, node_span)
+                    self.static_proof_subject_type(env, id, &angle_args, node_span)
                 {
                     return inferred;
                 }
@@ -1132,7 +1063,6 @@ impl Checker<'_> {
         env: &Env,
         id: DefinitionId,
         angle_args: &[GenericArg],
-        extra_args: &[syntax::Argument],
         span: Span,
     ) -> Option<Ty> {
         if !self.resolving.insert(id) {
@@ -1159,13 +1089,15 @@ impl Checker<'_> {
             tf_env.caller_scope = Some(env.effective_scope());
             let mut caller_env = env.clone();
             caller_env.shadow = true;
+            let value_arg_count = angle_args.len().min(trailing_params.len());
+            let explicit_type_args = angle_args.get(value_arg_count..).unwrap_or(&[]);
             let mut subst = std::collections::HashMap::new();
             let mut type_param_ids = Vec::new();
             for (idx, tp) in type_params.iter().enumerate() {
                 let Some(pid) = self.resolve(tp.name.span) else {
                     continue;
                 };
-                let gv = if let Some(arg) = angle_args.get(idx) {
+                let gv = if let Some(arg) = explicit_type_args.get(idx) {
                     self.generic_argument(&mut caller_env, tp, arg, span)
                 } else {
                     GenericValue::Type(self.fresh())
@@ -1174,43 +1106,19 @@ impl Checker<'_> {
                 tf_env.generics.insert(pid, gv);
                 type_param_ids.push(pid);
             }
-            // Match trailing value arguments (e.g., `m` in `In(m)` or `xs` in `InBounds(xs)`)
+            // Match trailing value arguments (e.g., `m` in `In<m>` or `xs` in `InBounds<xs>`)
             // so trailing type parameters like `C` in `In = \key: InKey<C>, c: C, C` can be deduced.
-            if !extra_args.is_empty() && !trailing_params.is_empty() {
-                let mut bound_args: Vec<Option<&syntax::Argument>> =
-                    vec![None; trailing_params.len()];
-                let mut pos_idx = 0usize;
-                for arg in extra_args {
-                    if let Some(label) = &arg.name {
-                        if let Some(pos) = trailing_params
-                            .iter()
-                            .position(|p| p.name.value == label.value)
-                            && let Some(slot) = bound_args.get_mut(pos)
-                        {
-                            *slot = Some(arg);
-                        }
-                    } else {
-                        while bound_args.get(pos_idx).is_some_and(Option::is_some) {
-                            pos_idx += 1;
-                        }
-                        if let Some(slot) = bound_args.get_mut(pos_idx) {
-                            *slot = Some(arg);
-                            pos_idx += 1;
-                        }
-                    }
-                }
-                for (idx, param) in trailing_params.iter().enumerate() {
-                    if let Some(Some(arg)) = bound_args.get(idx) {
-                        let param_ty = param
-                            .bound
-                            .first()
-                            .map(|&ty| self.type_expr(&mut tf_env, ty))
-                            .unwrap_or(Ty::Unknown);
-                        let expected_arg = super::check::substitute(&param_ty, &subst);
-                        let mut arg_env = caller_env.clone();
-                        arg_env.shadow = true;
-                        let _ = self.expect(&mut arg_env, arg.value, &expected_arg);
-                    }
+            for (idx, param) in trailing_params.iter().enumerate() {
+                if let Some(GenericArg::Value(arg_expr)) = angle_args.get(idx) {
+                    let param_ty = param
+                        .bound
+                        .first()
+                        .map(|&ty| self.type_expr(&mut tf_env, ty))
+                        .unwrap_or(Ty::Unknown);
+                    let expected_arg = super::check::substitute(&param_ty, &subst);
+                    let mut arg_env = caller_env.clone();
+                    arg_env.shadow = true;
+                    let _ = self.expect(&mut arg_env, *arg_expr, &expected_arg);
                 }
             }
             let mut unbound = HashSet::new();
