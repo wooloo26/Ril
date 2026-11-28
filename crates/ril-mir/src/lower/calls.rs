@@ -129,8 +129,11 @@ impl Builder<'_, '_> {
         }
         if def.kind == DefinitionKind::Local {
             let callee_span = self.ast().expr(callee).span;
-            let closure = self.read(id, span)?;
             let args = self.indirect_arguments(callee_span, args, span)?;
+            if self.tail_resume_k == Some(id) {
+                return Ok(args.first().copied().unwrap_or_else(|| self.unit()));
+            }
+            let closure = self.read(id, span)?;
             if self.is_ctl_callable(callee_span) {
                 let arg = args.first().copied().unwrap_or_else(|| self.unit());
                 return Ok(self.runtime("ril_rt_resume_ctl", vec![closure, arg]));

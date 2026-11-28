@@ -1372,3 +1372,45 @@ fn bad_paren_proof(xs: []int, i: int |> InBounds(xs)) -> int {
     --                                  ^ E0306
     xs[i]
 }
+
+-- @case effect_fn_handler_violating_return_proof_rejected_e0323 compile-fail E0323
+eff Rand { fn next_below(hi: Positive) -> int |> Between<0, hi - 1> }
+fn bad() -> int {
+    with Rand::next_below = \_hi -> -1
+    --                              ^ E0323
+    Rand::next_below(5)
+}
+
+-- @case effect_ctl_handler_violating_resume_proof_rejected_e0323 compile-fail E0323
+eff Ask { ctl below(hi: Positive) -> int |> Between<0, hi - 1> }
+fn bad() -> int {
+    with ctl Ask::below = \hi, k -> k(hi)
+    --                                ^ E0323
+    Ask::below(5)
+}
+
+-- @case defer_effect_panicking_handler_rejected_e0627 compile-fail E0627
+eff Metrics { fn inc(name: str) -> () }
+fn tracked() @Metrics -> () {
+    defer Metrics::inc("done")
+    ()
+}
+fn bad() -> () {
+    with Metrics::inc = \_name -> panic("boom")
+    -- ^ E0627
+    tracked()
+}
+
+-- @case escaping_ctl_continuation_retains_residual_effects_e0534 compile-fail E0534
+eff Clock { fn now() -> int }
+eff Yield { ctl emit() -> () }
+type PureStep { Done; Paused(ctl() -> new PureStep) }
+fn bad() @Clock -> new PureStep {
+    with {
+        ctl Yield::emit = \k -> PureStep::Paused(k)
+        --                                       ^ E0534
+        let _ = Clock::now()
+        Yield::emit()
+        PureStep::Done
+    }
+}

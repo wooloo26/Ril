@@ -11,10 +11,24 @@ use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
 
 use crate::{Object, Runtime, Value};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HandlerArmKind {
+    Fn,
+    CtlCoro,
+    CtlTail,
+    CtlAbort,
+}
+
+impl HandlerArmKind {
+    fn is_ctl(self) -> bool {
+        self != Self::Fn
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct HandlerEntry {
     pub op: u64,
-    pub is_ctl: bool,
+    pub kind: HandlerArmKind,
     pub handler: Value,
 }
 
@@ -46,6 +60,11 @@ enum FinishMsg {
     Done(Value),
     Panicked(String),
     Aborted,
+    CtlAbort {
+        prompt_id: u64,
+        op: u64,
+        args: Value,
+    },
 }
 
 #[cfg(not(miri))]
@@ -91,7 +110,7 @@ pub(crate) fn push_fn_handler(rt: &mut Runtime, op: u64, handler: Value) {
         prompt_id: 0,
         arms: vec![HandlerEntry {
             op,
-            is_ctl: false,
+            kind: HandlerArmKind::Fn,
             handler,
         }],
     });
@@ -129,7 +148,7 @@ pub(crate) fn enter_fn_handler(rt: &mut Runtime, op: u64) -> Value {
             frame
                 .arms
                 .iter()
-                .find(|arm| arm.op == op && !arm.is_ctl)
+                .find(|arm| arm.op == op && arm.kind == HandlerArmKind::Fn)
                 .map(|arm| (idx, arm.handler))
         });
     let Some((idx, handler)) = found else {
@@ -160,12 +179,20 @@ fn decode_arms(rt: &Runtime, entries: Value) -> Option<Vec<HandlerEntry>> {
             return None;
         };
         let op = u64::try_from(op_val.small_int()?).ok()?;
-        let is_ctl = is_ctl_val == Value::TRUE;
-        arms.push(HandlerEntry {
-            op,
-            is_ctl,
-            handler,
-        });
+        let kind = if is_ctl_val == Value::FALSE {
+            HandlerArmKind::Fn
+        } else if is_ctl_val == Value::TRUE {
+            HandlerArmKind::CtlCoro
+        } else {
+            match is_ctl_val.small_int() {
+                Some(0) => HandlerArmKind::Fn,
+                Some(1) => HandlerArmKind::CtlCoro,
+                Some(2) => HandlerArmKind::CtlTail,
+                Some(3) => HandlerArmKind::CtlAbort,
+                _ => return None,
+            }
+        };
+        arms.push(HandlerEntry { op, kind, handler });
     }
     Some(arms)
 }
@@ -173,6 +200,12 @@ fn decode_arms(rt: &Runtime, entries: Value) -> Option<Vec<HandlerEntry>> {
 #[cfg(miri)]
 pub(crate) fn with_ctl(rt: &mut Runtime, _entries: Value, _body_thunk: Value) -> Value {
     rt.raise("ctl delimited continuations are not supported under Miri");
+    Value::UNIT
+}
+
+#[cfg(miri)]
+pub(crate) fn with_ctl_fast(rt: &mut Runtime, _entries: Value, _body_thunk: Value) -> Value {
+    rt.raise("ctl handlers are not supported under Miri");
     Value::UNIT
 }
 
@@ -318,6 +351,43 @@ mod native {
             match step {
                 CoroutineResult::Return(finish) => {
                     // SAFETY: coroutine finished; reclaim stack and pins.
+                    if let FinishMsg::CtlAbort {
+                        prompt_id,
+                        op,
+                        args,
+                    } = finish
+                    {
+                        if prompt_id == cont.prompt_id {
+                            let arm_handler = cont.captured_frames.first().and_then(|frame| {
+                                frame
+                                    .arms
+                                    .iter()
+                                    .find(|arm| {
+                                        arm.op == op && arm.kind == HandlerArmKind::CtlAbort
+                                    })
+                                    .map(|arm| arm.handler)
+                            });
+                            let result = if let Some(handler) = arm_handler {
+                                // SAFETY: invoke 2-arg arm adapter with parent handler stack active.
+                                unsafe { invoke2(raw, handler, args, Value::UNIT) }
+                            } else {
+                                // SAFETY: raw is live.
+                                unsafe { ctx(raw) }.raise("missing abort ctl arm in target prompt");
+                                Value::UNIT
+                            };
+                            // SAFETY: arm returned; unpin args and reclaim finished prompt.
+                            let rt = unsafe { ctx(raw) };
+                            rt.gc.unpin(args);
+                            cleanup_finished(rt, cont);
+                            return result;
+                        }
+                        // SAFETY: raw is live and unique while forwarding abort to outer prompt.
+                        let rt = unsafe { ctx(raw) };
+                        cleanup_finished(rt, cont);
+                        rt.resume_ctl_abort(prompt_id, op, args);
+                        return Value::UNIT;
+                    }
+                    // SAFETY: coroutine finished; raw is live and unique.
                     let rt = unsafe { ctx(raw) };
                     cleanup_finished(rt, cont);
                     return match finish {
@@ -327,6 +397,7 @@ mod native {
                             Value::UNIT
                         }
                         FinishMsg::Aborted => Value::UNIT,
+                        FinishMsg::CtlAbort { .. } => Value::UNIT,
                     };
                 }
                 CoroutineResult::Yield(YieldMsg::Perform {
@@ -339,7 +410,7 @@ mod native {
                             frame
                                 .arms
                                 .iter()
-                                .find(|arm| arm.op == op && arm.is_ctl)
+                                .find(|arm| arm.op == op && arm.kind.is_ctl())
                                 .map(|arm| arm.handler)
                         });
                         let Some(arm_handler) = arm_handler else {
@@ -428,6 +499,15 @@ mod native {
                 UnwindState::None => FinishMsg::Done(output),
                 UnwindState::Panic(msg) => FinishMsg::Panicked(msg),
                 UnwindState::Abort => FinishMsg::Aborted,
+                UnwindState::CtlAbort {
+                    prompt_id,
+                    op,
+                    args,
+                } => FinishMsg::CtlAbort {
+                    prompt_id,
+                    op,
+                    args,
+                },
             }
         });
 
@@ -442,24 +522,131 @@ mod native {
         unsafe { drive_prompt(raw, cont, ResumeMsg::Start) }
     }
 
-    pub(super) unsafe fn perform_ctl_raw(raw: Raw, op: u64, args: Value) -> Value {
-        let target_prompt = {
+    pub(super) unsafe fn with_ctl_fast_raw(raw: Raw, entries: Value, body_thunk: Value) -> Value {
+        let prompt_id = {
             // SAFETY: raw is live and unique.
             let rt = unsafe { ctx(raw) };
-            let found = rt.ctl.handler_stack.iter().rev().find_map(|frame| {
-                frame
-                    .arms
-                    .iter()
-                    .any(|arm| arm.op == op && arm.is_ctl)
-                    .then_some(frame.prompt_id)
-            });
-            let Some(prompt_id) = found.filter(|&id| id != 0) else {
-                rt.raise("missing dynamic ctl effect handler");
+            let Some(arms) = decode_arms(rt, entries) else {
+                rt.raise("invalid ctl handler frame descriptor");
                 return Value::UNIT;
             };
-            rt.gc.pin(args);
+            for arm in &arms {
+                rt.gc.pin(arm.handler);
+            }
+            rt.gc.pin(body_thunk);
+            let prompt_id = rt.ctl.fresh_id();
+            rt.ctl.handler_stack.push(HandlerFrame { prompt_id, arms });
             prompt_id
         };
+        // SAFETY: body_thunk is pinned and runs directly on the current native stack.
+        let output = unsafe { invoke0(raw, body_thunk) };
+        let (frame, abort_hit) = {
+            // SAFETY: raw is live and unique.
+            let rt = unsafe { ctx(raw) };
+            rt.gc.unpin(body_thunk);
+            let frame = rt.ctl.handler_stack.pop();
+            let abort_hit = rt.take_ctl_abort(prompt_id);
+            (frame, abort_hit)
+        };
+        if let Some((op, args)) = abort_hit {
+            let arm_handler = frame.as_ref().and_then(|f| {
+                f.arms
+                    .iter()
+                    .find(|arm| arm.op == op && arm.kind == HandlerArmKind::CtlAbort)
+                    .map(|arm| arm.handler)
+            });
+            let result = if let Some(handler) = arm_handler {
+                // SAFETY: parent handler stack is active; invoke 2-arg adapter directly.
+                unsafe { invoke2(raw, handler, args, Value::UNIT) }
+            } else {
+                // SAFETY: raw is live.
+                unsafe { ctx(raw) }.raise("missing abort ctl arm in target prompt");
+                Value::UNIT
+            };
+            // SAFETY: raw is live.
+            let rt = unsafe { ctx(raw) };
+            rt.gc.unpin(args);
+            if let Some(frame) = frame {
+                for arm in frame.arms {
+                    rt.gc.unpin(arm.handler);
+                }
+            }
+            return result;
+        }
+        if let Some(frame) = frame {
+            // SAFETY: raw is live.
+            let rt = unsafe { ctx(raw) };
+            for arm in frame.arms {
+                rt.gc.unpin(arm.handler);
+            }
+        }
+        output
+    }
+
+    pub(super) unsafe fn perform_ctl_raw(raw: Raw, op: u64, args: Value) -> Value {
+        let found = {
+            // SAFETY: raw is live and unique.
+            let rt = unsafe { ctx(raw) };
+            rt.ctl
+                .handler_stack
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(idx, frame)| {
+                    frame
+                        .arms
+                        .iter()
+                        .find(|arm| arm.op == op && arm.kind.is_ctl())
+                        .map(|arm| (idx, frame.prompt_id, arm.kind, arm.handler))
+                })
+        };
+        let Some((idx, prompt_id, kind, arm_handler)) = found else {
+            // SAFETY: raw is live.
+            unsafe { ctx(raw) }.raise("missing dynamic ctl effect handler");
+            return Value::UNIT;
+        };
+        match kind {
+            HandlerArmKind::CtlTail => {
+                {
+                    // SAFETY: detach target frame and inner frames so arm runs against parent stack.
+                    let rt = unsafe { ctx(raw) };
+                    rt.gc.pin(args);
+                    let detached = rt.ctl.handler_stack.split_off(idx);
+                    rt.ctl.saved_frames.push(detached);
+                }
+                // SAFETY: invoke tail-resumptive 2-arg adapter directly on current native stack.
+                let result = unsafe { invoke2(raw, arm_handler, args, Value::UNIT) };
+                {
+                    // SAFETY: restore detached frames and unpin args.
+                    let rt = unsafe { ctx(raw) };
+                    if let Some(restored) = rt.ctl.saved_frames.pop() {
+                        rt.ctl.handler_stack.extend(restored);
+                    }
+                    rt.gc.unpin(args);
+                }
+                return result;
+            }
+            HandlerArmKind::CtlAbort => {
+                // SAFETY: mark runtime unwinding to target prompt_id so defers run LIFO.
+                unsafe { ctx(raw) }.begin_ctl_abort(prompt_id, op, args);
+                return Value::UNIT;
+            }
+            HandlerArmKind::CtlCoro => {
+                if prompt_id == 0 {
+                    // SAFETY: raw is live.
+                    unsafe { ctx(raw) }.raise("missing dynamic ctl effect handler");
+                    return Value::UNIT;
+                }
+                // SAFETY: pin args across yield.
+                unsafe { ctx(raw) }.gc.pin(args);
+            }
+            HandlerArmKind::Fn => {
+                // SAFETY: unreachable due to is_ctl() filter.
+                unsafe { ctx(raw) }.raise("expected ctl effect handler");
+                return Value::UNIT;
+            }
+        }
+        let target_prompt = prompt_id;
         let ptr = CTL_YIELDER.with(Cell::get);
         if ptr.is_null() {
             // SAFETY: raw is live.
@@ -541,6 +728,16 @@ mod native {
 pub(crate) fn with_ctl(rt: &mut Runtime, entries: Value, body_thunk: Value) -> Value {
     // SAFETY: rt is the unique live Runtime for this thread.
     unsafe { native::with_ctl_raw(std::ptr::from_mut(rt), entries, body_thunk) }
+}
+
+#[cfg(not(miri))]
+#[allow(
+    unsafe_code,
+    reason = "entry points into native zero-stack ctl runtime"
+)]
+pub(crate) fn with_ctl_fast(rt: &mut Runtime, entries: Value, body_thunk: Value) -> Value {
+    // SAFETY: rt is the unique live Runtime for this thread.
+    unsafe { native::with_ctl_fast_raw(std::ptr::from_mut(rt), entries, body_thunk) }
 }
 
 #[cfg(not(miri))]

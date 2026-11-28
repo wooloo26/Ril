@@ -84,21 +84,54 @@ impl Checker<'_> {
                 } else {
                     None
                 };
-                let mut ctl_arm_results = Vec::new();
                 let mut result = Ty::Unit;
-                for (index, &item) in statements.iter().enumerate() {
-                    let last = index + 1 == statements.len();
-                    let right = if let StmtKind::With(handler) =
-                        &self.ast(env.file).stmt(item).value.kind
+                let mut ctl_arm_results = Vec::new();
+                for (idx, &item) in statements.iter().enumerate() {
+                    let last = idx + 1 == statements.len();
+                    if let StmtKind::With(handler) = &self.ast(env.file).stmt(item).value.kind
                         && handler.is_ctl
                     {
-                        if let Some(arm_res) =
-                            self.check_handler_arm(env, handler, ctl_answer.as_ref())
-                        {
+                        let pre_refinements = env.refinements.clone();
+                        let saved_effects = std::mem::take(&mut env.effects_seen);
+                        let rest = statements.get(idx + 1..).unwrap_or_default();
+                        let body_res = self.check_ctl_block_tail(
+                            env,
+                            rest,
+                            ctl_answer.as_ref().or(expected),
+                            check_tail,
+                            &mut tail_checked_inside,
+                            &mut ctl_arm_results,
+                        );
+                        if result != Ty::Never {
+                            result = body_res;
+                        }
+                        if result == Ty::Never {
+                            env.refinements.dbm.unsat = true;
+                        }
+                        let body_effects = std::mem::take(&mut env.effects_seen);
+                        let handled =
+                            self.handled_effect_labels(env, std::slice::from_ref(handler));
+                        let mut residual: Vec<String> = body_effects
+                            .into_iter()
+                            .filter(|e| !handled.contains(e))
+                            .collect();
+                        residual.sort();
+                        env.effects_seen = saved_effects;
+                        env.effects_seen.extend(residual.iter().cloned());
+                        let mut arm_env = env.clone();
+                        arm_env.refinements = pre_refinements;
+                        if let Some(arm_res) = self.check_handler_arm(
+                            &mut arm_env,
+                            handler,
+                            ctl_answer.as_ref(),
+                            &residual,
+                        ) {
                             ctl_arm_results.push(arm_res);
                         }
-                        Ty::Unit
-                    } else if last
+                        env.effects_seen.extend(arm_env.effects_seen);
+                        break;
+                    }
+                    let right = if last
                         && let StmtKind::Expr(expr) = self.ast(env.file).stmt(item).value.kind
                     {
                         if check_tail {
@@ -160,13 +193,6 @@ impl Checker<'_> {
                 } else {
                     None
                 };
-                let mut arm_results = Vec::new();
-                for handler in handlers {
-                    if let Some(arm_res) = self.check_handler_arm(env, handler, answer_ty.as_ref())
-                    {
-                        arm_results.push(arm_res);
-                    }
-                }
                 for &helper in helpers {
                     if !matches!(
                         &self.ast(env.file).stmt(helper).value.kind,
@@ -175,6 +201,14 @@ impl Checker<'_> {
                         self.statement(env, helper, false);
                     }
                 }
+                let mut arm_results = Vec::new();
+                for handler in handlers {
+                    if !handler.is_ctl {
+                        self.check_handler_arm(env, handler, None, &[]);
+                    }
+                }
+                let pre_body_refinements = env.refinements.clone();
+                let saved_effects = std::mem::take(&mut env.effects_seen);
                 let saved_defers = env.active_defers.len();
                 let mut result = Ty::Unit;
                 for (index, &item) in statements.iter().enumerate() {
@@ -211,6 +245,32 @@ impl Checker<'_> {
                     result = Ty::Never;
                 }
                 env.active_defers.truncate(saved_defers);
+                let body_effects = std::mem::take(&mut env.effects_seen);
+                let handled = self.handled_effect_labels(env, handlers);
+                let mut residual: Vec<String> = body_effects
+                    .into_iter()
+                    .filter(|e| !handled.contains(e))
+                    .collect();
+                residual.sort();
+                env.effects_seen = saved_effects;
+                env.effects_seen.extend(residual.iter().cloned());
+                if has_ctl {
+                    let mut arm_env = env.clone();
+                    arm_env.refinements = pre_body_refinements;
+                    for handler in handlers {
+                        if handler.is_ctl
+                            && let Some(arm_res) = self.check_handler_arm(
+                                &mut arm_env,
+                                handler,
+                                answer_ty.as_ref(),
+                                &residual,
+                            )
+                        {
+                            arm_results.push(arm_res);
+                        }
+                    }
+                    env.effects_seen.extend(arm_env.effects_seen);
+                }
                 for arm_res in arm_results {
                     result = self.join(env, span, result, arm_res);
                 }
@@ -810,6 +870,114 @@ impl Checker<'_> {
             self.verify_fn_return_proofs(env, Some(id), span);
         }
         ty
+    }
+
+    fn check_ctl_block_tail(
+        &mut self,
+        env: &mut Env,
+        statements: &[syntax::StmtId],
+        expected: Option<&Ty>,
+        check_tail: bool,
+        tail_checked_inside: &mut bool,
+        ctl_arm_results: &mut Vec<Ty>,
+    ) -> Ty {
+        let mut result = Ty::Unit;
+        for (idx, &item) in statements.iter().enumerate() {
+            let last = idx + 1 == statements.len();
+            if let StmtKind::With(handler) = &self.ast(env.file).stmt(item).value.kind
+                && handler.is_ctl
+            {
+                let pre_refinements = env.refinements.clone();
+                let saved_effects = std::mem::take(&mut env.effects_seen);
+                let rest = statements.get(idx + 1..).unwrap_or_default();
+                let body_res = self.check_ctl_block_tail(
+                    env,
+                    rest,
+                    expected,
+                    check_tail,
+                    tail_checked_inside,
+                    ctl_arm_results,
+                );
+                if result != Ty::Never {
+                    result = body_res;
+                }
+                if result == Ty::Never {
+                    env.refinements.dbm.unsat = true;
+                }
+                let body_effects = std::mem::take(&mut env.effects_seen);
+                let handled = self.handled_effect_labels(env, std::slice::from_ref(handler));
+                let mut residual: Vec<String> = body_effects
+                    .into_iter()
+                    .filter(|e| !handled.contains(e))
+                    .collect();
+                residual.sort();
+                env.effects_seen = saved_effects;
+                env.effects_seen.extend(residual.iter().cloned());
+                let mut arm_env = env.clone();
+                arm_env.refinements = pre_refinements;
+                if let Some(arm_res) =
+                    self.check_handler_arm(&mut arm_env, handler, expected, &residual)
+                {
+                    ctl_arm_results.push(arm_res);
+                }
+                env.effects_seen.extend(arm_env.effects_seen);
+                break;
+            }
+            let right =
+                if last && let StmtKind::Expr(expr) = self.ast(env.file).stmt(item).value.kind {
+                    if check_tail {
+                        env.checking_fn_tail = true;
+                        *tail_checked_inside = true;
+                    }
+                    self.expr(env, expr, expected)
+                } else {
+                    self.statement(env, item, last)
+                };
+            if result != Ty::Never {
+                result = right;
+            }
+            if result == Ty::Never {
+                env.refinements.dbm.unsat = true;
+            }
+        }
+        result
+    }
+
+    fn handled_effect_labels(
+        &mut self,
+        env: &mut Env,
+        handlers: &[syntax::Handler],
+    ) -> HashSet<String> {
+        let mut handled_ops: HashSet<(ril_hir::DefinitionId, String)> = HashSet::new();
+        let mut candidates: Vec<(ril_hir::DefinitionId, String)> = Vec::new();
+        for handler in handlers {
+            if let Some(op_id) = self.resolve(handler.operation.span)
+                && let Some(eff_def) = self.hir.operation_effect(op_id)
+            {
+                let _ = self.operation_instance(env, op_id, &handler.operation);
+                let label = self
+                    .operation_effects
+                    .get(&handler.operation.span)
+                    .cloned()
+                    .unwrap_or_else(|| self.hir.effect_label(eff_def));
+                handled_ops.insert((op_id, label.clone()));
+                candidates.push((eff_def, label));
+            }
+        }
+        let mut handled = HashSet::new();
+        for (eff_def, label) in candidates {
+            let ops: Vec<_> = self.hir.effect_operations(eff_def).collect();
+            if !ops.is_empty()
+                && ops.iter().all(|&op_id| {
+                    handled_ops
+                        .iter()
+                        .any(|(h_op, h_lbl)| *h_op == op_id && h_lbl == &label)
+                })
+            {
+                handled.insert(label);
+            }
+        }
+        handled
     }
 
     fn strip_live_modes(ty: &Ty) -> Ty {

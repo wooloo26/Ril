@@ -828,7 +828,7 @@ impl Checker<'_> {
             }
             StmtKind::With(handler) => {
                 let answer = env.expected_return.clone();
-                self.check_handler_arm(env, handler, answer.as_ref());
+                self.check_handler_arm(env, handler, answer.as_ref(), &[]);
             }
             StmtKind::Import(_) | StmtKind::Error => {}
         }
@@ -840,6 +840,7 @@ impl Checker<'_> {
         env: &mut Env,
         handler: &syntax::Handler,
         answer_ty: Option<&Ty>,
+        residual_effects: &[String],
     ) -> Option<Ty> {
         if let Some(operation) = self.resolve(handler.operation.span)
             && self.hir.operation_effect(operation).is_some()
@@ -876,6 +877,18 @@ impl Checker<'_> {
             if !expected.state.iter().any(|s| s == "up") {
                 expected.state.push("up".into());
             }
+            let op_file = self.hir.definition(operation).name.span.file;
+            let is_inline_closure = matches!(
+                self.ast(env.file).expr(handler.value).value,
+                syntax::Expr::Closure { .. }
+            );
+            if !env.shadow && is_inline_closure {
+                env.pending_handler_proofs = Some(super::PendingHandlerProofs {
+                    op_id: operation,
+                    op_file,
+                    is_ctl: op_is_ctl,
+                });
+            }
             if op_is_ctl {
                 let ans = answer_ty.cloned().unwrap_or_else(|| self.fresh());
                 if !self.hir.is_abort_only_ctl_operation(operation) {
@@ -901,7 +914,7 @@ impl Checker<'_> {
                         parameters: k_params,
                         result: ans.clone(),
                         result_mode: k_result_mode,
-                        effects: Vec::new(),
+                        effects: residual_effects.to_vec(),
                         open_effects: false,
                         state: Vec::new(),
                         open_state: false,
@@ -917,6 +930,10 @@ impl Checker<'_> {
                 expected.result = ans.clone();
                 expected.result_mode = Mode::Infer;
                 let actual = self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
+                env.pending_handler_proofs = None;
+                if !env.shadow && !is_inline_closure {
+                    self.verify_non_closure_handler_proofs(env, operation, handler.value, true);
+                }
                 if let Ty::Callable(c) = self.normalize(&actual) {
                     return Some(c.result.clone());
                 }
@@ -924,6 +941,10 @@ impl Checker<'_> {
             } else {
                 expected.result = op_result;
                 self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
+                env.pending_handler_proofs = None;
+                if !env.shadow && !is_inline_closure {
+                    self.verify_non_closure_handler_proofs(env, operation, handler.value, false);
+                }
                 None
             }
         } else {

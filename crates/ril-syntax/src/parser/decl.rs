@@ -377,7 +377,11 @@ impl Parser<'_> {
         }
         let result_mode_span = result_mode_start.map(|start| start.join(self.last));
         let result = self.ty()?;
-        let guards = if !is_ctl { self.guards()? } else { Vec::new() };
+        let guards = if named || !is_ctl {
+            self.guards()?
+        } else {
+            Vec::new()
+        };
         Ok(Signature {
             is_ctl,
             params,

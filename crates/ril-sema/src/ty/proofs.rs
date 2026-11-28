@@ -1304,7 +1304,26 @@ impl Checker<'_> {
         expr: Option<ExprId>,
         report_span: Span,
     ) {
-        if env.shadow || env.return_proofs.is_empty() {
+        if env.shadow {
+            return;
+        }
+        if let Some(handler_ret) = env.active_handler_return_proofs.clone() {
+            if let Some(e) = expr {
+                let e_span = self.ast(env.file).expr(e).span;
+                if self.types.get(&e_span).is_some_and(|t| *t == Ty::Never) {
+                    return;
+                }
+                self.verify_op_return_proof_expr(
+                    env,
+                    &handler_ret,
+                    e,
+                    report_span,
+                    "effect handler return value does not satisfy static proof",
+                );
+            }
+            return;
+        }
+        if env.return_proofs.is_empty() {
             return;
         }
         if let Some(e) = expr {
@@ -2786,6 +2805,385 @@ impl Checker<'_> {
                 }
             }
             _ => None,
+        }
+    }
+
+    pub(super) fn eval_mapped_guard_arg(
+        &self,
+        scratch: &mut Dbm,
+        def_file: FileId,
+        guard_arg: ExprId,
+        formal_to_local: &HashMap<DefinitionId, DefinitionId>,
+    ) -> Option<ProofArgVal> {
+        let ast = self.ast(def_file);
+        match &ast.expr(guard_arg).value {
+            Expr::Unary { op, value } if matches!(op.value.as_str(), "ref" | "^mut") => {
+                self.eval_mapped_guard_arg(scratch, def_file, *value, formal_to_local)
+            }
+            Expr::Literal(lit) => match super::literal(lit).ok()? {
+                Value::Int(n) => Some(ProofArgVal::Const(n.to_i128()?)),
+                Value::Str(s) => Some(ProofArgVal::KeyConst(KeyConst::Str(s))),
+                Value::Bool(b) => Some(ProofArgVal::KeyConst(KeyConst::Bool(b))),
+                Value::Bytes(b) => Some(ProofArgVal::KeyConst(KeyConst::Bytes(b))),
+                _ => None,
+            },
+            Expr::Unit => Some(ProofArgVal::KeyConst(KeyConst::Unit)),
+            Expr::Path(path) => {
+                let id = self.resolve(path.span)?;
+                if let Some(&local_id) = formal_to_local.get(&id) {
+                    return Some(ProofArgVal::Place(Place::local(local_id)));
+                }
+                if let Some(Value::Int(n)) = self.static_constant_value(id) {
+                    return Some(ProofArgVal::Const(n.to_i128()?));
+                }
+                None
+            }
+            Expr::Member {
+                base,
+                member,
+                safe: false,
+            } => {
+                let base_val =
+                    self.eval_mapped_guard_arg(scratch, def_file, *base, formal_to_local)?;
+                let seg = match member {
+                    Member::Name(n) | Member::Index(n) => n.value.clone(),
+                    Member::Computed(_) => return None,
+                };
+                match base_val {
+                    ProofArgVal::Place(mut p) => {
+                        p.path.push(seg);
+                        Some(ProofArgVal::Place(p))
+                    }
+                    _ => None,
+                }
+            }
+            Expr::Call { callee, args } => {
+                let Expr::Path(path) = &ast.expr(*callee).value else {
+                    return None;
+                };
+                let id = self.resolve(path.span)?;
+                if self.hir.intrinsic(id) == Some(Intrinsic::Len)
+                    && let [arg] = args.as_slice()
+                {
+                    let inner =
+                        self.eval_mapped_guard_arg(scratch, def_file, arg.value, formal_to_local)?;
+                    let ProofArgVal::Place(p) = inner else {
+                        return None;
+                    };
+                    scratch.ensure_atom(Atom::Len(p.clone()));
+                    let len_atom = Atom::Len(p);
+                    if let Some(c) = scratch.exact(&len_atom) {
+                        return Some(ProofArgVal::Const(c));
+                    }
+                    return Some(ProofArgVal::Atom(len_atom));
+                }
+                None
+            }
+            Expr::Unary { op, value } if op.value == "-" => {
+                let inner =
+                    self.eval_mapped_guard_arg(scratch, def_file, *value, formal_to_local)?;
+                match inner {
+                    ProofArgVal::Const(c) => Some(ProofArgVal::Const(c.checked_neg()?)),
+                    _ => None,
+                }
+            }
+            Expr::Binary { op, left, right } if matches!(op.value.as_str(), "+" | "-") => {
+                let l = self.eval_mapped_guard_arg(scratch, def_file, *left, formal_to_local)?;
+                let r = self.eval_mapped_guard_arg(scratch, def_file, *right, formal_to_local)?;
+                match (l, r) {
+                    (ProofArgVal::Const(a), ProofArgVal::Const(b)) => {
+                        let v = if op.value == "+" {
+                            a.checked_add(b)?
+                        } else {
+                            a.checked_sub(b)?
+                        };
+                        Some(ProofArgVal::Const(v))
+                    }
+                    (lhs, ProofArgVal::Const(c)) => {
+                        let offset = if op.value == "+" { c } else { c.checked_neg()? };
+                        let base_atom = match lhs {
+                            ProofArgVal::Atom(a) => a,
+                            ProofArgVal::Place(p) => Atom::Val(p),
+                            _ => return None,
+                        };
+                        let t = scratch.fresh_temp();
+                        scratch.add_eq(t.clone(), base_atom, offset);
+                        Some(ProofArgVal::Atom(t))
+                    }
+                    (lhs, rhs) if op.value == "-" => {
+                        let to_atom = |v: ProofArgVal, dbm: &mut Dbm| -> Option<Atom> {
+                            match v {
+                                ProofArgVal::Atom(a) => Some(a),
+                                ProofArgVal::Place(p) => Some(Atom::Val(p)),
+                                ProofArgVal::Const(c) => {
+                                    let t = dbm.fresh_temp();
+                                    dbm.add_eq(t.clone(), Atom::Zero, c);
+                                    Some(t)
+                                }
+                                _ => None,
+                            }
+                        };
+                        let la = to_atom(lhs, scratch)?;
+                        let ra = to_atom(rhs, scratch)?;
+                        let t = scratch.fresh_temp();
+                        scratch.add_diff_eq(t.clone(), la, ra, 0);
+                        Some(ProofArgVal::Atom(t))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn seed_handler_closure_proofs(
+        &mut self,
+        local: &mut Env,
+        pending: &super::check::PendingHandlerProofs,
+        closure_param_ids: &[Option<DefinitionId>],
+    ) {
+        let Some(stmt) = self.hir.definition(pending.op_id).stmt else {
+            return;
+        };
+        let StmtKind::Function(op_fun) = &self.ast(pending.op_file).stmt(stmt).value.kind else {
+            return;
+        };
+        let op_fun = op_fun.clone();
+        let mut formal_to_local = HashMap::new();
+        let op_runtime_params: Vec<_> = op_fun
+            .signature
+            .params
+            .iter()
+            .filter(|p| !p.is_meta)
+            .collect();
+        for (idx, op_param) in op_runtime_params.iter().enumerate() {
+            if let Some(op_name) = &op_param.name
+                && let Some(op_param_id) = self.resolve(op_name.span)
+                && let Some(Some(cl_param_id)) = closure_param_ids.get(idx)
+            {
+                formal_to_local.insert(op_param_id, *cl_param_id);
+            }
+        }
+        // Seed operation parameter static proofs into the handler closure's entry DBM.
+        for (idx, op_param) in op_runtime_params.iter().enumerate() {
+            let Some(Some(cl_param_id)) = closure_param_ids.get(idx) else {
+                continue;
+            };
+            for (tf_id, extra, _) in self.param_static_proofs(pending.op_file, op_param) {
+                let Ok(lowered) = self.lower_type_fn(tf_id) else {
+                    continue;
+                };
+                let mut scratch = local.refinements.dbm.clone();
+                let mut arg_vals = Vec::with_capacity(1 + extra.len());
+                arg_vals.push(ProofArgVal::Place(Place::local(*cl_param_id)));
+                let mut ok = true;
+                for opt in extra {
+                    if let Some(e) = opt {
+                        if let Some(v) = self.eval_mapped_guard_arg(
+                            &mut scratch,
+                            pending.op_file,
+                            e,
+                            &formal_to_local,
+                        ) {
+                            arg_vals.push(v);
+                        } else {
+                            ok = false;
+                            break;
+                        }
+                    } else {
+                        arg_vals.push(ProofArgVal::Const(0));
+                    }
+                }
+                if ok
+                    && let Some(pred) =
+                        self.instantiate_proof_pred(local, &mut scratch, &lowered.pred, &arg_vals)
+                {
+                    scratch.assume(&pred);
+                    scratch.forget_temps();
+                    local.refinements.dbm = scratch;
+                }
+            }
+        }
+        let ret_proofs = self.return_static_proofs(pending.op_file, &op_fun.signature);
+        if ret_proofs.is_empty() {
+            return;
+        }
+        let proof_ctx = super::check::CtlResumeProof {
+            op_id: pending.op_id,
+            op_file: pending.op_file,
+            formal_to_local,
+        };
+        if pending.is_ctl {
+            if let Some(Some(k_id)) = closure_param_ids.get(op_runtime_params.len()) {
+                local.ctl_resume_proofs.insert(*k_id, proof_ctx);
+            }
+        } else {
+            local.active_handler_return_proofs = Some(proof_ctx);
+            local.checking_fn_tail = true;
+        }
+    }
+
+    pub(super) fn verify_op_return_proof_expr(
+        &mut self,
+        env: &mut Env,
+        proof_ctx: &super::check::CtlResumeProof,
+        value_expr: ExprId,
+        report_span: Span,
+        message: &str,
+    ) {
+        let Some(stmt) = self.hir.definition(proof_ctx.op_id).stmt else {
+            return;
+        };
+        let StmtKind::Function(op_fun) = &self.ast(proof_ctx.op_file).stmt(stmt).value.kind else {
+            return;
+        };
+        let op_sig = op_fun.signature.clone();
+        let ret_proofs = self.return_static_proofs(proof_ctx.op_file, &op_sig);
+        if ret_proofs.is_empty() {
+            return;
+        }
+        let op_call = self.declare_function(proof_ctx.op_id);
+        let norm_ret = self.normalize(&op_call.result);
+        let is_fallible = norm_ret.is_option(self.hir) || norm_ret.is_result(self.hir);
+        let mut exit_env = env.clone();
+        let defers = exit_env.active_defers.clone();
+        for defer_expr in defers {
+            self.invalidate_loop_mutations(&mut exit_env, defer_expr);
+        }
+        for (tf_id, extra, guard_span) in ret_proofs {
+            let subject_expr = if is_fallible {
+                match self.extract_fallible_return_payload(&exit_env, value_expr) {
+                    FalliblePayload::Vacuous => continue,
+                    FalliblePayload::Payload(inner) => inner,
+                    FalliblePayload::PassThrough(whole) => whole,
+                }
+            } else {
+                value_expr
+            };
+            let mut scratch = exit_env.refinements.dbm.clone();
+            let mut arg_vals = Vec::with_capacity(1 + extra.len());
+            arg_vals.push(ProofArgVal::Expr(subject_expr));
+            let mut ok = true;
+            for opt in extra {
+                if let Some(e) = opt {
+                    if let Some(v) = self.eval_mapped_guard_arg(
+                        &mut scratch,
+                        proof_ctx.op_file,
+                        e,
+                        &proof_ctx.formal_to_local,
+                    ) {
+                        arg_vals.push(v);
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                } else {
+                    arg_vals.push(ProofArgVal::Const(0));
+                }
+            }
+            if !ok {
+                let mut diag = Diagnostic::error(Code::E0323, report_span, message);
+                diag =
+                    diag.with_label(guard_span, "required by this effect operation static proof");
+                self.diagnostics.push(diag);
+                continue;
+            }
+            self.verify_proof_obligation_with_scratch_code(
+                &mut exit_env,
+                &mut scratch,
+                tf_id,
+                &arg_vals,
+                report_span,
+                guard_span,
+                message,
+                Code::E0323,
+            );
+        }
+    }
+
+    pub(super) fn verify_non_closure_handler_proofs(
+        &mut self,
+        env: &Env,
+        op_id: DefinitionId,
+        handler_expr: ExprId,
+        is_ctl: bool,
+    ) {
+        let op_file = self.hir.definition(op_id).name.span.file;
+        if !self.exported_return_proofs.contains_key(&op_id)
+            && !self.exported_param_proofs.contains_key(&op_id)
+            && let Some(stmt) = self.hir.definition(op_id).stmt
+            && let StmtKind::Function(op_fun) = &self.ast(op_file).stmt(stmt).value.kind
+        {
+            let op_fun = op_fun.clone();
+            self.collect_export_proofs(op_file, op_id, &op_fun);
+        }
+        let op_ret_proofs = self
+            .exported_return_proofs
+            .get(&op_id)
+            .cloned()
+            .unwrap_or_default();
+        let op_param_proofs = self
+            .exported_param_proofs
+            .get(&op_id)
+            .cloned()
+            .unwrap_or_default();
+        let handler_span = self.ast(env.file).expr(handler_expr).span;
+        if let Expr::Path(path) = &self.ast(env.file).expr(handler_expr).value
+            && let Some(fn_id) = self.resolve(path.span)
+            && self.hir.definition(fn_id).kind == ril_hir::DefinitionKind::Function
+        {
+            let fn_file = self.hir.definition(fn_id).name.span.file;
+            if !self.exported_return_proofs.contains_key(&fn_id)
+                && !self.exported_param_proofs.contains_key(&fn_id)
+                && let Some(stmt) = self.hir.definition(fn_id).stmt
+                && let StmtKind::Function(fn_decl) = &self.ast(fn_file).stmt(stmt).value.kind
+            {
+                let fn_decl = fn_decl.clone();
+                self.collect_export_proofs(fn_file, fn_id, &fn_decl);
+            }
+            let fn_param_proofs = self
+                .exported_param_proofs
+                .get(&fn_id)
+                .cloned()
+                .unwrap_or_default();
+            if !fn_param_proofs.is_empty()
+                && !export_proofs_entail(&op_param_proofs, &fn_param_proofs)
+            {
+                self.error(
+                    Code::E0323,
+                    handler_span,
+                    "effect operation parameters do not satisfy handler static proof",
+                );
+            }
+            if !is_ctl && !op_ret_proofs.is_empty() {
+                let fn_ret_proofs = self
+                    .exported_return_proofs
+                    .get(&fn_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if !export_proofs_entail(&fn_ret_proofs, &op_ret_proofs) {
+                    self.error(
+                        Code::E0323,
+                        handler_span,
+                        "handler function does not satisfy effect operation return static proof",
+                    );
+                }
+            }
+            if is_ctl && !op_ret_proofs.is_empty() {
+                self.error(
+                    Code::E0323,
+                    handler_span,
+                    "ctl effect operation with return static proof requires an inline handler closure",
+                );
+            }
+            return;
+        }
+        if !op_ret_proofs.is_empty() {
+            self.error(
+                Code::E0323,
+                handler_span,
+                "handler expression does not satisfy effect operation return static proof",
+            );
         }
     }
 

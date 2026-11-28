@@ -110,6 +110,15 @@ impl Builder<'_, '_> {
         id: ExprId,
         arguments: Option<&BTreeMap<DefinitionId, Value>>,
     ) -> Result<Register> {
+        self.lift_with_tail_resume(id, arguments, None)
+    }
+
+    pub(super) fn lift_with_tail_resume(
+        &mut self,
+        id: ExprId,
+        arguments: Option<&BTreeMap<DefinitionId, Value>>,
+        tail_resume_k: Option<DefinitionId>,
+    ) -> Result<Register> {
         let span = self.ast().expr(id).span;
         let capture = self.collect_captures_in_spans(std::iter::once(span));
         let environment = self.environment(&capture);
@@ -123,6 +132,7 @@ impl Builder<'_, '_> {
             captures: capture,
             types: self.types.clone(),
             statics,
+            tail_resume_k,
         };
         let function = self.global.queue(work);
         let arity = match &self.ast().expr(id).value {

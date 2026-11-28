@@ -3,6 +3,7 @@ use crate::{GcRuntime, Object, Value, gc::RootFrameHeader};
 pub(crate) const UNWIND_NONE: u8 = 0;
 pub(crate) const UNWIND_PANIC: u8 = 1;
 pub(crate) const UNWIND_ABORT: u8 = 2;
+pub(crate) const UNWIND_CTL_ABORT: u8 = 3;
 
 #[derive(Default)]
 pub(crate) enum UnwindState {
@@ -11,6 +12,12 @@ pub(crate) enum UnwindState {
     Panic(String),
     #[cfg_attr(miri, allow(dead_code))]
     Abort,
+    #[cfg_attr(miri, allow(dead_code))]
+    CtlAbort {
+        prompt_id: u64,
+        op: u64,
+        args: Value,
+    },
 }
 
 #[derive(Default)]
@@ -53,6 +60,43 @@ impl Runtime {
         self.unwinding = UNWIND_ABORT;
     }
 
+    #[cfg_attr(miri, allow(dead_code))]
+    pub(crate) fn begin_ctl_abort(&mut self, prompt_id: u64, op: u64, args: Value) {
+        self.gc.pin(args);
+        self.unwind_state = UnwindState::CtlAbort {
+            prompt_id,
+            op,
+            args,
+        };
+        self.unwinding = UNWIND_CTL_ABORT;
+    }
+
+    #[cfg_attr(miri, allow(dead_code))]
+    pub(crate) fn resume_ctl_abort(&mut self, prompt_id: u64, op: u64, args: Value) {
+        self.unwind_state = UnwindState::CtlAbort {
+            prompt_id,
+            op,
+            args,
+        };
+        self.unwinding = UNWIND_CTL_ABORT;
+    }
+
+    #[cfg_attr(miri, allow(dead_code))]
+    pub(crate) fn take_ctl_abort(&mut self, prompt_id: u64) -> Option<(u64, Value)> {
+        if matches!(
+            self.unwind_state,
+            UnwindState::CtlAbort { prompt_id: id, .. } if id == prompt_id
+        ) {
+            self.unwinding = UNWIND_NONE;
+            if let UnwindState::CtlAbort { op, args, .. } =
+                std::mem::replace(&mut self.unwind_state, UnwindState::None)
+            {
+                return Some((op, args));
+            }
+        }
+        None
+    }
+
     pub fn take_panic(&mut self) -> Option<String> {
         if matches!(self.unwind_state, UnwindState::Panic(_)) {
             self.unwinding = UNWIND_NONE;
@@ -88,6 +132,18 @@ impl Runtime {
                 UnwindState::Abort => {
                     self.unwind_state = UnwindState::Abort;
                     self.unwinding = UNWIND_ABORT;
+                }
+                UnwindState::CtlAbort {
+                    prompt_id,
+                    op,
+                    args,
+                } => {
+                    self.unwind_state = UnwindState::CtlAbort {
+                        prompt_id,
+                        op,
+                        args,
+                    };
+                    self.unwinding = UNWIND_CTL_ABORT;
                 }
             }
         }

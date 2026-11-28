@@ -571,3 +571,86 @@ fn main() -> () {
     let win = slice_window(xs, sp.lo, sp.hi)
     assert(inner(p) == 8080 && span_len == 3 && len(win) == 3 && win[0] == 30 && win[2] == 50)
 }
+
+-- @case zero_stack_tail_resumptive_and_abort_ctl_with_defer_lifo run-pass backend=both
+eff Fail { ctl raise(code: int) -> never }
+eff Ask { ctl next(x: int) -> int }
+eff Stop { ctl halt(v: int) -> () }
+eff Step { ctl pause() -> () }
+
+type Suspended { Done(int); Paused(ctl() @Fail -> new Suspended) }
+
+fn main() -> () {
+    let mut trace: []str = []
+    -- 1. Pure tail-resumptive ctl (zero coroutine stack)
+    let summed = with {
+        ctl Ask::next = \x, k -> {
+            Array::push(mut trace, "ask:{x}")
+            k(x * 10)
+        }
+        Ask::next(2) + Ask::next(3)
+    }
+    assert(summed == 50)
+
+    -- 2. Pure abort-only ctl (`-> never`) with LIFO defer cleanup
+    let mut abort_trace: []str = []
+    let aborted = with {
+        ctl Fail::raise = \code -> code
+        defer Array::push(mut abort_trace, "d1")
+        defer Array::push(mut abort_trace, "d2")
+        Fail::raise(99)
+    }
+    assert(aborted == 99 && abort_trace == ["d2", "d1"])
+
+    -- 3. Wildcard `_` continuation abort with LIFO defer cleanup
+    let mut stop_trace: []str = []
+    let halted = with {
+        ctl Stop::halt = \v, _ -> v + 1
+        defer Array::push(mut stop_trace, "s1")
+        Stop::halt(41)
+        0
+    }
+    assert(halted == 42 && stop_trace == ["s1"])
+
+    -- 4. Outer abort-only ctl triggered from inside an inner suspending corosensei ctl prompt
+    let mut cross_trace: []str = []
+    let cross = with {
+        ctl Fail::raise = \code -> code + 100
+        let s = with {
+            ctl Step::pause = \k -> Suspended::Paused(k)
+            defer Array::push(mut cross_trace, "inner_defer")
+            Step::pause()
+            Fail::raise(7)
+            Suspended::Done(0)
+        }
+        match s {
+            Suspended::Done(v) -> v
+            Suspended::Paused(k) -> match k() {
+                Suspended::Done(v) -> v
+                Suspended::Paused(k2) -> { unwind_ctl(k2); -1 }
+            }
+        }
+    }
+    assert(cross == 107 && trace == ["ask:2", "ask:3"] && cross_trace == ["inner_defer"])
+}
+
+-- @case effect_op_dbm_static_proof_roundtrip run-pass backend=both
+eff Rand {
+    fn next_below(hi: Positive) -> int |> Between<0, hi - 1>
+    ctl ask_below(hi: Positive) -> int |> Between<0, hi - 1>
+}
+
+fn pick_both<T>(xs: []T |> NonEmpty) @Rand &return(xs) -> new (T, T) {
+    let i = Rand::next_below(len(xs))
+    let j = Rand::ask_below(len(xs))
+    (xs[i], xs[j])
+}
+
+fn main() -> () {
+    let pair = with {
+        Rand::next_below = \hi -> hi - 1
+        ctl Rand::ask_below = \hi, k -> k(0)
+        pick_both([10, 20, 30])
+    }
+    assert(pair == (30, 10))
+}

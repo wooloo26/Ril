@@ -241,6 +241,14 @@ struct ClosureMeta {
     effect_ops: Vec<String>,
 }
 
+type HandlerBinding = (String, Span, Option<Owner>);
+type CallSiteHandlers = (
+    Option<DefinitionId>,
+    DefinitionId,
+    Span,
+    Vec<HandlerBinding>,
+);
+
 struct Collector<'a> {
     program: &'a TypedProgram,
     analysis: &'a Analysis,
@@ -249,6 +257,7 @@ struct Collector<'a> {
     call_edges: BTreeMap<DefinitionId, BTreeSet<(DefinitionId, Span)>>,
     defer_invoked: BTreeMap<DefinitionId, BTreeSet<usize>>,
     defer_effects: BTreeMap<DefinitionId, BTreeSet<String>>,
+    call_site_handlers: Vec<CallSiteHandlers>,
     defer_records: Vec<(Span, Option<DefinitionId>, Owner, Owner, bool)>,
     closures_meta: Vec<ClosureMeta>,
     with_sites: Vec<WithSiteFact>,
@@ -264,6 +273,7 @@ pub fn analyze(program: &TypedProgram, analysis: &Analysis) -> BehaviorAnalysis 
         call_edges: BTreeMap::new(),
         defer_invoked: BTreeMap::new(),
         defer_effects: BTreeMap::new(),
+        call_site_handlers: Vec::new(),
         defer_records: Vec::new(),
         closures_meta: Vec::new(),
         with_sites: Vec::new(),
@@ -348,6 +358,87 @@ pub fn analyze(program: &TypedProgram, analysis: &Analysis) -> BehaviorAnalysis 
                 follow_premise: None,
             },
         );
+    }
+
+    // 3b. Propagate `defer_effects` across calls and check `with` handler arms covering defer-used fn effects.
+    for (&def_id, imported) in &program.imported_behaviors {
+        if !imported.defer_effects.is_empty() {
+            collector
+                .defer_effects
+                .entry(def_id)
+                .or_default()
+                .extend(imported.defer_effects.iter().cloned());
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (caller_opt, callee_id, _call_span, active_handlers) in &collector.call_site_handlers {
+            let Some(caller_id) = *caller_opt else {
+                continue;
+            };
+            let Some(callee_ops) = collector.defer_effects.get(callee_id).cloned() else {
+                continue;
+            };
+            for op in callee_ops {
+                let handled = active_handlers.iter().any(|(k, _, _)| {
+                    let clean = k.strip_prefix("ctl ").unwrap_or(k);
+                    clean == op || clean.split("::").next() == Some(op.as_str())
+                });
+                if !handled
+                    && collector
+                        .defer_effects
+                        .entry(caller_id)
+                        .or_default()
+                        .insert(op)
+                {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut recorded_defer_handlers = BTreeSet::new();
+    let call_sites = std::mem::take(&mut collector.call_site_handlers);
+    for (caller_opt, callee_id, call_span, active_handlers) in call_sites {
+        let Some(callee_ops) = collector.defer_effects.get(&callee_id).cloned() else {
+            continue;
+        };
+        for op in callee_ops {
+            let bound = active_handlers.iter().rev().find(|(k, _, _)| {
+                let clean = k.strip_prefix("ctl ").unwrap_or(k);
+                clean == op || clean.split("::").next() == Some(op.as_str())
+            });
+            if let Some((op_key, with_span, handler_owner)) = bound {
+                let defer_owner = Owner::Defer(*with_span);
+                if let Some(owner) = *handler_owner {
+                    collector.link(
+                        owner,
+                        defer_owner,
+                        BKind::Panic,
+                        RuleOrigin {
+                            at: Some(call_span),
+                            call: Some(op_key.clone()),
+                            cause: None,
+                            detail: Some(format!(
+                                "handler for '{op_key}' is invoked inside defer cleanup"
+                            )),
+                            follow_premise: Some(0),
+                        },
+                    );
+                }
+                if recorded_defer_handlers.insert(*with_span) {
+                    collector.defer_records.push((
+                        *with_span,
+                        caller_opt,
+                        defer_owner,
+                        defer_owner,
+                        false,
+                    ));
+                }
+            }
+        }
     }
 
     // 4. Solve Horn system via BFS to obtain mathematically shortest, cycle-free witness tree.
@@ -877,17 +968,32 @@ impl<'a> Collector<'a> {
         all_fns: &mut Vec<DefinitionId>,
     ) {
         if handler.is_ctl {
-            self.seed_in_ctx(
-                ctx,
-                BKind::Abort,
-                RuleOrigin {
-                    at: Some(with_span),
-                    call: None,
-                    cause: Some(WitnessCause::CtlStackAlloc),
-                    detail: Some("with ctl stack allocation".into()),
-                    follow_premise: None,
-                },
+            let omit_k = self
+                .resolve_def(handler.operation.span)
+                .is_some_and(|op| self.program.hir.is_abort_only_ctl_operation(op));
+            let wildcard_k = matches!(
+                &self.ast(ctx.file).expr(handler.value).value,
+                Expr::Closure { params, .. }
+                    if params.last().is_some_and(|p| {
+                        p.name.as_ref().is_some_and(|n| n.value == "_")
+                            || p.pattern.is_some_and(|pat| {
+                                matches!(self.ast(ctx.file).pattern(pat).value, Pattern::Wildcard)
+                            })
+                    })
             );
+            if !omit_k && !wildcard_k {
+                self.seed_in_ctx(
+                    ctx,
+                    BKind::Abort,
+                    RuleOrigin {
+                        at: Some(with_span),
+                        call: None,
+                        cause: Some(WitnessCause::CtlStackAlloc),
+                        detail: Some("with ctl stack allocation".into()),
+                        follow_premise: None,
+                    },
+                );
+            }
         }
         self.walk_expr(ctx, handler.value, all_fns);
         let handler_owner = self.callable_owner(ctx, handler.value);
@@ -1390,7 +1496,7 @@ impl<'a> Collector<'a> {
                     self.defer_effects
                         .entry(fn_id)
                         .or_default()
-                        .insert(eff_name.to_owned());
+                        .insert(lookup_key);
                 }
                 return;
             }
@@ -1547,6 +1653,58 @@ impl<'a> Collector<'a> {
                     follow_premise: Some(0),
                 };
                 self.link_all_in_ctx(Owner::Fn(def_id), ctx, origin);
+                self.call_site_handlers.push((
+                    ctx.enclosing_fn,
+                    def_id,
+                    call_span,
+                    ctx.handlers.clone(),
+                ));
+                if ctx.in_defer
+                    && let Some(callable) = self.program.callables.get(&def_id)
+                {
+                    for eff in &callable.effects {
+                        if eff == "io" {
+                            continue;
+                        }
+                        let eff_head = eff.split('<').next().unwrap_or(eff);
+                        let mut matched_any = false;
+                        for (k, _, handler_owner) in ctx.handlers.iter().rev() {
+                            let clean = k.strip_prefix("ctl ").unwrap_or(k);
+                            let h_head = clean
+                                .split("::")
+                                .next()
+                                .unwrap_or(clean)
+                                .split('<')
+                                .next()
+                                .unwrap_or(clean);
+                            if h_head == eff_head {
+                                matched_any = true;
+                                if let Some(owner) = *handler_owner {
+                                    self.link_in_ctx(
+                                        owner,
+                                        ctx,
+                                        BKind::Panic,
+                                        RuleOrigin {
+                                            at: Some(call_span),
+                                            call: Some(k.clone()),
+                                            cause: None,
+                                            detail: Some(format!(
+                                                "handler for '{k}' invoked via defer call"
+                                            )),
+                                            follow_premise: Some(0),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        if !matched_any && let Some(fn_id) = ctx.enclosing_fn {
+                            self.defer_effects
+                                .entry(fn_id)
+                                .or_default()
+                                .insert(eff_head.to_owned());
+                        }
+                    }
+                }
 
                 // Higher-order parametricity: link callback arguments invoked by callee.
                 if let Some(summary) = self.analysis.summaries.get(&def_id) {

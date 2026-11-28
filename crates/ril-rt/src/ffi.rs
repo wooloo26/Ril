@@ -502,6 +502,9 @@ runtime_functions! {
     fn ril_rt_with_ctl(rt, entries: Value, body_thunk: Value) -> Value {
         crate::ctl::with_ctl(rt, entries, body_thunk)
     }
+    fn ril_rt_with_ctl_fast(rt, entries: Value, body_thunk: Value) -> Value {
+        crate::ctl::with_ctl_fast(rt, entries, body_thunk)
+    }
     fn ril_rt_perform_ctl(rt, op: u64, args: Value) -> Value {
         crate::ctl::perform_ctl(rt, op, args)
     }

@@ -191,10 +191,13 @@ impl Checker<'_> {
         local.inferred_return = None;
         local.return_scope = Some(self.ast(env.file).expr(body).span);
         local.return_proofs.clear();
+        local.active_handler_return_proofs = None;
         let pending_cb_proofs = std::mem::take(&mut local.pending_closure_param_proofs);
+        let pending_handler = local.pending_handler_proofs.take();
         local.checking_fn_tail = false;
         local.active_defers.clear();
         let mut parameters = Vec::new();
+        let mut closure_param_ids: Vec<Option<ril_hir::DefinitionId>> = Vec::new();
         for (index, item) in params.iter().enumerate() {
             for &guard in &item.guards {
                 if self.hir.is_static_proof_guard(env.file, guard) {
@@ -220,6 +223,11 @@ impl Checker<'_> {
                 self.pattern(&mut local, pattern, &ty);
                 let mut ids = Vec::new();
                 self.collect_pattern_defs(&local, pattern, &mut ids);
+                closure_param_ids.push(if let [only] = ids.as_slice() {
+                    Some(*only)
+                } else {
+                    None
+                });
                 for id in &ids {
                     if let Some(bound_ty) = self.bindings.get(id).cloned() {
                         self.seed_type_invariants(
@@ -273,9 +281,13 @@ impl Checker<'_> {
                 }
             } else if let Some(name) = &item.name {
                 self.define_name(name, ty.clone());
-                if let Some(id) = self.resolve(name.span) {
+                let resolved = self.resolve(name.span);
+                closure_param_ids.push(resolved);
+                if let Some(id) = resolved {
                     self.seed_type_invariants(&mut local, &crate::ty::dbm::Place::local(id), &ty);
                 }
+            } else {
+                closure_param_ids.push(None);
             }
             if let Some(default) = item.default {
                 if item.is_meta {
@@ -313,6 +325,9 @@ impl Checker<'_> {
         }
         if parameters.iter().any(|param| param.ty.has_via_members()) {
             local.mode_scope = Some(true);
+        }
+        if let Some(pending) = &pending_handler {
+            self.seed_handler_closure_proofs(&mut local, pending, &closure_param_ids);
         }
         let infer_result = local.expected_return.is_none();
         if infer_result {
@@ -838,7 +853,18 @@ impl Checker<'_> {
         if !env.shadow
             && let Some(id) = def_id
         {
-            if let Some((cb_file, cb_sig)) = env.callback_param_sigs.get(&id).cloned() {
+            if let Some(ctl_proof) = env.ctl_resume_proofs.get(&id).cloned() {
+                if let Some(Some(resume_arg)) = arg_by_formal.first() {
+                    let arg_span = self.ast(env.file).expr(*resume_arg).span;
+                    self.verify_op_return_proof_expr(
+                        env,
+                        &ctl_proof,
+                        *resume_arg,
+                        arg_span,
+                        "ctl continuation resume value does not satisfy effect operation static proof",
+                    );
+                }
+            } else if let Some((cb_file, cb_sig)) = env.callback_param_sigs.get(&id).cloned() {
                 for (cb_idx, cb_param) in cb_sig.params.iter().enumerate() {
                     let Some(Some(subject_expr)) = arg_by_formal.get(cb_idx) else {
                         continue;
@@ -883,7 +909,8 @@ impl Checker<'_> {
             self.relate(env, cond_arg.value, true);
         }
         // 2. Sound call invalidation (including plain args containing writable/shared member schemas!).
-        if call.open_effects
+        if call.is_ctl
+            || call.open_effects
             || call.open_state
             || call.effects.iter().any(|eff| eff != "io")
             || call

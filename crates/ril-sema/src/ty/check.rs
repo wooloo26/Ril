@@ -240,6 +240,20 @@ pub(super) struct PendingClosureParamProof {
     pub(super) formal_to_caller: HashMap<DefinitionId, syntax::ExprId>,
 }
 
+#[derive(Clone)]
+pub(super) struct PendingHandlerProofs {
+    pub(super) op_id: DefinitionId,
+    pub(super) op_file: FileId,
+    pub(super) is_ctl: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct CtlResumeProof {
+    pub(super) op_id: DefinitionId,
+    pub(super) op_file: FileId,
+    pub(super) formal_to_local: HashMap<DefinitionId, DefinitionId>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ReturnProofRef {
     Expr(syntax::ExprId),
@@ -261,6 +275,9 @@ pub(super) struct Env {
     pub(super) return_scope: Option<Span>,
     pub(super) return_proofs: Vec<ReturnProofRef>,
     pub(super) pending_closure_param_proofs: Vec<PendingClosureParamProof>,
+    pub(super) pending_handler_proofs: Option<PendingHandlerProofs>,
+    pub(super) active_handler_return_proofs: Option<CtlResumeProof>,
+    pub(super) ctl_resume_proofs: HashMap<DefinitionId, CtlResumeProof>,
     pub(super) callback_param_sigs: HashMap<DefinitionId, (FileId, syntax::Signature)>,
     pub(super) checking_fn_tail: bool,
     pub(super) active_defers: Vec<syntax::ExprId>,
@@ -295,6 +312,9 @@ impl Env {
             return_scope: None,
             return_proofs: Vec::new(),
             pending_closure_param_proofs: Vec::new(),
+            pending_handler_proofs: None,
+            active_handler_return_proofs: None,
+            ctl_resume_proofs: HashMap::new(),
             callback_param_sigs: HashMap::new(),
             checking_fn_tail: false,
             active_defers: Vec::new(),

@@ -150,6 +150,7 @@ enum Work {
         captures: Vec<DefinitionId>,
         types: BTreeMap<DefinitionId, Ty>,
         statics: BTreeMap<DefinitionId, Value>,
+        tail_resume_k: Option<DefinitionId>,
     },
     DeferThunk {
         file: FileId,
@@ -379,6 +380,7 @@ impl<'a> Lowering<'a> {
     }
 
     fn function(&mut self, work: Work) -> Result<Function> {
+        let mut tail_resume_k = None;
         let (kind_tag, fn_span, file, name, body, params, guards, captures, types, statics) =
             match work {
                 Work::Constructor(id, arity) => {
@@ -447,7 +449,9 @@ impl<'a> Lowering<'a> {
                     captures,
                     types,
                     statics,
+                    tail_resume_k: tr_k,
                 } => {
+                    tail_resume_k = tr_k;
                     let ast = &self.typed.hir.file(file).ast;
                     let node = ast.expr(syntax);
                     let (body, params) = match &node.value {
@@ -457,12 +461,17 @@ impl<'a> Lowering<'a> {
                         Expr::Accessor(path) => (NativeBody::Accessor(path), &[][..]),
                         _ => return Err(Diagnostic::unsupported("invalid closure body")),
                     };
+                    let tag = if tr_k.is_some() {
+                        "tail_ctl_closure"
+                    } else {
+                        "closure"
+                    };
                     (
-                        "closure",
+                        tag,
                         node.span,
                         file,
                         format!(
-                            "{}:closure@{}",
+                            "{}:{tag}@{}",
                             self.typed.hir.file(file).path.display(),
                             node.span.start
                         ),
@@ -575,6 +584,7 @@ impl<'a> Lowering<'a> {
             statics,
             guards,
             running_guard: false,
+            tail_resume_k,
         };
         let entry = builder.block(arity);
         builder.current = Some(entry);
@@ -624,9 +634,6 @@ impl<'a> Lowering<'a> {
                 let env = builder.instruction(Instruction::Environment);
                 let zero = builder.integer("0");
                 let handler = builder.runtime("ril_rt_load", vec![env, zero]);
-                if abort_k_first {
-                    builder.runtime("ril_rt_abort_ctl", vec![k]);
-                }
                 let mut call_args = Vec::with_capacity(op_arity + usize::from(!omit_k));
                 for index in 0..op_arity {
                     let idx = builder.integer(&index.to_string());
@@ -684,6 +691,7 @@ struct Builder<'b, 'a> {
     statics: BTreeMap<DefinitionId, Value>,
     guards: Vec<ExprId>,
     running_guard: bool,
+    tail_resume_k: Option<DefinitionId>,
 }
 
 impl<'a> Builder<'_, 'a> {
@@ -1229,6 +1237,120 @@ impl<'a> Builder<'_, 'a> {
         Ok(entries)
     }
 
+    fn is_tail_resumptive_ctl_arm(&self, expr_id: ExprId) -> Option<DefinitionId> {
+        let ast = self.ast();
+        let Expr::Closure { params, body, .. } = &ast.expr(expr_id).value else {
+            return None;
+        };
+        let last_param = params.last()?;
+        let k_span = if let Some(pat) = last_param.pattern {
+            match &ast.pattern(pat).value {
+                Pattern::Binding(_, name) if name.value != "_" => name.span,
+                _ => return None,
+            }
+        } else if let Some(name) = &last_param.name
+            && name.value != "_"
+        {
+            name.span
+        } else {
+            return None;
+        };
+        let k_id = self.global.resolve(k_span)?;
+        self.expr_is_strictly_tail_resumptive(*body, k_id)
+            .then_some(k_id)
+    }
+
+    fn span_free_of(&self, span: Span, target: DefinitionId) -> bool {
+        self.global
+            .typed
+            .hir
+            .references_within(span)
+            .all(|(_, def)| def != target)
+    }
+
+    fn expr_is_strictly_tail_resumptive(&self, expr_id: ExprId, k_id: DefinitionId) -> bool {
+        let ast = self.ast();
+        let node = ast.expr(expr_id);
+        match &node.value {
+            Expr::Call { callee, args } => {
+                if let Expr::Path(path) = &ast.expr(*callee).value
+                    && self.global.resolve(path.span) == Some(k_id)
+                {
+                    return args
+                        .iter()
+                        .all(|a| self.span_free_of(ast.expr(a.value).span, k_id));
+                }
+                false
+            }
+            Expr::Block {
+                statements,
+                helpers,
+            } => {
+                if !helpers.is_empty() {
+                    return false;
+                }
+                let Some((&last, init)) = statements.split_last() else {
+                    return false;
+                };
+                for &stmt_id in init {
+                    let stmt = ast.stmt(stmt_id);
+                    if matches!(
+                        stmt.value.kind,
+                        StmtKind::Defer(_)
+                            | StmtKind::With(_)
+                            | StmtKind::Binding {
+                                fallback: Some(_),
+                                ..
+                            }
+                    ) {
+                        return false;
+                    }
+                    if !self.span_free_of(stmt.span, k_id) {
+                        return false;
+                    }
+                }
+                let StmtKind::Expr(tail) = ast.stmt(last).value.kind else {
+                    return false;
+                };
+                self.expr_is_strictly_tail_resumptive(tail, k_id)
+            }
+            Expr::If {
+                is_meta: false,
+                condition,
+                yes,
+                no: Some(no),
+            } => {
+                let cond_ok = match condition {
+                    ril_sema::syntax::Condition::Expr(e) => {
+                        self.span_free_of(ast.expr(*e).span, k_id)
+                    }
+                    ril_sema::syntax::Condition::Binding { value, .. } => {
+                        self.span_free_of(ast.expr(*value).span, k_id)
+                    }
+                };
+                cond_ok
+                    && self.expr_is_strictly_tail_resumptive(*yes, k_id)
+                    && self.expr_is_strictly_tail_resumptive(*no, k_id)
+            }
+            Expr::Match {
+                is_meta: false,
+                value,
+                arms,
+                ..
+            } => {
+                if !self.span_free_of(ast.expr(*value).span, k_id) || arms.is_empty() {
+                    return false;
+                }
+                arms.iter().all(|arm| {
+                    arm.guard
+                        .is_none_or(|g| self.span_free_of(ast.expr(g).span, k_id))
+                        && self.expr_is_strictly_tail_resumptive(arm.body, k_id)
+                })
+            }
+            _ => false,
+        }
+    }
+
     fn lower_with_ctl(
         &mut self,
         handlers: &[Handler],
@@ -1236,6 +1358,7 @@ impl<'a> Builder<'_, 'a> {
         span: Span,
     ) -> Result<Register> {
         let entries = self.runtime("ril_rt_array", Vec::new());
+        let mut needs_coro_stack = false;
         for handler in handlers {
             let operation = self
                 .global
@@ -1248,9 +1371,7 @@ impl<'a> Builder<'_, 'a> {
                 .ok_or_else(|| self.unsupported(span, "invalid handler operation"))?;
             let op_id = self.global.effect_op_id(&label);
             let op_key = self.integer(&op_id.to_string());
-            let value = self.expr(handler.value)?;
-            let is_ctl = self.boolean(handler.is_ctl);
-            let stored = if handler.is_ctl {
+            let (arm_kind_tag, stored) = if handler.is_ctl {
                 let op_arity = self.global.declaration(operation).map_or(0, |decl| {
                     decl.signature.params.iter().filter(|p| !p.is_meta).count()
                 });
@@ -1266,6 +1387,24 @@ impl<'a> Builder<'_, 'a> {
                                     })
                             })
                     );
+                let tail_k = if !abort_k_first {
+                    self.is_tail_resumptive_ctl_arm(handler.value)
+                } else {
+                    None
+                };
+                let value = if let Some(k_id) = tail_k {
+                    self.lift_with_tail_resume(handler.value, None, Some(k_id))?
+                } else {
+                    self.expr(handler.value)?
+                };
+                let kind_tag = if tail_k.is_some() {
+                    self.integer("2")
+                } else if abort_k_first {
+                    self.integer("3")
+                } else {
+                    needs_coro_stack = true;
+                    self.integer("1")
+                };
                 let env = self.runtime("ril_rt_tuple", Vec::new());
                 self.runtime("ril_rt_append", vec![env, value]);
                 let adapter_fn = self.global.queue(Work::CtlArmAdapter {
@@ -1273,12 +1412,13 @@ impl<'a> Builder<'_, 'a> {
                     abort_k_first,
                     omit_k,
                 });
-                self.box_closure(adapter_fn, 2, env)
+                (kind_tag, self.box_closure(adapter_fn, 2, env))
             } else {
-                value
+                let value = self.expr(handler.value)?;
+                (self.integer("0"), value)
             };
             self.runtime("ril_rt_append", vec![entries, op_key]);
-            self.runtime("ril_rt_append", vec![entries, is_ctl]);
+            self.runtime("ril_rt_append", vec![entries, arm_kind_tag]);
             self.runtime("ril_rt_append", vec![entries, stored]);
         }
         let body_spans: Vec<Span> = statements
@@ -1296,7 +1436,12 @@ impl<'a> Builder<'_, 'a> {
             statics: self.statics.clone(),
         });
         let body_thunk = self.box_closure(body_fn, 0, body_env);
-        Ok(self.runtime("ril_rt_with_ctl", vec![entries, body_thunk]))
+        let runtime_fn = if needs_coro_stack {
+            "ril_rt_with_ctl"
+        } else {
+            "ril_rt_with_ctl_fast"
+        };
+        Ok(self.runtime(runtime_fn, vec![entries, body_thunk]))
     }
 
     fn statement(&mut self, id: StmtId) -> Result<Register> {
