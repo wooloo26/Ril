@@ -694,6 +694,38 @@ impl Builder<'_, '_> {
         }
     }
 
+    fn test_subset_tags(
+        &mut self,
+        span: Span,
+        value: Register,
+        yes: BlockId,
+        no: BlockId,
+    ) -> Result<()> {
+        let tags =
+            self.global.typed.subset_tags.get(&span).ok_or_else(|| {
+                self.unsupported(span, "subset pattern requires resolved sum tags")
+            })?;
+        if tags.is_empty() {
+            self.terminate(Terminator::Jump(no, Vec::new()));
+            return Ok(());
+        }
+        for (index, tag) in tags.iter().enumerate() {
+            let key = self.string(tag);
+            let condition = self.runtime("ril_rt_is_tag", vec![value, key]);
+            let last = index + 1 == tags.len();
+            let fallback = if last { no } else { self.block(0) };
+            self.terminate(Terminator::Branch {
+                condition,
+                yes,
+                no: fallback,
+            });
+            if !last {
+                self.current = Some(fallback);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn test_pattern(
         &mut self,
         id: PatternId,
@@ -723,6 +755,9 @@ impl Builder<'_, '_> {
                 many => self.test_parts(many, value, yes, no)?,
             },
             Pattern::Constructor(path, payload) => {
+                if payload.is_none() && self.global.typed.subset_tags.contains_key(&node.span) {
+                    return self.test_subset_tags(node.span, value, yes, no);
+                }
                 let resolved = self.global.resolve(path.span);
                 if resolved.is_some_and(|id| self.global.typed.hir.unit_constructor(id)) {
                     self.terminate(Terminator::Jump(yes, Vec::new()));
@@ -777,33 +812,7 @@ impl Builder<'_, '_> {
                     }
                 }
             }
-            Pattern::Subset { .. } => {
-                let tags = self
-                    .global
-                    .typed
-                    .subset_tags
-                    .get(&node.span)
-                    .ok_or_else(|| {
-                        self.unsupported(node.span, "subset pattern requires resolved sum tags")
-                    })?;
-                if tags.is_empty() {
-                    self.terminate(Terminator::Jump(no, Vec::new()));
-                }
-                for (index, tag) in tags.iter().enumerate() {
-                    let key = self.string(tag);
-                    let condition = self.runtime("ril_rt_is_tag", vec![value, key]);
-                    let last = index + 1 == tags.len();
-                    let fallback = if last { no } else { self.block(0) };
-                    self.terminate(Terminator::Branch {
-                        condition,
-                        yes,
-                        no: fallback,
-                    });
-                    if !last {
-                        self.current = Some(fallback);
-                    }
-                }
-            }
+            Pattern::Subset { .. } => self.test_subset_tags(node.span, value, yes, no)?,
             Pattern::Range {
                 low,
                 high,

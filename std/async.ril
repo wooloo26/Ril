@@ -79,7 +79,7 @@ pub eff Async {
 
 -- Extracts the return type of any `fn` callable type.
 pub type ReturnOf = \F -> match <F> {
-    <fn(..) @.. -> let R> -> <R>
+    <fn(..) @& -> let R> -> <R>
     _ -> compile_error("Async::join requires a record of zero-argument fn() thunks")
 }
 
@@ -92,15 +92,15 @@ pub type JoinOut = \T: .{ .. } -> {
     <.{ [keys as k]: ReturnOf<T.(k)> }>
 }
 
--- Extracts the `Ok` payload type from a fallible callable `fn(..) @.. -> !<OkT, _>`.
+-- Extracts the `Ok` payload type from a fallible callable `fn(..) @& -> !<OkT, _>`.
 pub type OkOf = \F -> match <F> {
-    <fn(..) @.. -> !<let OkT, _>> -> <OkT>
+    <fn(..) @& -> !<let OkT, _>> -> <OkT>
     _ -> compile_error("Async::try_join requires a record of fallible !<T, E> thunks")
 }
 
--- Extracts the `Err` payload type from a fallible callable `fn(..) @.. -> !<_, ErrT>`.
+-- Extracts the `Err` payload type from a fallible callable `fn(..) @& -> !<_, ErrT>`.
 pub type ErrOf = \F -> match <F> {
-    <fn(..) @.. -> !<_, let ErrT>> -> <ErrT>
+    <fn(..) @& -> !<_, let ErrT>> -> <ErrT>
     _ -> compile_error("Async::try_join requires a record of fallible !<T, E> thunks")
 }
 
@@ -397,7 +397,7 @@ pub fn try_map_limit<
 }
 
 -- Runs `body`; if the current task was cancelled when `body` unwinds, runs `cleanup`.
-pub fn on_cancel<T>(via body: fn() @Async & -> T, via cleanup: fn() @fn & -> ()) @Async @fn -> T {
+pub fn on_cancel<T>(via body: fn() @Async & -> T, via cleanup: fn() @fn & -> ()) @Async -> T {
     defer {
         if Task::is_cancelled() {
             cleanup()
@@ -407,7 +407,7 @@ pub fn on_cancel<T>(via body: fn() @Async & -> T, via cleanup: fn() @fn & -> ())
 }
 
 -- Runs `body` and always runs `cleanup` via `defer` on normal exit, cancellation, or panic.
-pub fn finally<T>(via body: fn() @Async & -> T, via cleanup: fn() @fn & -> ()) @Async @fn -> T {
+pub fn finally<T>(via body: fn() @Async & -> T, via cleanup: fn() @fn & -> ()) @Async -> T {
     defer cleanup()
     body()
 }

@@ -416,6 +416,22 @@ impl Analyzer<'_> {
                 }
             }
             Pattern::Constructor(_, payload) => {
+                if payload.is_none() && self.program.subset_tags.contains_key(&node.span) {
+                    if storage.mode == Mode::Plain
+                        && self
+                            .program
+                            .subset_types
+                            .get(&node.span)
+                            .is_some_and(|ty| self.program.is_must_consume(ty))
+                    {
+                        self.error(
+                            Code::E0625,
+                            node.span,
+                            "bare subset pattern cannot discard a must-consume sum payload",
+                        );
+                    }
+                    return;
+                }
                 let items = payload.as_deref().unwrap_or(&[]);
                 let linear_destruct =
                     storage.mode == Mode::Plain && self.program.is_must_consume(self.ty(node.span));
@@ -638,9 +654,21 @@ impl Analyzer<'_> {
                 }
                 ledger.merge_bindings(&alternatives);
             }
-            Pattern::Subset {
-                binding: Some(id), ..
-            } => self.bind(ctx, ledger, *id, storage, value, site),
+            Pattern::Subset { binding, .. } => {
+                let binding_span = self.ast(ctx.file).pattern(*binding).span;
+                let subset_ty = self.ty(binding_span);
+                if storage.mode == Mode::Plain
+                    && self.program.is_must_consume(subset_ty)
+                    && value.all_linear().is_empty()
+                {
+                    ledger.record_linear(
+                        &mut value,
+                        node.span,
+                        matches!(subset_ty, Ty::Array(_) | Ty::Map(..)),
+                    );
+                }
+                self.bind(ctx, ledger, *binding, storage, value, site);
+            }
             _ => {}
         }
     }
@@ -673,9 +701,7 @@ impl Analyzer<'_> {
                     .pattern
                     .is_none_or(|p| Self::pattern_has_binding(ast, p))
             }),
-            Pattern::Subset { binding, .. } => {
-                binding.is_some_and(|p| Self::pattern_has_binding(ast, p))
-            }
+            Pattern::Subset { binding, .. } => Self::pattern_has_binding(ast, *binding),
         }
     }
 

@@ -212,22 +212,7 @@ impl Parser<'_> {
             })?;
             (false, params)
         };
-        let mut any_effects = false;
-        let mut effects = Vec::new();
-        loop {
-            self.continue_lines(|tok| tok == "@");
-            if !self.eat("@") {
-                break;
-            }
-            if self.eat("..") {
-                any_effects = true;
-            } else if self.is("(") && self.current().tight_left {
-                self.open("(", ")", Layout::List)?;
-                self.close(")")?;
-            } else {
-                effects.push(self.path(Angle::Type, true)?);
-            }
-        }
+        let obligations = self.obligations()?;
         self.continue_lines(|tok| tok == "->");
         self.require("->")?;
         self.skip_lines();
@@ -238,8 +223,7 @@ impl Parser<'_> {
             is_ctl,
             any_params,
             params,
-            any_effects,
-            effects,
+            obligations,
             result_mode,
             result,
         })

@@ -43,6 +43,18 @@ impl Checker<'_> {
                 Constructor("tuple".into(), parts)
             }
             Pattern::Constructor(path, parts) => {
+                if parts.is_none()
+                    && let Some(Ty::Adt(subset)) = self.bare_subset_type(env, path)
+                {
+                    if subset.kind == AdtKind::OpaqueSum && env.scope != subset.defining_scope {
+                        return Or(Vec::new());
+                    }
+                    return Or(self
+                        .sum_variants(&subset)
+                        .into_iter()
+                        .map(|(tag, payload)| Constructor(tag, vec![Any; payload.len()]))
+                        .collect());
+                }
                 let name = self
                     .resolve(path.span)
                     .map(|id| self.hir.definition(id).name.value.as_str())
@@ -79,6 +91,9 @@ impl Checker<'_> {
                 .collect()),
             Pattern::Subset { ty, .. } => {
                 if let Ty::Adt(subset) = self.type_expr(&mut env.clone(), *ty) {
+                    if subset.kind == AdtKind::OpaqueSum && env.scope != subset.defining_scope {
+                        return Or(Vec::new());
+                    }
                     Or(self
                         .sum_variants(&subset)
                         .into_iter()

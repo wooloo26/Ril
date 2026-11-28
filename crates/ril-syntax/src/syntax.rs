@@ -412,8 +412,7 @@ pub enum Type {
         is_ctl: bool,
         any_params: bool,
         params: Vec<(Mode, TypeId)>,
-        any_effects: bool,
-        effects: Vec<Path>,
+        obligations: Obligations,
         result_mode: Option<Mode>,
         result: TypeId,
     },
@@ -622,7 +621,7 @@ pub enum Pattern {
     },
     Subset {
         ty: TypeId,
-        binding: Option<PatternId>,
+        binding: PatternId,
     },
     Type(TypeId),
     TypeBinding(Name),

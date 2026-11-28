@@ -152,12 +152,101 @@ fn get(val: ?int) -> int {
 -- @case included_sum_patterns_cover_all_variants compile-pass
 type Network { Offline; Timeout(int) }
 type Account { Invalid }
+type AliasAccount = Account
 type Failure { ..Network; ..Account; Other }
 fn status(value: Failure) -> int {
     match value {
         Network as net -> match net { Network::Offline -> 1; Network::Timeout(status) -> status }
-        ..Account -> 2
+        Account -> 2
         Failure::Other -> 3
+    }
+}
+fn status_alias_and_or(value: Failure) -> int {
+    match value {
+        AliasAccount | Failure::Other -> 0
+        Network -> 1
+    }
+}
+fn status_nested(res: !<int, Failure>) -> int {
+    match res {
+        Ok(n) -> n
+        Err(Account) -> -1
+        Err(Network) -> -2
+        Err(Failure::Other) -> -3
+    }
+}
+meta let _ = assert(match Account::Invalid as Failure { Account -> true; _ -> false })
+
+-- @case dotdot_subset_pattern_is_syntax_error compile-fail E0120
+type Account { Invalid }
+type Failure { ..Account; Other }
+fn bad(value: Failure) -> int {
+    match value {
+        ..Account -> 1
+        -- ^ E0120
+        Failure::Other -> 2
+    }
+}
+
+-- @case bare_subset_linear_payload_cannot_drop compile-fail E0625 stage=access
+linear type Handle(int)
+type Sub { Got(Handle) }
+type Sup { ..Sub; Empty }
+fn bad(x: Sup) -> int {
+    match x {
+        Sub -> 1
+        -- ^ E0625
+        Sup::Empty -> 0
+    }
+}
+
+-- @case subset_as_binding_linear_payload_cannot_drop compile-fail E0625 stage=access
+linear type Handle(int)
+type Sub { Got(Handle) }
+type Sup { ..Sub; Empty }
+fn bad(x: Sup) -> int {
+    match x {
+        Sub as s -> 1
+        --     ^ E0625
+        Sup::Empty -> 0
+    }
+}
+
+-- @case bare_subset_non_linear_branch_of_linear_sum compile-pass stage=access
+linear type Handle(int)
+type PlainSub { A; B }
+type Sup { ..PlainSub; Got(Handle) }
+fn ok(x: Sup) -> int {
+    match x {
+        PlainSub -> 0
+        Sup::Got(h) -> inner(h)
+    }
+}
+
+-- @case bare_subset_let_refutable_is_e0345 compile-fail E0345
+type Account { Invalid }
+type Failure { ..Account; Other }
+fn bad(value: Failure) -> () {
+    let Account = value
+    -- ^ E0345
+}
+
+-- @case bare_subset_let_exact_is_e0309 compile-fail E0309
+type Account { Invalid }
+fn bad(value: Account) -> () {
+    let Account = value
+    -- ^ E0309
+}
+
+-- @case bare_subset_non_included_sum_is_e0301 compile-fail E0301
+type Account { Invalid }
+type OtherSum { Nope }
+type Failure { ..Account; Other }
+fn bad(value: Failure) -> int {
+    match value {
+        OtherSum -> 1
+        -- ^ E0301
+        _ -> 0
     }
 }
 

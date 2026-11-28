@@ -58,6 +58,7 @@ impl Analyzer<'_> {
                 if let Some(fallback) = fallback {
                     for (mut failed, _) in self.pattern_paths(ctx, ledger, *pattern, &value, false)
                     {
+                        failed.consume_datum_linear(&value);
                         let mut failure = ctx.clone();
                         self.expr(&mut failure, &mut failed, *fallback);
                         ctx.return_values = failure.return_values;

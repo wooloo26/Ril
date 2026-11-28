@@ -184,6 +184,12 @@ impl Checker<'_> {
                 }
             }
             Pattern::Constructor(path, items) => {
+                if items.is_none()
+                    && let Some(subset) = self.bare_subset_type(env, path)
+                {
+                    self.check_subset_pattern(env, node.span, &subset, &normalized, None);
+                    return;
+                }
                 let resolved_ctor = self.resolve(path.span);
                 if let Some(id) = resolved_ctor
                     && self.hir.definition(id).kind == ril_hir::DefinitionKind::Type
@@ -300,22 +306,7 @@ impl Checker<'_> {
             }
             Pattern::Subset { ty, binding } => {
                 let subset = self.type_expr(env, *ty);
-                if !matches!(normalized, Ty::Unknown | Ty::Never)
-                    && !self.sum_subset(env, &subset, &normalized)
-                {
-                    self.error(
-                        Code::E0301,
-                        node.span,
-                        "subset pattern requires a sum included in the input",
-                    );
-                }
-                if let Ty::Adt(adt) = &subset {
-                    let tags = self.sum_variants(adt).into_keys().collect();
-                    self.subset_tags.insert(node.span, tags);
-                }
-                if let Some(binding) = binding {
-                    self.pattern(env, *binding, &subset);
-                }
+                self.check_subset_pattern(env, node.span, &subset, &normalized, Some(*binding));
             }
             Pattern::Type(ty) => {
                 self.check_type_pattern_syntax(env, *ty);
@@ -361,9 +352,7 @@ impl Checker<'_> {
                     )
                 })
                 .collect(),
-            Pattern::Subset {
-                binding: Some(id), ..
-            } => self.pattern_names(env, *id),
+            Pattern::Subset { binding, .. } => self.pattern_names(env, *binding),
             _ => HashSet::new(),
         }
     }
@@ -419,9 +408,9 @@ impl Checker<'_> {
                     }
                 }
             }
-            Pattern::Subset {
-                binding: Some(id), ..
-            } => self.collect_pattern_binding_modes(env, *id, out),
+            Pattern::Subset { binding, .. } => {
+                self.collect_pattern_binding_modes(env, *binding, out);
+            }
             _ => {}
         }
     }
@@ -685,7 +674,7 @@ impl Checker<'_> {
                             local.checking_fn_tail = true;
                         }
                         let found = self.expr(&mut local, arm.body, expected);
-                        env.effects_seen.extend(local.effects_seen);
+                        env.merge_effects_from(&local);
                         return found;
                     }
                     // No arm matched (unless a dependent pattern/guard broke out above).
@@ -771,6 +760,7 @@ impl Checker<'_> {
                 local.checking_fn_tail = true;
             }
             let found = self.expr(&mut local, arm.body, expected);
+            env.merge_effects_from(&local);
             if found != Ty::Never {
                 merged_dbm = Some(match merged_dbm {
                     None => local.refinements.dbm,
@@ -778,7 +768,6 @@ impl Checker<'_> {
                 });
             }
             result = self.join(env, span, result, found);
-            env.effects_seen.extend(local.effects_seen);
         }
         if let Some(dbm) = merged_dbm {
             env.refinements.dbm = dbm;
@@ -833,6 +822,80 @@ impl Checker<'_> {
         })
     }
 
+    pub(super) fn bare_subset_type(
+        &mut self,
+        env: &Env,
+        path: &ril_syntax::syntax::Path,
+    ) -> Option<Ty> {
+        let id = self.resolve(path.span)?;
+        let def = self.hir.definition(id);
+        match def.kind {
+            ril_hir::DefinitionKind::Sum(_) => Some(self.named_type(&mut env.clone(), path)),
+            ril_hir::DefinitionKind::Type => {
+                let is_alias_or_fn = def.stmt.is_some_and(|stmt| {
+                    matches!(
+                        &self.ast(def.name.span.file).stmt(stmt).value.kind,
+                        StmtKind::Type(decl)
+                            if decl.kind == ril_syntax::syntax::TypeKind::Alias
+                                || matches!(decl.definition, TypeDefinition::Function(..))
+                    )
+                });
+                if !is_alias_or_fn {
+                    return None;
+                }
+                let ty = self.named_type(&mut env.clone(), path);
+                matches!(
+                    &ty,
+                    Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum)
+                )
+                .then_some(ty)
+            }
+            _ => None,
+        }
+    }
+
+    fn check_subset_pattern(
+        &mut self,
+        env: &mut Env,
+        span: Span,
+        subset: &Ty,
+        normalized: &Ty,
+        binding: Option<PatternId>,
+    ) {
+        let input_sealed = matches!(
+            normalized,
+            Ty::Adt(adt) if adt.kind == AdtKind::OpaqueSum && env.scope != adt.defining_scope
+        );
+        let subset_sealed = matches!(
+            subset,
+            Ty::Adt(adt) if adt.kind == AdtKind::OpaqueSum && env.scope != adt.defining_scope
+        );
+        if input_sealed || subset_sealed {
+            self.error(Code::E0308, span, "opaque representation is sealed");
+            if let Some(binding) = binding {
+                self.pattern(env, binding, subset);
+            }
+            return;
+        }
+        if !matches!(normalized, Ty::Unknown | Ty::Never)
+            && !self.sum_subset(env, subset, normalized)
+        {
+            self.error(
+                Code::E0301,
+                span,
+                "subset pattern requires a sum included in the input",
+            );
+        }
+        if let Ty::Adt(adt) = subset {
+            let tags = self.sum_variants(adt).into_keys().collect();
+            self.subset_tags.insert(span, tags);
+            self.subset_types.insert(span, subset.clone());
+        }
+        if let Some(binding) = binding {
+            self.pattern(env, binding, subset);
+        }
+    }
+
     fn pattern_tags(
         &mut self,
         env: &Env,
@@ -849,6 +912,14 @@ impl Checker<'_> {
                     .flatten()
                     .all(|&part| self.irrefutable(env, part)) =>
             {
+                if parts.is_none()
+                    && let Some(Ty::Adt(subset)) = self.bare_subset_type(env, path)
+                {
+                    if subset.kind == AdtKind::OpaqueSum && env.scope != subset.defining_scope {
+                        return (false, HashSet::new());
+                    }
+                    return (false, self.sum_variants(&subset).into_keys().collect());
+                }
                 let tag = self
                     .resolve(path.span)
                     .map(|id| self.hir.definition(id).name.value.clone())
@@ -1010,6 +1081,21 @@ impl Checker<'_> {
         }
     }
 
+    fn is_bare_wildcard_slot(
+        &self,
+        env: &Env,
+        storage: &ril_syntax::syntax::Storage,
+        ty_id: TypeId,
+    ) -> bool {
+        !storage.variable
+            && storage.mode == Mode::Plain
+            && storage.mode_path.is_none()
+            && !storage.bind_mode
+            && storage.keyword_span.is_none()
+            && storage.mode_span.is_none()
+            && matches!(self.ast(env.file).ty(ty_id).value, Type::PatternWildcard)
+    }
+
     pub(super) fn type_pattern_shape_key(&mut self, env: &Env, id: TypeId) -> String {
         use ril_syntax::syntax::{FieldTail, GenericArg};
         if !self.is_pattern_only_type(env, id) {
@@ -1047,8 +1133,7 @@ impl Checker<'_> {
                 is_ctl,
                 any_params,
                 params,
-                any_effects,
-                effects,
+                obligations,
                 result_mode,
                 result,
             } => {
@@ -1058,24 +1143,55 @@ impl Checker<'_> {
                 } else {
                     params
                         .iter()
-                        .map(|(_, ty)| self.type_pattern_shape_key(env, *ty))
+                        .map(|(mode, ty)| {
+                            let m = match mode {
+                                Mode::Ref => "ref ",
+                                Mode::Mut => "mut ",
+                                Mode::Shared => "^mut ",
+                                Mode::New => "new ",
+                                Mode::Via => "via ",
+                                _ => "",
+                            };
+                            format!("{m}{}", self.type_pattern_shape_key(env, *ty))
+                        })
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                let mut eff_str = String::new();
-                for eff in effects {
-                    eff_str.push_str(" @");
-                    eff_str.push_str(
-                        &eff.segments
+                let mut ob_env = env.clone();
+                let effect_row = self.effect_row_from_paths(&mut ob_env, &obligations.effects);
+                let mut eff_parts: Vec<String> = effect_row
+                    .concrete
+                    .iter()
+                    .map(|e| format!("@{e}"))
+                    .chain(
+                        effect_row
+                            .vars
                             .iter()
-                            .map(|s| s.name.value.as_str())
-                            .collect::<Vec<_>>()
-                            .join("::"),
-                    );
+                            .map(|v| format!("@{}", self.hir.definition(*v).name.value)),
+                    )
+                    .collect();
+                eff_parts.sort();
+                eff_parts.dedup();
+                if obligations.direct_open_effects || effect_row.direct_open {
+                    eff_parts.push("@fn".into());
                 }
-                if *any_effects {
-                    eff_str.push_str(" @..");
+                if obligations.open_effects || effect_row.open {
+                    eff_parts.push("@".into());
                 }
+                if obligations.open_state {
+                    eff_parts.push("&".into());
+                }
+                let mut state_parts = self.state_clauses_from_obligations(&mut ob_env, obligations);
+                state_parts.sort();
+                state_parts.dedup();
+                for s in state_parts {
+                    eff_parts.push(format!("&{s}"));
+                }
+                let ob_str = if eff_parts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", eff_parts.join(" "))
+                };
                 let rm = match result_mode {
                     Some(Mode::New) => "new ",
                     Some(Mode::Ref) => "ref ",
@@ -1083,7 +1199,7 @@ impl Checker<'_> {
                     _ => "",
                 };
                 format!(
-                    "{kind}({p}){eff_str} -> {rm}{}",
+                    "{kind}({p}){ob_str} -> {rm}{}",
                     self.type_pattern_shape_key(env, *result)
                 )
             }
@@ -1093,17 +1209,26 @@ impl Checker<'_> {
                 self.type_pattern_shape_key(env, *ok),
                 self.type_pattern_shape_key(env, *err)
             ),
-            Type::Array(storage, item) => format!(
-                "[{}]{}",
-                format_storage(storage),
-                self.type_pattern_shape_key(env, *item)
-            ),
-            Type::Map(key, storage, val) => format!(
-                "[{}: {} {}]",
-                self.type_pattern_shape_key(env, *key),
-                format_storage(storage),
-                self.type_pattern_shape_key(env, *val)
-            ),
+            Type::Array(storage, item) => {
+                let m = if self.is_bare_wildcard_slot(env, storage, *item) {
+                    "_".to_owned()
+                } else {
+                    format_storage(storage)
+                };
+                format!("[{m}]{}", self.type_pattern_shape_key(env, *item))
+            }
+            Type::Map(key, storage, val) => {
+                let m = if self.is_bare_wildcard_slot(env, storage, *val) {
+                    "_".to_owned()
+                } else {
+                    format_storage(storage)
+                };
+                format!(
+                    "[{}: {m} {}]",
+                    self.type_pattern_shape_key(env, *key),
+                    self.type_pattern_shape_key(env, *val)
+                )
+            }
             Type::Tuple(items) => {
                 let parts: Vec<_> = items
                     .iter()
@@ -1115,7 +1240,11 @@ impl Checker<'_> {
                 let mut parts: Vec<_> = fields
                     .iter()
                     .map(|field| {
-                        let m = format_storage(&field.storage);
+                        let m = if self.is_bare_wildcard_slot(env, &field.storage, field.ty) {
+                            "_".to_owned()
+                        } else {
+                            format_storage(&field.storage)
+                        };
                         let t = self.type_pattern_shape_key(env, field.ty);
                         if m.is_empty() {
                             format!("{}: {t}", field.name.value)
@@ -1195,9 +1324,31 @@ impl Checker<'_> {
                     self.check_type_pattern_syntax(env, field.ty);
                 }
             }
-            Type::CallablePattern { params, result, .. } => {
+            Type::CallablePattern {
+                params,
+                obligations,
+                result,
+                ..
+            } => {
                 for &(_, ty) in params {
                     self.check_type_pattern_syntax(env, ty);
+                }
+                for clause in &obligations.state {
+                    let invalid = match clause.kind {
+                        ril_syntax::syntax::StateKind::Return => true,
+                        ril_syntax::syntax::StateKind::Environment => clause
+                            .bindings
+                            .iter()
+                            .any(|(_, path)| !path.segments.is_empty()),
+                        _ => false,
+                    };
+                    if invalid {
+                        self.error(
+                            Code::E0538,
+                            clause.span,
+                            "callable type pattern cannot name '&up(...)' bindings or '&return(...)' clauses",
+                        );
+                    }
                 }
                 self.check_type_pattern_syntax(env, *result);
             }
@@ -1308,13 +1459,21 @@ impl Checker<'_> {
                 }
             }
             (Type::Array(storage, item), Ty::Array(target)) => {
-                Ok(self.match_member_mode(env, storage, target.mode)
-                    && self.match_type_pattern_inner(env, *item, &target.ty, strict_eval)?)
+                if self.is_bare_wildcard_slot(env, storage, *item) {
+                    Ok(true)
+                } else {
+                    Ok(self.match_member_mode(env, storage, target.mode)
+                        && self.match_type_pattern_inner(env, *item, &target.ty, strict_eval)?)
+                }
             }
             (Type::Map(key, storage, val), Ty::Map(tk, tv)) => {
-                Ok(self.match_type_pattern_inner(env, *key, tk, strict_eval)?
-                    && self.match_member_mode(env, storage, tv.mode)
-                    && self.match_type_pattern_inner(env, *val, &tv.ty, strict_eval)?)
+                if self.is_bare_wildcard_slot(env, storage, *val) {
+                    self.match_type_pattern_inner(env, *key, tk, strict_eval)
+                } else {
+                    Ok(self.match_type_pattern_inner(env, *key, tk, strict_eval)?
+                        && self.match_member_mode(env, storage, tv.mode)
+                        && self.match_type_pattern_inner(env, *val, &tv.ty, strict_eval)?)
+                }
             }
             (Type::TupleAny, Ty::Tuple(_)) => Ok(true),
             (
@@ -1322,8 +1481,7 @@ impl Checker<'_> {
                     is_ctl,
                     any_params,
                     params,
-                    any_effects,
-                    effects,
+                    obligations,
                     result_mode,
                     result,
                 },
@@ -1352,32 +1510,66 @@ impl Checker<'_> {
                         }
                     }
                 }
-                if !*any_effects {
-                    if effects.is_empty() {
-                        if target_call.open_effects
-                            || target_call.direct_open_effects
-                            || !target_call.effects.is_empty()
-                            || !target_call.effect_vars.is_empty()
-                        {
-                            return Ok(false);
-                        }
-                    } else {
-                        let expected_row = self.effect_row_from_paths(env, effects);
-                        for req in &expected_row.concrete {
-                            if !target_call
-                                .effects
-                                .iter()
-                                .any(|e| self.effect_covers(e, req))
-                            {
-                                return Ok(false);
-                            }
-                        }
-                        for req_var in &expected_row.vars {
-                            if !target_call.effect_vars.contains(req_var) {
-                                return Ok(false);
-                            }
-                        }
+                let expected_row = self.effect_row_from_paths(env, &obligations.effects);
+                let pat_open = obligations.open_effects || expected_row.open;
+                let pat_direct = obligations.direct_open_effects || expected_row.direct_open;
+                for req in &expected_row.concrete {
+                    if !target_call
+                        .effects
+                        .iter()
+                        .any(|e| self.effect_covers(e, req))
+                    {
+                        return Ok(false);
                     }
+                }
+                for req_var in &expected_row.vars {
+                    if !target_call.effect_vars.contains(req_var) {
+                        return Ok(false);
+                    }
+                }
+                if pat_open {
+                    // '@' matches any remaining effects.
+                } else if pat_direct {
+                    if target_call.open_effects {
+                        return Ok(false);
+                    }
+                    let extra_ctl = target_call.effects.iter().any(|eff| {
+                        !expected_row
+                            .concrete
+                            .iter()
+                            .any(|req| self.effect_covers(eff, req))
+                            && self.effect_label_has_ctl(eff)
+                    }) || target_call.effect_vars.iter().any(|v| {
+                        !expected_row.vars.contains(v) && !self.hir.is_direct_effect_param(*v)
+                    });
+                    if extra_ctl {
+                        return Ok(false);
+                    }
+                } else if expected_row.concrete.is_empty()
+                    && expected_row.vars.is_empty()
+                    && (target_call.open_effects
+                        || target_call.direct_open_effects
+                        || !target_call.effects.is_empty()
+                        || !target_call.effect_vars.is_empty()
+                        || !target_call.effect_infers.is_empty())
+                {
+                    return Ok(false);
+                }
+                let expected_state = self.state_clauses_from_obligations(env, obligations);
+                for req in &expected_state {
+                    if !target_call
+                        .state
+                        .iter()
+                        .any(|actual| Self::state_clause_fits(std::slice::from_ref(req), actual))
+                    {
+                        return Ok(false);
+                    }
+                }
+                if !obligations.open_state
+                    && expected_state.is_empty()
+                    && (target_call.open_state || !target_call.state.is_empty())
+                {
+                    return Ok(false);
                 }
                 if let Some(rm) = result_mode
                     && *rm != target_call.result_mode
@@ -1406,8 +1598,14 @@ impl Checker<'_> {
                     let Some(member) = target.get(&field.name.value) else {
                         return Ok(false);
                     };
-                    if !self.match_member_mode(env, &field.storage, member.mode)
-                        || !self.match_type_pattern_inner(env, field.ty, &member.ty, strict_eval)?
+                    if !self.is_bare_wildcard_slot(env, &field.storage, field.ty)
+                        && (!self.match_member_mode(env, &field.storage, member.mode)
+                            || !self.match_type_pattern_inner(
+                                env,
+                                field.ty,
+                                &member.ty,
+                                strict_eval,
+                            )?)
                     {
                         return Ok(false);
                     }
@@ -1705,6 +1903,22 @@ impl Checker<'_> {
                 Ok(true)
             }
             (Pattern::Constructor(path, parts), Value::Tag(tag, values)) => {
+                if parts.is_none() {
+                    let subset_match = if let Some(tags) = self.subset_tags.get(&node.span) {
+                        Some(tags.contains(tag))
+                    } else if let Some(Ty::Adt(subset)) = self.bare_subset_type(env, path) {
+                        if subset.kind == AdtKind::OpaqueSum && env.scope != subset.defining_scope {
+                            Some(false)
+                        } else {
+                            Some(self.sum_variants(&subset).contains_key(tag))
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(matched) = subset_match {
+                        return Ok(matched);
+                    }
+                }
                 let expected = self
                     .resolve(path.span)
                     .map(|id| self.hir.definition(id).name.value.as_str())
@@ -1726,18 +1940,19 @@ impl Checker<'_> {
                 }
                 Ok(true)
             }
-            (Pattern::Subset { binding, .. }, Value::Tag(tag, _)) => {
-                if !self
-                    .subset_tags
-                    .get(&node.span)
-                    .is_some_and(|tags| tags.contains(tag))
-                {
+            (Pattern::Subset { ty, binding }, Value::Tag(tag, _)) => {
+                let matched = if let Some(tags) = self.subset_tags.get(&node.span) {
+                    tags.contains(tag)
+                } else if let Ty::Adt(subset) = self.type_expr(&mut env.clone(), *ty) {
+                    (subset.kind != AdtKind::OpaqueSum || env.scope == subset.defining_scope)
+                        && self.sum_variants(&subset).contains_key(tag)
+                } else {
+                    false
+                };
+                if !matched {
                     return Ok(false);
                 }
-                match binding {
-                    Some(id) => self.value_pattern_at(env, *id, value, bindings, place),
-                    None => Ok(true),
-                }
+                self.value_pattern_at(env, *binding, value, bindings, place)
             }
             (Pattern::Or(items), value) => {
                 for &id in items {

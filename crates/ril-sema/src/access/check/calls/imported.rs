@@ -208,62 +208,47 @@ impl<'program> Analyzer<'program> {
                         argument_span,
                     );
                 }
-                let formal_cb = signature
+                let formal_param_ty = signature
                     .and_then(|s| s.parameters.get(*position))
-                    .and_then(|p| match &p.ty {
-                        Ty::Callable(c) => Some(c.as_ref()),
-                        _ => None,
-                    });
-                let formal_covered: &[String] = formal_cb.map_or(&[], |c| c.effects.as_slice());
-                let formal_direct_only =
-                    formal_cb.is_some_and(|c| c.direct_open_effects && !c.open_effects);
-                if formal_direct_only
-                    && self.has_unhandled_ctl_filtered(
-                        ctx,
-                        argument,
-                        self.ty(argument_span),
-                        formal_covered,
-                    )
-                {
-                    self.error(
-                        Code::E0616,
-                        argument_span,
-                        "callable using unhandled ctl effect cannot be passed to a '@fn' parameter",
-                    );
-                }
-                if summary.invoked.contains(position) {
+                    .map(|p| p.ty.clone());
+                let invoked = summary.invoked.contains(position);
+                if invoked {
                     self.link_invocation(ctx, argument);
                     for source in argument.root_dependencies() {
                         self.seed(ctx, Obligation::Invoke(source));
                     }
-                    if formal_cb.is_some_and(|c| c.open_effects || c.direct_open_effects) {
-                        self.charge_latent_effects_filtered_if(
-                            ctx,
-                            &frozen,
-                            argument,
-                            formal_covered,
-                            argument_span,
-                            None,
-                        );
-                        if let Ty::Callable(actual) = self.ty(argument_span).clone() {
-                            for effect in &actual.effects {
-                                if formal_covered
+                }
+                if let Some(formal_ty) = &formal_param_ty
+                    && formal_ty.contains_any_open_effect_callable()
+                {
+                    let arg_ty = self.ty(argument_span).clone();
+                    let cb_unhandled = self.charge_open_callback_arg(
+                        ctx,
+                        &frozen,
+                        formal_ty,
+                        &arg_ty,
+                        argument,
+                        argument_span,
+                        None,
+                        invoked,
+                    );
+                    if cb_unhandled {
+                        for ((_, other_mode, other_val), &other_span) in arguments.iter().zip(spans)
+                        {
+                            if matches!(other_mode, Mode::Mut | Mode::Ref)
+                                && other_val
+                                    .roots
                                     .iter()
-                                    .any(|cov| self.program.effect_covers(cov, effect))
-                                {
-                                    continue;
-                                }
-                                self.effect(ctx, &frozen, effect, argument_span);
-                            }
-                            for &var in &actual.effect_vars {
-                                self.use_effect_var(ctx, &frozen, var, argument_span);
-                            }
-                            if actual.open_effects || actual.direct_open_effects {
-                                self.use_open_effect(
-                                    ctx,
-                                    &frozen,
-                                    actual.direct_open_effects && !actual.open_effects,
-                                    argument_span,
+                                    .any(|root| root.mode == Access::Shared)
+                            {
+                                self.error(
+                                    if *other_mode == Mode::Mut {
+                                        Code::E0523
+                                    } else {
+                                        Code::E0524
+                                    },
+                                    other_span,
+                                    "shared writable source cannot downgrade to mut/ref across an unhandled effect or open @",
                                 );
                             }
                         }

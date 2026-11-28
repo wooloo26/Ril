@@ -220,6 +220,17 @@ impl Analyzer<'_> {
                             Some(invocation.clone()),
                         );
                     }
+                    for &var in &actual.effect_vars {
+                        self.use_effect_var(ctx, ledger, var, span);
+                    }
+                    if actual.open_effects || actual.direct_open_effects {
+                        self.use_open_effect(
+                            ctx,
+                            ledger,
+                            actual.direct_open_effects && !actual.open_effects,
+                            span,
+                        );
+                    }
                 }
             }
             for source in value.root_dependencies().collect::<BTreeSet<_>>() {

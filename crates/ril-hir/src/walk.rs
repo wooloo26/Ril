@@ -1054,16 +1054,14 @@ impl Walk<'_> {
             }
             Type::CallablePattern {
                 params,
-                effects,
+                obligations,
                 result,
                 ..
             } => {
                 for (_, ty) in params {
                     self.ty_pattern(*ty, alias, seen);
                 }
-                for effect in effects {
-                    self.resolve_effect_path(effect);
-                }
+                self.obligations(obligations);
                 self.ty_pattern(*result, alias, seen);
             }
             _ => self.ty(id),
@@ -1123,9 +1121,7 @@ impl Walk<'_> {
             }
             Pattern::Subset { ty, binding } => {
                 self.ty(*ty);
-                if let Some(binding) = binding {
-                    self.bind_pattern_in(*binding, alias, seen);
-                }
+                self.bind_pattern_in(*binding, alias, seen);
             }
             Pattern::Type(ty) => self.ty_pattern(*ty, alias, seen),
             Pattern::TypeBinding(name) => {
@@ -1210,9 +1206,7 @@ impl Walk<'_> {
                     }
                 }
             }
-            Pattern::Subset {
-                binding: Some(id), ..
-            } => self.reserve_pattern_in(*id, seen),
+            Pattern::Subset { binding, .. } => self.reserve_pattern_in(*binding, seen),
             _ => {}
         }
     }

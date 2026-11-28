@@ -77,13 +77,6 @@ impl Parser<'_> {
                 Pattern::Slice { text, elements }
             }
             ".{" => self.record_pattern()?,
-            ".." => {
-                self.bump();
-                Pattern::Subset {
-                    ty: self.ty()?,
-                    binding: None,
-                }
-            }
             "var" | "mut" | "^mut" | "ref" | "via" if modified => {
                 let storage = self.storage(false)?;
                 Pattern::Binding(storage, self.name(Some(Word::Value), false)?)
@@ -121,10 +114,7 @@ impl Parser<'_> {
                     } else if self.eat("as") {
                         let ty = self.ast.add_ty(path.span, crate::syntax::Type::Named(path));
                         let binding = self.nested(|p| p.pattern_atom(true))?;
-                        Pattern::Subset {
-                            ty,
-                            binding: Some(binding),
-                        }
+                        Pattern::Subset { ty, binding }
                     } else {
                         Pattern::Constructor(path, None)
                     }

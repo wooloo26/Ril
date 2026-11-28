@@ -1119,7 +1119,7 @@ fn bad_reflects(x: int) -> bool |> Reflects<Positive<x>> {
 fn map_indexed<T, R>(
     xs: []T,
     via f: fn(i: InBounds<xs>, x: T) @& -> R,
-) @ -> new []R |> SameLen<xs> {
+) -> new []R |> SameLen<xs> {
     let mut out: []R = []
     for 0..len(xs) as i {
         Array::push(mut out, f(i, xs[i]))
@@ -1415,9 +1415,9 @@ fn bad() @Clock -> new PureStep {
     }
 }
 
--- @case open_effect_missing_outer_at_is_e0612 compile-fail E0612
-fn bad(f: fn() @ -> int) -> int {
--- ^ E0612
+-- @case open_effect_on_named_fn_outer_arrow_is_e0547 compile-fail E0547
+fn bad(f: fn() @ -> int) @ -> int {
+-- ^ E0547
     f()
 }
 
@@ -1427,12 +1427,56 @@ fn bad() @ -> () {}
 
 -- @case direct_open_effect_rejects_ctl_callback_is_e0616 compile-fail E0616
 eff Yield { ctl step() -> () }
-fn run_direct(cb: fn() @fn -> ()) @fn -> () {
+fn run_direct(cb: fn() @fn -> ()) -> () {
     defer cb()
 }
 fn bad() @Yield -> () {
     run_direct(\-> Yield::step())
     --         ^ E0616
+}
+
+-- @case open_effect_first_class_contravariance_is_e0534 compile-fail E0534
+eff Boom { ctl explode() -> () }
+fn apply(f: fn() @ -> ()) -> () { f() }
+fn bad() -> () {
+    let h: fn(fn() @Boom -> ()) -> () = apply
+    --                                  ^ E0534
+    h(\-> Boom::explode())
+}
+
+-- @case where_fn_capturing_open_effect_callable_is_e0547 compile-fail E0547
+fn outer(cb: fn() @ -> ()) -> () {
+    helper()
+where
+    fn helper() &up(cb) -> () { cb() }
+    --              ^ E0547
+}
+
+-- @case open_effect_downgrade_via_latent_closure_is_e0523 compile-fail E0523
+fn apply_with(f: fn() @ -> (), mut xs: []int) -> () {
+    f()
+    Array::push(mut xs, 1)
+}
+fn bad(cb: fn() @ -> (), ^mut xs: []int) -> () {
+    apply_with(\-> cb(), mut xs)
+    --                       ^ E0523
+}
+
+-- @case open_effect_loop_dbm_invalidation_is_e0362 compile-fail E0362
+eff Mut { fn bump() -> () }
+fn apply(f: fn() @ -> ()) -> () { f() }
+fn bad() -> () {
+    let mut base = [1, 2, 3]
+    let ^mut xs = base
+    with Mut::bump = \-> Array::clear(mut xs)
+    let cb = \-> Mut::bump()
+    var i = 0
+    while i < len(ref xs) {
+        apply(cb)
+        let _ = xs[i]
+        --      ^ E0362
+        i += 1
+    }
 }
 
 -- @case direct_effect_row_var_rejects_ctl_callback_is_e0616 compile-fail E0616

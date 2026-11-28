@@ -470,7 +470,7 @@ fn build(^mut tail: Link, count: int) &^mut &return(^mut tail) -> new Link {
     head.value += 1
     Link::(.{ value: 0, next: Some(^mut head) })
 }
-fn forward(via action: fn(via Link) @& -> infer Link, ^mut tail: Link, count: int) @ &^mut -> infer Link {
+fn forward(via action: fn(via Link) @& -> infer Link, ^mut tail: Link, count: int) &^mut -> infer Link {
     action(build(^mut tail, count))
 }
 fn identity(via chain: Link) -> infer Link { chain }
@@ -551,8 +551,8 @@ fn main() -> () {
 
 -- @case higher_order_via_callbacks_accept_different_modes_at_each_call run-pass backend=both
 type Cell = .{ var count: int }
-fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { action(cell) }
-fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) @ -> int { apply(action, cell) }
+fn apply(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { action(cell) }
+fn relay(via action: fn(via Cell) @& -> int, via cell: Cell) -> int { apply(action, cell) }
 fn change(via cell: Cell) -> int { cell.count += 1; cell.count }
 fn read(via cell: Cell) -> int { cell.count }
 fn main() -> () {
@@ -565,9 +565,9 @@ fn main() -> () {
 
 -- @case higher_order_inferred_results_preserve_live_and_new_qualified_values run-pass backend=both
 type Cell = .{ var count: int }
-fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell { action(cell) }
-fn relay(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell { apply(action, cell) }
-fn make(via action: fn() @& -> infer Cell) @ -> infer Cell { action() }
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { action(cell) }
+fn relay(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell { apply(action, cell) }
+fn make(via action: fn() @& -> infer Cell) -> infer Cell { action() }
 fn main() -> () {
     let identity = \via value: Cell -> value
     let mut original = make(\-> Cell.{ count: 40 })
@@ -581,7 +581,7 @@ fn main() -> () {
 
 -- @case higher_order_callbacks_keep_the_returned_handoff_path_live run-pass backend=both
 type Cell = .{ var count: int }
-fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) @ -> infer Cell {
+fn apply(via action: fn(via Cell) @& -> infer Cell, via cell: Cell) -> infer Cell {
     let via result = action(cell)
     assert(result.count == 41)
     result
@@ -1051,7 +1051,7 @@ type Failure { ..Network; ..Account; Other }
 fn status(value: Failure) -> int {
     match value {
         Network as net -> match net { Network::Offline -> 1; Network::Timeout(status) -> status }
-        ..Account -> 2
+        Account -> 2
         Failure::Other -> 3
     }
 }

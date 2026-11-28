@@ -103,9 +103,9 @@ impl Checker<'_> {
 
     pub(super) fn check_pure_default(&mut self, env: &Env, expr: syntax::ExprId, expected: &Ty) {
         let mut local = env.clone();
-        local.effects_seen.clear();
+        local.clear_effects_seen();
         self.expect(&mut local, expr, expected);
-        if !local.effects_seen.is_empty() {
+        if local.has_effects_seen() {
             self.error(
                 Code::E0409,
                 self.ast(env.file).expr(expr).span,
@@ -338,9 +338,9 @@ impl Checker<'_> {
                 let expected_arg = super::check::substitute(&param_ty, &subst);
                 let mut arg_env = env.clone();
                 arg_env.shadow = true;
-                arg_env.effects_seen.clear();
+                arg_env.clear_effects_seen();
                 let _ = self.expect(&mut arg_env, *arg_expr, &expected_arg);
-                if !arg_env.effects_seen.is_empty() {
+                if arg_env.has_effects_seen() {
                     self.error(
                         Code::E0409,
                         arg_span,
@@ -579,6 +579,7 @@ impl Checker<'_> {
         if signature.open_effects
             || signature.direct_open_effects
             || signature.open_state
+            || signature.has_open_effect_or_state_param()
             || !signature.effects.is_empty()
             || !signature.effect_vars.is_empty()
             || !signature.state.is_empty()
@@ -674,6 +675,44 @@ impl Checker<'_> {
                 self.bindings.insert(id, ty);
             }
         }
+    }
+
+    pub(super) fn state_clauses_from_obligations(
+        &mut self,
+        env: &mut Env,
+        obligations: &syntax::Obligations,
+    ) -> Vec<String> {
+        let mut state = Vec::new();
+        for clause in &obligations.state {
+            let name = match clause.kind {
+                StateKind::Share => "^mut",
+                StateKind::Capture => "capture",
+                StateKind::Environment => "up",
+                StateKind::Return => "return",
+            };
+            if clause.bindings.is_empty() {
+                state.push(name.into());
+            } else {
+                let bindings = clause
+                    .bindings
+                    .iter()
+                    .map(|(storage, path)| {
+                        let mode = super::mode_name(self.member_mode(env, storage));
+                        let name = path_name(path);
+                        if mode.is_empty() {
+                            name
+                        } else if name.is_empty() {
+                            mode.into()
+                        } else {
+                            format!("{mode} {name}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                state.push(format!("{name}({bindings})"));
+            }
+        }
+        state
     }
 
     pub(super) fn callable(
@@ -888,36 +927,7 @@ impl Checker<'_> {
         let effects = effect_row.concrete;
         let effect_vars = effect_row.vars;
         let effect_infers = effect_row.infers;
-        let mut state = Vec::new();
-        for clause in &signature.obligations.state {
-            let name = match clause.kind {
-                StateKind::Share => "^mut",
-                StateKind::Capture => "capture",
-                StateKind::Environment => "up",
-                StateKind::Return => "return",
-            };
-            if clause.bindings.is_empty() {
-                state.push(name.into());
-            } else {
-                let bindings = clause
-                    .bindings
-                    .iter()
-                    .map(|(storage, path)| {
-                        let mode = super::mode_name(self.member_mode(env, storage));
-                        let name = path_name(path);
-                        if mode.is_empty() {
-                            name
-                        } else if name.is_empty() {
-                            mode.into()
-                        } else {
-                            format!("{mode} {name}")
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                state.push(format!("{name}({bindings})"));
-            }
-        }
+        let state = self.state_clauses_from_obligations(env, &signature.obligations);
         if !named && signature.is_ctl && env.phase != Phase::Runtime && !env.shadow {
             self.error(
                 Code::E0810,

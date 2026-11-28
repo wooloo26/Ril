@@ -401,6 +401,68 @@ impl Callable {
             .iter()
             .any(|param| param.mode == Mode::Via || param.ty.has_via_members())
     }
+
+    pub fn has_open_effect_param(&self) -> bool {
+        self.parameters
+            .iter()
+            .any(|param| param.ty.contains_any_open_effect_callable())
+    }
+
+    pub fn has_unrestricted_open_effect_param(&self) -> bool {
+        self.parameters
+            .iter()
+            .any(|param| param.ty.contains_open_effect_callable())
+    }
+
+    pub fn has_direct_open_effect_param(&self) -> bool {
+        self.parameters
+            .iter()
+            .any(|param| param.ty.contains_direct_open_effect_callable())
+    }
+
+    pub fn has_open_effect_or_state_param(&self) -> bool {
+        self.parameters
+            .iter()
+            .any(|param| param.ty.contains_open_effect_or_state_callable())
+    }
+}
+
+impl Ty {
+    pub fn contains_open_effect_callable(&self) -> bool {
+        self.any_nested_callable(&|c| c.open_effects)
+    }
+
+    pub fn contains_direct_open_effect_callable(&self) -> bool {
+        self.any_nested_callable(&|c| c.direct_open_effects)
+    }
+
+    pub fn contains_any_open_effect_callable(&self) -> bool {
+        self.any_nested_callable(&|c| c.open_effects || c.direct_open_effects)
+    }
+
+    pub fn contains_open_effect_or_state_callable(&self) -> bool {
+        self.any_nested_callable(&|c| c.open_effects || c.direct_open_effects || c.open_state)
+    }
+
+    fn any_nested_callable(&self, pred: &impl Fn(&Callable) -> bool) -> bool {
+        match self {
+            Ty::Callable(c) => {
+                pred(c)
+                    || c.parameters.iter().any(|p| p.ty.any_nested_callable(pred))
+                    || c.result.any_nested_callable(pred)
+            }
+            Ty::Tuple(items) => items.iter().any(|m| m.ty.any_nested_callable(pred)),
+            Ty::Record(fields, _) => fields.values().any(|m| m.ty.any_nested_callable(pred)),
+            Ty::Array(m) => m.ty.any_nested_callable(pred),
+            Ty::Map(k, v) => k.any_nested_callable(pred) || v.ty.any_nested_callable(pred),
+            Ty::Draft(inner) => inner.any_nested_callable(pred),
+            Ty::Adt(adt) => adt.arguments.iter().any(|arg| match arg {
+                GenericValue::Type(t) => t.any_nested_callable(pred),
+                _ => false,
+            }),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -437,6 +499,7 @@ pub struct TypedProgram {
     pub imported_behaviors: BTreeMap<DefinitionId, crate::behavior::BehaviorSummary>,
     pub imported_must_consume: HashSet<DefinitionId>,
     pub imported_must_consume_params: HashMap<DefinitionId, Vec<usize>>,
+    pub sum_must_consume: HashSet<DefinitionId>,
     pub narrow_drops: Vec<NarrowDrop>,
     pub static_values: HashMap<Span, Value>,
     meta_calls: HashMap<Span, staging::MetaCall>,
@@ -456,6 +519,7 @@ pub struct TypedProgram {
     nominal_layouts: HashMap<DefinitionId, Ty>,
     record_adts: HashSet<DefinitionId>,
     pub subset_tags: HashMap<Span, Vec<String>>,
+    pub subset_types: HashMap<Span, Ty>,
     pub tuple_payloads: HashMap<Span, usize>,
     pub(crate) receptions: HashMap<Span, Vec<reception::Adjustment>>,
     pub(crate) effect_instances: BTreeMap<String, effects::Instance>,
@@ -682,7 +746,9 @@ impl TypedProgram {
                 if !seen.insert(adt.definition) {
                     return false;
                 }
-                let result = if adt.is_linear || self.imported_must_consume.contains(&adt.definition)
+                let result = if adt.is_linear
+                    || self.imported_must_consume.contains(&adt.definition)
+                    || self.sum_must_consume.contains(&adt.definition)
                 {
                     true
                 } else if let Some(indices) = self.imported_must_consume_params.get(&adt.definition)

@@ -60,8 +60,8 @@ pub meta fn type_kind<T>(target: Type<T>) -> TypeKind {
         <bool> | <int> | <f64> | <str> | <bytes> | <()> | <never> -> TypeKind::Value
         <.{ .. }> -> TypeKind::Record
         <(..)> -> TypeKind::Tuple
-        <[let _]_> -> TypeKind::Array
-        <[_: let _ _]> -> TypeKind::Map
+        <[]_> -> TypeKind::Array
+        <[_: _]> -> TypeKind::Map
         <Derived<_>> -> TypeKind::Derived
         <Type<_>> | <Type> | <FieldMode> -> TypeKind::Meta
         <Nominal<_>> -> TypeKind::Nominal

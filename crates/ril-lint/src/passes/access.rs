@@ -538,7 +538,11 @@ fn scope_may_dispatch_dynamically(typed: &TypedProgram, ast: &Ast, scope: Span) 
         }
         if let Expr::Call { callee, .. } = &node.value {
             if let Some(Ty::Callable(c)) = typed.types.get(&ast.expr(*callee).span)
-                && (c.open_effects || !c.effects.is_empty())
+                && (c.open_effects
+                    || c.direct_open_effects
+                    || !c.effect_vars.is_empty()
+                    || c.has_open_effect_param()
+                    || !c.effects.is_empty())
             {
                 return true;
             }

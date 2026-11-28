@@ -1421,8 +1421,7 @@ impl<'src, 'a> Printer<'src, 'a> {
                 is_ctl,
                 any_params,
                 params,
-                any_effects,
-                effects,
+                obligations,
                 result_mode,
                 result,
             } => {
@@ -1451,12 +1450,10 @@ impl<'src, 'a> Printer<'src, 'a> {
                     }
                 }
                 parts.push(self.arena.text(")"));
-                for eff in &effects {
-                    parts.push(self.arena.text(" @"));
-                    parts.push(self.print_path(eff));
-                }
-                if any_effects {
-                    parts.push(self.arena.text(" @.."));
+                let ob_doc = self.print_obligations(&obligations, span.end);
+                if ob_doc != self.arena.empty() {
+                    parts.push(self.arena.text(" "));
+                    parts.push(ob_doc);
                 }
                 parts.push(self.arena.text(" -> "));
                 if let Some(rm) = result_mode {
@@ -2496,16 +2493,10 @@ impl<'src, 'a> Printer<'src, 'a> {
                 self.arena.concat(&[l, op, h])
             }
             Pattern::Subset { ty, binding } => {
-                if let Some(b) = binding {
-                    let t = self.print_type(ty);
-                    let a = self.arena.text(" as ");
-                    let bd = self.print_pattern(b);
-                    self.arena.concat(&[t, a, bd])
-                } else {
-                    let dots = self.arena.text("..");
-                    let t = self.print_type(ty);
-                    self.arena.concat(&[dots, t])
-                }
+                let t = self.print_type(ty);
+                let a = self.arena.text(" as ");
+                let bd = self.print_pattern(binding);
+                self.arena.concat(&[t, a, bd])
             }
             Pattern::Type(ty_id) => {
                 let l = self.arena.text("<");

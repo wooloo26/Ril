@@ -428,23 +428,38 @@ fn main() -> () { assert(OK) }
 eff Clock { fn now() -> int }
 
 type ReturnOf = \F -> match <F> {
-    <fn(..) @.. -> let R> -> <R>
+    <fn(..) @& -> let R> -> <R>
     _ -> compile_error("expected fn callable")
 }
 
 type ClockReturnOf = \F -> match <F> {
-    <fn(..) @Clock -> let R> -> <R>
+    <fn(..) @Clock & -> let R> -> <R>
     _ -> <()>
 }
 
 type FirstParamOf = \F -> match <F> {
-    <fn(let A, _) @.. -> _> -> <A>
-    <fn(let A) @.. -> _> -> <A>
+    <fn(let A, _) @& -> _> -> <A>
+    <fn(let A) @& -> _> -> <A>
     _ -> <()>
 }
 
 type IsPureThunk = \F -> match <F> {
     <fn() -> _> -> <bool>
+    _ -> <()>
+}
+
+type IsStatefulThunk = \F -> match <F> {
+    <fn() &up -> _> -> <bool>
+    _ -> <()>
+}
+
+type IsReadObsThunk = \F -> match <F> {
+    <fn() &up(ref) -> _> -> <bool>
+    _ -> <()>
+}
+
+type IsDirectThunk = \F -> match <F> {
+    <fn() @fn & -> _> -> <bool>
     _ -> <()>
 }
 
@@ -457,7 +472,7 @@ type JoinOut = \T: .{ .. } -> {
 }
 
 type OkOf = \F -> match <F> {
-    <fn(..) @.. -> !<let OkT, _>> -> <OkT>
+    <fn(..) @& -> !<let OkT, _>> -> <OkT>
     _ -> compile_error("expected fallible thunk")
 }
 
@@ -480,18 +495,50 @@ type FallibleTasks = .{
     b: fn() -> !<bool, str>,
 }
 
+type MapKeyOf = \M -> match <M> {
+    <[let K: _]> -> <K>
+    _ -> <()>
+}
+
+type PlainOrLiveArray = \A -> match <A> {
+    <[]let E> -> <E>
+    <[]_> -> <bool>
+    _ -> <()>
+}
+
+type RecordHasId = \R -> match <R> {
+    <.{ id: _, .. }> -> <bool>
+    _ -> <()>
+}
+
 meta let _ = assert(<ReturnOf<fn(int, str) @Clock -> f64>> == <f64>)
+meta let _ = assert(<ReturnOf<fn() @Clock &up -> int>> == <int>)
 meta let _ = assert(<ClockReturnOf<fn() @Clock -> str>> == <str>)
+meta let _ = assert(<ClockReturnOf<fn() @Clock &up -> str>> == <str>)
 meta let _ = assert(<ClockReturnOf<fn() @io -> str>> == <()>)
 meta let _ = assert(<FirstParamOf<fn(str, int) @io -> bool>> == <str>)
 meta let _ = assert(<IsPureThunk<fn() -> int>> == <bool>)
 meta let _ = assert(<IsPureThunk<fn() @Clock -> int>> == <()>)
+meta let _ = assert(<IsPureThunk<fn() &up -> int>> == <()>)
+meta let _ = assert(<IsStatefulThunk<fn() &up -> int>> == <bool>)
+meta let _ = assert(<IsStatefulThunk<fn() &up(ref) -> int>> == <bool>)
+meta let _ = assert(<IsStatefulThunk<fn() -> int>> == <()>)
+meta let _ = assert(<IsReadObsThunk<fn() &up(ref) -> int>> == <bool>)
+meta let _ = assert(<IsReadObsThunk<fn() &up -> int>> == <()>)
+meta let _ = assert(<IsDirectThunk<fn() @Clock &up -> int>> == <bool>)
+meta let _ = assert(<IsDirectThunk<fn() @ -> int>> == <()>)
 meta let _ = assert(<JoinOut<Tasks>> == <.{ user: str, count: int, flag: bool }>)
 meta let _ = assert(<TryJoinOut<FallibleTasks>> == <.{ a: int, b: bool }>)
+meta let _ = assert(<MapKeyOf<[str: int]>> == <str>)
+meta let _ = assert(<MapKeyOf<[int: mut []int]>> == <int>)
+meta let _ = assert(<PlainOrLiveArray<[]int>> == <int>)
+meta let _ = assert(<PlainOrLiveArray<[mut][]int>> == <bool>)
+meta let _ = assert(<RecordHasId<.{ var id: int, name: str }>> == <bool>)
+meta let _ = assert(<RecordHasId<.{ mut id: []int }>> == <bool>)
 
 -- @case callable_type_pattern_compile_error_on_non_callable compile-fail E0832
 type ReturnOf = \F -> match <F> {
-    <fn(..) @.. -> let R> -> <R>
+    <fn(..) @& -> let R> -> <R>
     _ -> compile_error("expected fn callable")
 }
 type Bad = ReturnOf<int>

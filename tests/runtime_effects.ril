@@ -661,7 +661,7 @@ eff Log { fn emit(msg: str) -> () }
 
 type Route<@E> = .{ handle: fn(int) @E -> int }
 
-fn with_fixed_clock<T>(t: int, body: fn() @Clock @ -> T) @ -> T {
+fn with_fixed_clock<T>(t: int, body: fn() @Clock @ -> T) -> T {
     with Clock::now = \-> t
     body()
 }
@@ -670,7 +670,7 @@ fn compose<A, B, C, @E>(f: fn(A) @E -> B, g: fn(B) @E -> C) &capture -> fn(A) @E
     \x -> g(f(x))
 }
 
-fn with_direct_cleanup(cb: fn() @fn -> ()) @fn -> () {
+fn with_direct_cleanup(cb: fn() @fn -> ()) -> () {
     defer cb()
 }
 

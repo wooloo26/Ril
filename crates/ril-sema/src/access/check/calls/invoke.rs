@@ -529,9 +529,7 @@ impl Analyzer<'_> {
                 if let Some(formal) = modes.formals.get(*index).copied().flatten() {
                     let formal_open_effects = sig
                         .and_then(|s| s.parameters.get(*index))
-                        .is_some_and(|p| {
-                            matches!(&p.ty, Ty::Callable(c) if c.open_effects || c.direct_open_effects)
-                        });
+                        .is_some_and(|p| p.ty.contains_any_open_effect_callable());
                     self.apply_closure_input(
                         ctx,
                         ledger,
@@ -585,6 +583,8 @@ impl Analyzer<'_> {
                     if self.program.is_must_consume(self.ty(value_span)) {
                         for decl in target.root_dependencies().collect::<BTreeSet<_>>() {
                             if let Some(slot) = ledger.slots.get(&decl).cloned()
+                                && (!ctx.formals.contains(&Some(decl))
+                                    || !matches!(slot.mode, Mode::Mut | Mode::Ref))
                                 && slot
                                     .value
                                     .all_linear()

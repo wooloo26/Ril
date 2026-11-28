@@ -152,16 +152,15 @@ fn collect_var_pattern_defs(
                 }
             }
         }
-        Pattern::Subset {
-            binding: Some(sub), ..
-        } => collect_var_pattern_defs(hir, ast, *sub, inherited_var, out),
+        Pattern::Subset { binding, .. } => {
+            collect_var_pattern_defs(hir, ast, *binding, inherited_var, out);
+        }
         Pattern::Wildcard
         | Pattern::Unit
         | Pattern::Literal(_)
         | Pattern::Range { .. }
         | Pattern::Rest(None)
         | Pattern::Constructor(_, None)
-        | Pattern::Subset { binding: None, .. }
         | Pattern::Type(_)
         | Pattern::TypeBinding(_) => {}
     }
@@ -202,16 +201,13 @@ fn collect_pattern_defs(hir: &Program, ast: &Ast, pat: PatternId, out: &mut Hash
                 }
             }
         }
-        Pattern::Subset {
-            binding: Some(sub), ..
-        } => collect_pattern_defs(hir, ast, *sub, out),
+        Pattern::Subset { binding, .. } => collect_pattern_defs(hir, ast, *binding, out),
         Pattern::Wildcard
         | Pattern::Unit
         | Pattern::Literal(_)
         | Pattern::Range { .. }
         | Pattern::Rest(None)
         | Pattern::Constructor(_, None)
-        | Pattern::Subset { binding: None, .. }
         | Pattern::Type(_) => {}
     }
 }

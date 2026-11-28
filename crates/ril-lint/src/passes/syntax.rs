@@ -485,9 +485,7 @@ fn walk_pattern(
                 walk_pattern(ctx, file_id, ast, _src, p);
             }
         }
-        Pattern::Subset {
-            binding: Some(p), ..
-        } => walk_pattern(ctx, file_id, ast, _src, *p),
+        Pattern::Subset { binding, .. } => walk_pattern(ctx, file_id, ast, _src, *binding),
         _ => {}
     }
 }

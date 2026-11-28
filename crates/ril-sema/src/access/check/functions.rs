@@ -46,13 +46,21 @@ impl Analyzer<'_> {
             .filter_map(|(storage, path)| {
                 if let Some(def_id) = self.definition(path.span)
                     && let Some(ty) = self.program.bindings.get(&def_id)
-                    && self.program.is_must_consume(ty)
                 {
-                    self.error(
-                        Code::E0625,
-                        path.span,
-                        "named local function cannot capture a must-consume value",
-                    );
+                    if self.program.is_must_consume(ty) {
+                        self.error(
+                            Code::E0625,
+                            path.span,
+                            "named local function cannot capture a must-consume value",
+                        );
+                    }
+                    if ty.contains_any_open_effect_callable() {
+                        self.error(
+                            Code::E0547,
+                            path.span,
+                            "named local function cannot capture an open-effect callable via '&up(...)'; pass it as a parameter, use a closure, or declare '<@E>'",
+                        );
+                    }
                 }
                 self.declaration(path.span)
                     .map(|binding| (binding, storage.mode))
@@ -72,45 +80,6 @@ impl Analyzer<'_> {
         ledger.no_continuation = false;
         ledger.iteration.clear();
         ledger.holds.clear();
-        fn contains_open_effect_callable(ty: &Ty) -> bool {
-            match ty {
-                Ty::Callable(c) => {
-                    c.open_effects
-                        || c.direct_open_effects
-                        || c.parameters
-                            .iter()
-                            .any(|p| contains_open_effect_callable(&p.ty))
-                        || contains_open_effect_callable(&c.result)
-                }
-                Ty::Tuple(items) => items.iter().any(|m| contains_open_effect_callable(&m.ty)),
-                Ty::Record(fields, _) => fields
-                    .iter()
-                    .any(|(_, m)| contains_open_effect_callable(&m.ty)),
-                Ty::Array(m) => contains_open_effect_callable(&m.ty),
-                Ty::Map(k, v) => {
-                    contains_open_effect_callable(k) || contains_open_effect_callable(&v.ty)
-                }
-                Ty::Draft(inner) => contains_open_effect_callable(inner),
-                Ty::Adt(adt) => adt.arguments.iter().any(|arg| match arg {
-                    crate::ty::GenericValue::Type(t) => contains_open_effect_callable(t),
-                    _ => false,
-                }),
-                _ => false,
-            }
-        }
-        let has_open_effect_param = callable
-            .parameters
-            .iter()
-            .any(|p| contains_open_effect_callable(&p.ty));
-        if callable.open_state
-            || ((callable.open_effects || callable.direct_open_effects) && !has_open_effect_param)
-        {
-            self.error(
-                Code::E0547,
-                ctx.owner,
-                "named definitions require closed state sets and open '@' requires an open callback parameter",
-            );
-        }
         let body_span = self.ast(ctx.file).expr(body).span;
         for (ast_param, param) in fun.signature.params.iter().zip(&callable.parameters) {
             let span = ast_param.name.as_ref().map_or(ctx.owner, |name| name.span);
@@ -596,33 +565,29 @@ impl Analyzer<'_> {
                 );
             }
         }
-        if used_open_effect {
-            if sig.direct_open_effects && !sig.open_effects {
+        let has_unrestricted_open_param = sig.has_unrestricted_open_effect_param();
+        let has_direct_open_param = sig.has_direct_open_effect_param();
+        if used_open_effect && !has_unrestricted_open_param {
+            if has_direct_open_param {
                 self.error(
                     Code::E0616,
                     name,
                     "open '@' callback may perform ctl and cannot be covered by '@fn'",
                 );
-            } else if !sig.open_effects {
+            } else {
                 self.error(
                     Code::E0612,
                     name,
-                    "missing '@' obligation for open-effect callback",
+                    "unhandled open-effect callback invocation",
                 );
             }
         }
-        if used_direct_open_effect && !sig.open_effects && !sig.direct_open_effects {
+        if used_direct_open_effect && !has_unrestricted_open_param && !has_direct_open_param {
             self.error(
                 Code::E0612,
                 name,
-                "missing '@fn' obligation for direct open-effect callback",
+                "unhandled direct open-effect callback invocation",
             );
-        }
-        if sig.open_effects && !used_open_effect && !used_direct_open_effect {
-            self.error(Code::E0626, name, "declared '@' is never exercised");
-        }
-        if sig.direct_open_effects && !used_direct_open_effect {
-            self.error(Code::E0626, name, "declared '@fn' is never exercised");
         }
         if up.difference(&fun.capture_names).next().is_some() {
             self.error(Code::E0510, name, "missing &up dependency");
@@ -792,9 +757,9 @@ impl Analyzer<'_> {
                         }
                     }
                 }
-                Pattern::Subset {
-                    binding: Some(p), ..
-                } => walk_pattern(this, ast, *p, mark_ty, forbids_drop, local_generics),
+                Pattern::Subset { binding, .. } => {
+                    walk_pattern(this, ast, *binding, mark_ty, forbids_drop, local_generics);
+                }
                 _ => {}
             }
         }

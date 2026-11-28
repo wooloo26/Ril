@@ -683,7 +683,7 @@ pub type ApiErr  { ..DbErr; ..AuthErr; BadInput(str) }
 fn handle_err(err: ApiErr) -> new (int, str) {
     match err {
         DbErr as db              -> (503, match db { DbErr::Deadlock -> "retry"; DbErr::ConnLost(h) -> h })
-        ..AuthErr                -> (401, "unauthorized")
+        AuthErr                  -> (401, "unauthorized")
         ApiErr::BadInput(field)  -> (400, field)
     }
 }
@@ -695,7 +695,7 @@ fn widen_demo(e: DbErr) -> ApiErr { e as ApiErr } -- OK: DbErr <= ApiErr
 - **Three inclusion operations** (when $Sub \preceq_{\text{sum}} Sup$):
   1. **Postfix `?` widening**: `sub_res?` widens `Err(sub_err)` to `Sup` in a function returning `!<T, Sup>`.
   2. **Explicit widening (`e as Sup`)**: Re-wraps `Sub` into `Sup` (`E0301` otherwise).
-  3. **Pattern subset matching (`Sub as binder`, `..Sub`)**: Matches any variant belonging to `Sub`.
+  3. **Pattern subset matching (`Sub as binder`, `Sub`)**: Matches any variant belonging to `Sub` (with or without re-wrapping into `binder`).
 
 | Source authority of `e` | Subset re-wrap (`Sub as x` / `e as Sup`) provenance rule |
 | :--- | :--- |
@@ -918,7 +918,7 @@ Closures inside a `via` function specialize their captured schemas and `-> infer
 
 ```ril
 type Box = .{ var v: int }
-fn run_with<R>(via b: Box, f: fn(via Box) @& -> infer R) @ -> infer R {
+fn run_with<R>(via b: Box, f: fn(via Box) @& -> infer R) -> infer R {
     let via local = b
     f(local)
 }
@@ -1434,7 +1434,7 @@ fn run_query() @io -> new !<int, str> {
 -- Unified LIFO stack with 'with', and '@fn' direct-only open-effect callback check:
 eff Trace { fn log(msg: str) -> () }
 
-fn run_with_cleanup(cb: fn() @fn -> ()) @fn -> new []str {
+fn run_with_cleanup(cb: fn() @fn -> ()) -> new []str {
     let mut events: []str = []
     {
         with Trace::log = \m -> Array::push(mut events, m) -- Above 'defer': covers 'defer' calls
@@ -1951,7 +1951,6 @@ UnmodifiedSingle     ::= SubsetPattern
                        | RangePattern
                        | TypePattern
 SubsetPattern        ::= TypeReference "as" ( [ BindingModifier ] ValueName | Wildcard )
-                       | ".." TypeReference
 ConstructorPath      ::= { "Super" "::" } { PathSegment "::" } PascalCase [ GenericArgs ]
 WrapPattern          ::= ConstructorPath "::(" [ PatternList ] ")"
 ConstructorPattern   ::= ConstructorPath "(" [ PatternList ] ")"
@@ -1987,7 +1986,7 @@ Conditions using `== None`, `!= None`, `!`, `&&`, `||`, and early-exit `if` / `w
 ```ril
 type Cell = .{ var val: ?int }
 
-fn check_narrowing(mut cell: Cell, via hook: fn() & -> (), eff_cb: fn() @ -> (), nested: ??int) @ -> int {
+fn check_narrowing(mut cell: Cell, via hook: fn() & -> (), eff_cb: fn() @ -> (), nested: ??int) -> int {
     var local: ?int = Some(10)
     if local == None {
         -- if local != None { return 0 }        -- Error [E0311]: contradictory 'None' narrowing
@@ -2142,9 +2141,9 @@ The compiler infers complete effects and provenance for every callable body:
 
 #### Closed, Open, and Polymorphic Effect and State Sets
 
-Omitted sets are closed empty (`@()` explicitly denotes the empty effect row in generic arguments). `@` (any effects, including `ctl`), `@fn` (direct effects only: `@io` and `fn`-op effects, forbidding `ctl`, `E0616`), `&`, and `@&` open compiler-tracked effect/state bounds on `CallableType` in parameters, record fields, and collection elements (`E0547` on `EffectOpDecl`, on named definitions for `&`, or on named definitions declaring `@`/`@fn` without an open-effect callback parameter). Named functions that invoke an open-effect callback propagate that open row on their outer arrow (`@` or `@fn`), while effects handled locally inside the function (e.g. `fn f(cb: fn() @Clock @ -> T) @ -> T`) are discharged from the caller.
+Omitted sets are closed empty (`@()` explicitly denotes the empty effect row in generic arguments). `@` (any effects, including `ctl`), `@fn` (direct effects only: `@io` and `fn`-op effects, forbidding `ctl`, `E0616`), `&`, and `@&` open compiler-tracked effect/state bounds on `CallableType` in parameters, record fields, and collection elements (`E0547` on `EffectOpDecl`, on named definitions' outer arrows, or on local `where` functions capturing open-effect callables via `&up(...)`). Named functions taking open-effect callback parameters propagate invoked callback effects automatically at each call site (just as `&` propagates state) without repeating bare `@` or `@fn` on the outer arrow, while effects handled locally inside the function (e.g. `fn f(cb: fn() @Clock @ -> T) -> T`) are discharged from the caller; named functions with open-effect callback parameters require direct application (`E0534` as first-class values; wrap in a closure or declare an explicit `<@E>` row parameter instead).
 
-When multiple callbacks, stored types, or `eff` declarations must share or return the same polymorphic effect row, declare an explicit flat idempotent effect row parameter `<@E>` (or direct-only `<@E: fn>`): `@` is syntactic sugar for an anonymous `<@E>`, and `@fn` is syntactic sugar for `<@E: fn>`. Underlying effects, state obligations, and provenance remain tracked through bindings, records, collections, and interfaces (`K-IFACE`) and are charged at every call site.
+When multiple callbacks, stored types, first-class higher-order values, or `eff` declarations must share or return the same polymorphic effect row, declare an explicit flat idempotent effect row parameter `<@E>` (or direct-only `<@E: fn>`): `@` is syntactic sugar for an anonymous `<@E>`, and `@fn` is syntactic sugar for `<@E: fn>`. Underlying effects, state obligations, and provenance remain tracked through bindings, records, collections, and interfaces (`K-IFACE`) and are charged at every call site.
 
 Access modes remain orthogonal to `@`/`@fn`/`&`/`@&`: immutable fields/bindings forbid `&up` (`E0535`) while admitting any `@Eff`; mutable `&up` closures require `mut`/`^mut`/`M`/`via` storage; linear `ctl(...)` continuations are mode-free (`E0402`/`E0532`) and live in plain mode-free bindings, records, sums, arrays, and maps (`[]ctl(...)`, `[K: ctl(...)]`, `.{ k: ctl(...) }`).
 
@@ -2159,8 +2158,8 @@ type DirectCb = fn() @fn -> ()             -- Open direct-only effect set (forbi
 type AnyState = fn() & -> ()               -- Closed empty effects, open state/provenance
 type AnyCall  = fn() @& -> ()              -- Open effects and open state/provenance
 
--- Open '@&' tracks underlying effects & state across calls; outer '@' propagates callback effects:
-fn call_open(via f: fn() @& -> int) @ -> int { f() }
+-- Open '@&' tracks underlying effects & state across calls without repeating '@' on the outer arrow:
+fn call_open(via f: fn() @& -> int) -> int { f() }
 
 -- Explicit effect row variable '<@E>' correlates multiple callbacks and returned closures:
 fn compose<A, B, C, @E>(f: fn(A) @E -> B, g: fn(B) @E -> C) &capture -> fn(A) @E -> C {
@@ -2205,7 +2204,7 @@ fn run_step(mut f: Step) -> int { f() }   -- OK: '&up' invoked through 'mut' pat
 -- Rejected callable signatures and conversions:
 -- fn bad_step(ref f: Step) -> int { f() }     -- Error [E0520]: '&up' requires 'mut' or '^mut' callable path
 -- pub fn len(x: int) -> int                   -- Error [E0909]: built-in signature mismatch in prelude
--- fn bad_open() @ -> () {}                    -- Error [E0547]: open '@' requires an open-effect callback parameter
+-- fn bad_open() @ -> () {}                    -- Error [E0547]: named definitions cannot declare bare '@', '@fn', or '&' on their outer arrow
 -- fn bad_ret(ref a: []int) -> []int { a }     -- Error [E0544]: missing 'ref(a)' return mode annotation
 -- fn bad_new_omit() -> []int { [1, 2] }       -- Error [E0544]: missing 'new' return mode annotation
 -- let pure_cb: fn() -> () = \-> Io::println("hi") -- Error [E0534]: '@io' incompatible with pure 'fn() -> ()'
@@ -2417,7 +2416,7 @@ Anonymous closures (`\... -> ...`) and shorthand projection accessors (`\.field`
 type Dept = .{ name: str, code: (str, int) }
 type Org  = .{ title: str, dept: ?Dept }
 
-fn with_tx<T>(mut log: []str, via body: fn(mut []str) @& -> !<T, str>) @ -> new !<T, str> {
+fn with_tx<T>(mut log: []str, via body: fn(mut []str) @& -> !<T, str>) -> new !<T, str> {
     Array::push(mut log, "begin")
     let out = body(mut log)?
     Array::push(mut log, "commit")
@@ -3049,7 +3048,7 @@ type UnwrapAny = \T -> match <T> {
     <!<let OkT, _>>         -> <OkT>
     <?let Inner>            -> <Inner>
     <Nominal<let Inner>>    -> <Inner>         -- Matches accessible .ril nominal / in-scope opaque wrappers
-    <fn(..) @.. -> let R>   -> <R>             -- Extracts return type of any fn regardless of params/effects
+    <fn(..) @& -> let R>    -> <R>             -- Extracts return type of any fn regardless of params/effects/state
     <.{ id: int, ..let R }> -> <R>             -- Captures remaining structural record tail
     _                       -> <T>
 }
@@ -3059,7 +3058,7 @@ meta let _ = assert(<UnwrapAny<fn(int) @io -> bool>> == <bool>)
 meta let _ = assert(<UnwrapAny<.{ id: int, name: str }>> == <.{ name: str }>)
 ```
 
-- `let U` binds an exact type variable (or `FieldMode` in `let M field: ...`; `let _` ignores the mode). `<(..)>` matches nonempty tuples (`Reflect::TypeKind::Tuple`, distinct from `()`). `<fn(..) @.. -> let R>` and `<ctl(..) @.. -> let R>` match callable types structurally (`(..)` matches any parameter list, `@..` matches any effects and state; omitting `@..` matches closed empty effects, or explicit `@Eff` requires those effects). Bare `PascalCase` heads match concrete nominal, sum, or opaque constructors (`E0306` on type-constructor pattern variables).
+- `let U` binds an exact type variable (or `FieldMode` in `let M field: ...`; `let _` ignores the mode when paired with a non-`_` type). In array (`<[]_>`), map value (`<[let K: _]>`, `<[_: _]>`), and record field (`<.{ id: _ }>`) type patterns, an unmodified bare `_` wildcards both member storage mode and type. `<(..)>` matches nonempty tuples (`Reflect::TypeKind::Tuple`, distinct from `()`). `<fn(..) [CallableAnnot] -> let R>` and `<ctl(..) [CallableAnnot] -> let R>` match callable types structurally using the same effect and state annotations as `CallableType` (`(..)` matches any parameter list; omitting `@`/`&` matches closed pure effects/state; `@` / `@fn` / `&` / `@&` match open effect/state sets; explicit `@Eff` and `&up` / `&up(ref)` / `&^mut` / `&capture` require matching clauses; named `&up(x)` and `&return(...)` fail `E0538`). Bare `PascalCase` heads match concrete nominal, sum, or opaque constructors (`E0306` on type-constructor pattern variables).
 - Static-only `Nominal<pat>` matches any transparent nominal or in-scope `opaque` type and matches its payload against `pat` (never sealed `opaque` or sums; outside type patterns fails `E0306`, bare `Nominal` fails `E0319`, wrong arity fails `E0340`).
 
 ```ebnf
@@ -3076,7 +3075,7 @@ TypePatternInner      ::= "_"
                         | RigidNominalPattern
                         | PrimitivePattern
                         | LiteralPattern
-TypeCallablePattern   ::= ( "fn" | "ctl" ) "(" [ ".." | TypeCallableParam { "," TypeCallableParam } [ "," ] ] ")" { "@" ( ".." | "(" ")" | Path ) } "->" [ "new" | "ref" | "^mut" ] TypePatternInner
+TypeCallablePattern   ::= ( "fn" | "ctl" ) "(" [ ".." | TypeCallableParam { "," TypeCallableParam } [ "," ] ] ")" [ CallableAnnot ] "->" [ "new" | "ref" | "^mut" ] TypePatternInner
 TypeCallableParam     ::= [ ParameterMode ] TypePatternInner
 TypeResultPattern     ::= "!<" TypePatternInner "," TypePatternInner [ "," ] ">"
 TypeTuplePattern      ::= "(" ")"
@@ -3221,7 +3220,7 @@ The implicit prelude encloses every compilation unit and inline `sub`:
 | `len` | `pub fn len<T \|> LenTarget>(via item: T) -> int \|> Nat` | Dual-phase: scalar count of `str`, byte count of `bytes`, element/entry count of `[]T`, `[K: V]`, `Set<T>` (and `Derived` wrappers thereof; admits `ref` on collections at runtime; `E0401` on `ref str`) |
 | `inner` | `pub fn inner<W \|> InnerTarget>(via wrapper: W) -> infer Inner<W>` | Dual-phase: unwraps accessible nominal wrapper (or `Derived<W>`, lifting `InnerTarget`/`Inner`) to its payload (`()` for unit nominals; `inner(mut x)` is a scoped path projection usable on `Derived<W>` or as an immediate `mut` path receiver, unable to bind a second unshared `let mut` alias, `E0510`; `E0308` on sealed `opaque`, `E0301` on non-nominals) |
 | `clone` | `pub fn clone<T \|> SharedObject>(via value: T) -> new T` | Dual-phase: deep copy of a clonable `SharedObject` graph into isolated `new T` (`E0301` on value-type or callable roots and graphs containing `ctl(...)` or `Derived` handles, `E0530` on live callable environments) |
-| `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Derived<T>) @fn & -> ()) @fn -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`, `E0616`) |
+| `derive` | `pub fn derive<T \|> SharedObject>(base: T, via update: fn(mut Derived<T>) @fn & -> ()) -> T` | Dual-phase: path-targeted functional update on immutable `SharedObject` (`E0536`, `E0308`, `E0607`, `E0616`) |
 | `unwind_ctl` | `pub fn unwind_ctl<T>(k: T) -> ()` | Runtime: synchronously unwinds `ctl(...)` continuation `k`'s armed `defer` stack frames LIFO and returns `()` (`E0810` in static eval; `E0301` on non-`ctl(...)`; `no_ctl`, legal inside `defer`; charges residual `&S`, `@io`, and `fn`-op `@Eff` labels) |
 | `Panic::recover` (`ril/panic`) | `pub fn recover<T>(via action: fn() @& -> infer T) -> infer !<T, Panic::Error>` | Runtime: panic-isolated containment (`E0608`) |
 | `Panic::message` (`ril/panic`) | `pub fn message(report: Panic::Report) -> str` | Runtime: extracts human-readable message from `Panic::Report` (`E0810` in static eval) |

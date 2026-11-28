@@ -171,6 +171,7 @@ pub fn is_pure(callable: &Callable, summary: &Summary) -> bool {
     !has_writable_param
         && !callable.open_effects
         && !callable.direct_open_effects
+        && !callable.has_open_effect_or_state_param()
         && callable.effect_vars.is_empty()
         && !callable.open_state
         && callable.effects.is_empty()

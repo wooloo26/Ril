@@ -516,6 +516,9 @@ impl Analyzer<'_> {
                     }),
             },
             Pattern::Constructor(path, payload) => {
+                if payload.is_none() && self.program.subset_tags.contains_key(&node.span) {
+                    return uncertain();
+                }
                 let name = self
                     .definition(path.span)
                     .map(|id| self.program.hir.definition(id).name.value.as_str())
@@ -583,9 +586,9 @@ impl Analyzer<'_> {
                 PatternTests::test(Some(false), Inspections::new()),
                 |tests, &id| tests.or(|| self.pattern_tests(ctx, ledger, id, value)),
             ),
-            Pattern::Subset {
-                binding: Some(id), ..
-            } => uncertain().and(|| self.pattern_tests(ctx, ledger, *id, value)),
+            Pattern::Subset { binding, .. } => {
+                uncertain().and(|| self.pattern_tests(ctx, ledger, *binding, value))
+            }
             _ => uncertain(),
         }
     }

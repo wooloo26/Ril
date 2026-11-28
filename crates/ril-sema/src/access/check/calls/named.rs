@@ -1,6 +1,221 @@
 use super::*;
 
 impl<'program> Analyzer<'program> {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn charge_open_callback_arg(
+        &mut self,
+        ctx: &Context,
+        ledger: &Ledger,
+        formal_ty: &Ty,
+        arg_ty: &Ty,
+        value: &Datum,
+        arg_span: Span,
+        invocation: Option<&Fact>,
+        charge: bool,
+    ) -> bool {
+        match formal_ty {
+            Ty::Callable(formal_cb) if formal_cb.open_effects || formal_cb.direct_open_effects => {
+                let formal_covered: &[String] = formal_cb.effects.as_slice();
+                let formal_direct_only = formal_cb.direct_open_effects && !formal_cb.open_effects;
+                if formal_direct_only
+                    && self.has_unhandled_ctl_filtered(ctx, value, arg_ty, formal_covered)
+                {
+                    self.error(
+                        Code::E0616,
+                        arg_span,
+                        "callable using unhandled ctl effect cannot be passed to a '@fn' parameter",
+                    );
+                }
+                if !charge {
+                    return false;
+                }
+                self.charge_latent_effects_filtered_if(
+                    ctx,
+                    ledger,
+                    value,
+                    formal_covered,
+                    arg_span,
+                    invocation,
+                );
+                if let Ty::Callable(actual) = arg_ty {
+                    for effect in &actual.effects {
+                        if formal_covered
+                            .iter()
+                            .any(|cov| self.program.effect_covers(cov, effect))
+                        {
+                            continue;
+                        }
+                        self.use_effect(
+                            ctx,
+                            ledger,
+                            Obligation::Effect(effect.clone()),
+                            arg_span,
+                            invocation.cloned(),
+                        );
+                    }
+                    for &var in &actual.effect_vars {
+                        self.use_effect_var(ctx, ledger, var, arg_span);
+                    }
+                    if actual.open_effects || actual.direct_open_effects {
+                        self.use_open_effect(
+                            ctx,
+                            ledger,
+                            actual.direct_open_effects && !actual.open_effects,
+                            arg_span,
+                        );
+                    }
+                }
+                let is_covered = |eff: &str| {
+                    formal_covered
+                        .iter()
+                        .any(|cov| self.program.effect_covers(cov, eff))
+                };
+                value.latent_open_effect
+                    || value.latent_direct_open_effect
+                    || !value.latent_effect_vars.is_empty()
+                    || value.latent_effects.iter().any(|eff| {
+                        eff != "io"
+                            && !is_covered(eff)
+                            && self
+                                .effect_operations(eff)
+                                .iter()
+                                .any(|op| !ctx.handlers.contains_key(op))
+                    })
+                    || value.latent_operations.iter().any(|(op_id, eff)| {
+                        !is_covered(eff)
+                            && !ctx.handlers.contains_key(&crate::access::check::Operation {
+                                id: *op_id,
+                                effect: eff.clone(),
+                            })
+                    })
+                    || matches!(arg_ty, Ty::Callable(actual) if actual.open_effects
+                    || actual.direct_open_effects
+                    || !actual.effect_vars.is_empty()
+                    || actual.effects.iter().any(|eff| {
+                        eff != "io"
+                            && !is_covered(eff)
+                            && self
+                                .effect_operations(eff)
+                                .iter()
+                                .any(|op| !ctx.handlers.contains_key(op))
+                    }))
+            }
+            Ty::Array(fm) if fm.ty.contains_any_open_effect_callable() => {
+                let elem_ty = match arg_ty {
+                    Ty::Array(am) => &am.ty,
+                    _ => &Ty::Unknown,
+                };
+                let mut unhandled = false;
+                if value.members.is_empty() {
+                    unhandled |= self.charge_open_callback_arg(
+                        ctx, ledger, &fm.ty, elem_ty, value, arg_span, invocation, charge,
+                    );
+                } else {
+                    for member in value.members.values() {
+                        unhandled |= self.charge_open_callback_arg(
+                            ctx, ledger, &fm.ty, elem_ty, member, arg_span, invocation, charge,
+                        );
+                    }
+                }
+                unhandled
+            }
+            Ty::Map(_, fv) if fv.ty.contains_any_open_effect_callable() => {
+                let val_ty = match arg_ty {
+                    Ty::Map(_, av) => &av.ty,
+                    _ => &Ty::Unknown,
+                };
+                let mut unhandled = false;
+                if value.members.is_empty() {
+                    unhandled |= self.charge_open_callback_arg(
+                        ctx, ledger, &fv.ty, val_ty, value, arg_span, invocation, charge,
+                    );
+                } else {
+                    for member in value.members.values() {
+                        unhandled |= self.charge_open_callback_arg(
+                            ctx, ledger, &fv.ty, val_ty, member, arg_span, invocation, charge,
+                        );
+                    }
+                }
+                unhandled
+            }
+            Ty::Tuple(fs) => {
+                let mut unhandled = false;
+                for (i, fm) in fs.iter().enumerate() {
+                    if !fm.ty.contains_any_open_effect_callable() {
+                        continue;
+                    }
+                    let elem_ty = match arg_ty {
+                        Ty::Tuple(as_) => as_.get(i).map_or(&Ty::Unknown, |m| &m.ty),
+                        _ => &Ty::Unknown,
+                    };
+                    let coord = Coordinate::Index(i.to_string());
+                    if let Some(member) = value.members.get(&coord) {
+                        unhandled |= self.charge_open_callback_arg(
+                            ctx, ledger, &fm.ty, elem_ty, member, arg_span, invocation, charge,
+                        );
+                    } else {
+                        unhandled |= self.charge_open_callback_arg(
+                            ctx, ledger, &fm.ty, elem_ty, value, arg_span, invocation, charge,
+                        );
+                    }
+                }
+                unhandled
+            }
+            Ty::Record(ff, _) => {
+                let mut unhandled = false;
+                for (k, fm) in ff {
+                    if !fm.ty.contains_any_open_effect_callable() {
+                        continue;
+                    }
+                    let field_ty = match arg_ty {
+                        Ty::Record(af, _) => af.get(k).map_or(&Ty::Unknown, |m| &m.ty),
+                        _ => &Ty::Unknown,
+                    };
+                    let coord = Coordinate::Field(k.clone());
+                    if let Some(member) = value.members.get(&coord) {
+                        unhandled |= self.charge_open_callback_arg(
+                            ctx, ledger, &fm.ty, field_ty, member, arg_span, invocation, charge,
+                        );
+                    } else {
+                        unhandled |= self.charge_open_callback_arg(
+                            ctx, ledger, &fm.ty, field_ty, value, arg_span, invocation, charge,
+                        );
+                    }
+                }
+                unhandled
+            }
+            Ty::Adt(fa) => {
+                let mut unhandled = false;
+                for (idx, fg) in fa.arguments.iter().enumerate() {
+                    if let crate::ty::GenericValue::Type(ft) = fg
+                        && ft.contains_any_open_effect_callable()
+                    {
+                        let at = match arg_ty {
+                            Ty::Adt(aa) => match aa.arguments.get(idx) {
+                                Some(crate::ty::GenericValue::Type(t)) => t,
+                                _ => &Ty::Unknown,
+                            },
+                            _ => &Ty::Unknown,
+                        };
+                        if value.members.is_empty() {
+                            unhandled |= self.charge_open_callback_arg(
+                                ctx, ledger, ft, at, value, arg_span, invocation, charge,
+                            );
+                        } else {
+                            for member in value.members.values() {
+                                unhandled |= self.charge_open_callback_arg(
+                                    ctx, ledger, ft, at, member, arg_span, invocation, charge,
+                                );
+                            }
+                        }
+                    }
+                }
+                unhandled
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn named_call(
         &mut self,
         ctx: &Context,
@@ -162,126 +377,52 @@ impl<'program> Analyzer<'program> {
                     self.forward_via_input(ctx, ledger, value, (fun.name.span, formal), span);
                 }
                 self.link_invocation_if(ctx, value, Some(&invocation));
-                let formal_cb =
-                    sig.and_then(|s| s.parameters.get(*index))
-                        .and_then(|p| match &p.ty {
-                            Ty::Callable(c) => Some(c.as_ref()),
-                            _ => None,
-                        });
-                let formal_open_effects =
-                    formal_cb.is_some_and(|c| c.open_effects || c.direct_open_effects);
-                let formal_direct_only =
-                    formal_cb.is_some_and(|c| c.direct_open_effects && !c.open_effects);
-                let formal_covered: &[String] = formal_cb.map_or(&[], |c| c.effects.as_slice());
-                if ctx.reachable && !ctx.shadow {
-                    if formal_direct_only
-                        && self.has_unhandled_ctl_filtered(
-                            ctx,
-                            value,
-                            self.ty(arg_span),
-                            formal_covered,
-                        )
-                    {
-                        self.error(
-                            Code::E0616,
-                            arg_span,
-                            "callable using unhandled ctl effect cannot be passed to a '@fn' parameter",
-                        );
-                    }
-                    if formal_open_effects {
-                        self.charge_latent_effects_filtered_if(
-                            ctx,
-                            ledger,
-                            value,
-                            formal_covered,
-                            arg_span,
-                            Some(&invocation),
-                        );
-                        let arg_ty = self.ty(arg_span).clone();
-                        if let Ty::Callable(actual) = &arg_ty {
-                            for effect in &actual.effects {
-                                if formal_covered
+                let formal_param_ty = sig
+                    .and_then(|s| s.parameters.get(*index))
+                    .map(|p| p.ty.clone());
+                if ctx.reachable
+                    && !ctx.shadow
+                    && let Some(formal_ty) = &formal_param_ty
+                    && formal_ty.contains_any_open_effect_callable()
+                {
+                    let arg_ty = self.ty(arg_span).clone();
+                    let cb_unhandled = self.charge_open_callback_arg(
+                        ctx,
+                        ledger,
+                        formal_ty,
+                        &arg_ty,
+                        value,
+                        arg_span,
+                        Some(&invocation),
+                        true,
+                    );
+                    if cb_unhandled {
+                        for ((_, other_mode, other_val), &other_span) in
+                            values.iter().zip(value_spans)
+                        {
+                            if matches!(other_mode, Mode::Mut | Mode::Ref)
+                                && other_val
+                                    .roots
                                     .iter()
-                                    .any(|cov| self.program.effect_covers(cov, effect))
-                                {
-                                    continue;
-                                }
-                                self.use_effect(
-                                    ctx,
-                                    ledger,
-                                    Obligation::Effect(effect.clone()),
-                                    arg_span,
-                                    Some(invocation.clone()),
-                                );
-                            }
-                            for &var in &actual.effect_vars {
-                                self.use_effect_var(ctx, ledger, var, arg_span);
-                            }
-                            if actual.open_effects || actual.direct_open_effects {
-                                self.use_open_effect(
-                                    ctx,
-                                    ledger,
-                                    actual.direct_open_effects && !actual.open_effects,
-                                    arg_span,
-                                );
-                            }
-                        }
-                        let is_covered = |eff: &str| {
-                            formal_covered
-                                .iter()
-                                .any(|cov| self.program.effect_covers(cov, eff))
-                        };
-                        let cb_unhandled = value.latent_effects.iter().any(|eff| {
-                            eff != "io"
-                                && !is_covered(eff)
-                                && self
-                                    .effect_operations(eff)
-                                    .iter()
-                                    .any(|op| !ctx.handlers.contains_key(op))
-                        }) || value.latent_operations.iter().any(
-                            |(op_id, eff)| {
-                                !is_covered(eff)
-                                    && !ctx.handlers.contains_key(
-                                        &crate::access::check::Operation {
-                                            id: *op_id,
-                                            effect: eff.clone(),
-                                        },
-                                    )
-                            },
-                        ) || matches!(&arg_ty, Ty::Callable(actual) if actual.open_effects || actual.direct_open_effects || !actual.effect_vars.is_empty() || actual.effects.iter().any(|eff| {
-                            eff != "io"
-                                && !is_covered(eff)
-                                && self
-                                    .effect_operations(eff)
-                                    .iter()
-                                    .any(|op| !ctx.handlers.contains_key(op))
-                        }));
-                        if cb_unhandled {
-                            for ((_, other_mode, other_val), &other_span) in
-                                values.iter().zip(value_spans)
+                                    .any(|root| root.mode == Access::Shared)
                             {
-                                if matches!(other_mode, Mode::Mut | Mode::Ref)
-                                    && other_val
-                                        .roots
-                                        .iter()
-                                        .any(|root| root.mode == Access::Shared)
-                                {
-                                    self.deferred_errors.push((
-                                        vec![invocation.clone()],
-                                        Diagnostic::error(
-                                            if *other_mode == Mode::Mut {
-                                                Code::E0523
-                                            } else {
-                                                Code::E0524
-                                            },
-                                            other_span,
-                                            "shared writable source cannot downgrade to mut/ref across an unhandled effect or open @",
-                                        ),
-                                    ));
-                                }
+                                self.deferred_errors.push((
+                                    vec![invocation.clone()],
+                                    Diagnostic::error(
+                                        if *other_mode == Mode::Mut {
+                                            Code::E0523
+                                        } else {
+                                            Code::E0524
+                                        },
+                                        other_span,
+                                        "shared writable source cannot downgrade to mut/ref across an unhandled effect or open @",
+                                    ),
+                                ));
                             }
                         }
                     }
+                }
+                if ctx.reachable && !ctx.shadow {
                     for source in value.root_dependencies() {
                         self.rules.push(Rule {
                             premises: vec![invocation.clone()],

@@ -79,6 +79,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
                 navigation_values: HashMap::new(),
                 propagation_inputs: HashMap::new(),
                 nominal_layouts: HashMap::new(),
+                sum_must_consume: HashSet::new(),
                 record_adts: HashSet::new(),
                 effect_instances: BTreeMap::new(),
                 operation_effects: HashMap::new(),
@@ -86,6 +87,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
                 effect_applications: HashMap::new(),
                 effect_var_applications: HashMap::new(),
                 subset_tags: HashMap::new(),
+                subset_types: HashMap::new(),
                 tuple_payloads: HashMap::new(),
                 receptions: HashMap::new(),
                 exported_param_proofs: BTreeMap::new(),
@@ -97,6 +99,10 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         );
     }
     let types = std::mem::take(&mut ck.types)
+        .into_iter()
+        .map(|(span, ty)| (span, ck.finalize(&ty)))
+        .collect();
+    let subset_types = std::mem::take(&mut ck.subset_types)
         .into_iter()
         .map(|(span, ty)| (span, ck.finalize(&ty)))
         .collect();
@@ -152,6 +158,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         .collect();
     let Checker {
         callables,
+        sum_must_consume,
         static_values,
         meta_calls,
         static_folds,
@@ -189,6 +196,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         imported_behaviors: BTreeMap::new(),
         imported_must_consume: HashSet::new(),
         imported_must_consume_params: HashMap::new(),
+        sum_must_consume,
         narrow_drops,
         static_values,
         meta_calls,
@@ -213,6 +221,7 @@ fn check_impl(hir: Program, budget: Option<u64>, partial: bool) -> (TypedProgram
         effect_applications,
         effect_var_applications,
         subset_tags,
+        subset_types,
         tuple_payloads,
         receptions,
         exported_param_proofs,
@@ -290,6 +299,8 @@ pub(super) struct Env {
     pub(super) shadow: bool,
     pub(super) effects_seen: HashSet<String>,
     pub(super) effect_vars_seen: HashSet<DefinitionId>,
+    pub(super) open_effects_seen: bool,
+    pub(super) direct_open_effects_seen: bool,
     pub(super) refinements: Refinements,
     pub(super) unrefined: Option<Span>,
     pub(super) nominal_fields: Option<Span>,
@@ -304,6 +315,28 @@ pub(super) struct Env {
 }
 
 impl Env {
+    pub(super) fn merge_effects_from(&mut self, other: &Self) {
+        self.effects_seen.extend(other.effects_seen.iter().cloned());
+        self.effect_vars_seen
+            .extend(other.effect_vars_seen.iter().copied());
+        self.open_effects_seen |= other.open_effects_seen;
+        self.direct_open_effects_seen |= other.direct_open_effects_seen;
+    }
+
+    pub(super) fn clear_effects_seen(&mut self) {
+        self.effects_seen.clear();
+        self.effect_vars_seen.clear();
+        self.open_effects_seen = false;
+        self.direct_open_effects_seen = false;
+    }
+
+    pub(super) fn has_effects_seen(&self) -> bool {
+        !self.effects_seen.is_empty()
+            || !self.effect_vars_seen.is_empty()
+            || self.open_effects_seen
+            || self.direct_open_effects_seen
+    }
+
     pub(super) fn new(file: FileId, scope: ScopeId) -> Self {
         Self {
             file,
@@ -328,6 +361,8 @@ impl Env {
             shadow: false,
             effects_seen: HashSet::new(),
             effect_vars_seen: HashSet::new(),
+            open_effects_seen: false,
+            direct_open_effects_seen: false,
             refinements: Refinements::default(),
             unrefined: None,
             nominal_fields: None,
@@ -384,6 +419,7 @@ pub(super) struct Checker<'a> {
     pub(super) navigation_values: HashMap<Span, Ty>,
     pub(super) propagation_inputs: HashMap<Span, Ty>,
     pub(super) nominal_layouts: HashMap<DefinitionId, Ty>,
+    pub(super) sum_must_consume: HashSet<DefinitionId>,
     pub(super) record_adts: HashSet<DefinitionId>,
     pub(super) effect_instances: BTreeMap<String, super::effects::Instance>,
     pub(super) operation_effects: HashMap<Span, String>,
@@ -391,6 +427,7 @@ pub(super) struct Checker<'a> {
     pub(super) effect_applications: HashMap<Span, Vec<String>>,
     pub(super) effect_var_applications: HashMap<Span, Vec<DefinitionId>>,
     pub(super) subset_tags: HashMap<Span, Vec<String>>,
+    pub(super) subset_types: HashMap<Span, Ty>,
     pub(super) tuple_payloads: HashMap<Span, usize>,
     pub(super) receptions: HashMap<Span, Vec<super::reception::Adjustment>>,
     pub(super) narrow_errors: HashMap<Span, (Code, Span)>,
@@ -446,6 +483,7 @@ impl<'a> Checker<'a> {
             exported_type_invariants: BTreeMap::new(),
             propagation_inputs: HashMap::new(),
             nominal_layouts: HashMap::new(),
+            sum_must_consume: HashSet::new(),
             record_adts: HashSet::new(),
             effect_instances: BTreeMap::new(),
             operation_effects: HashMap::new(),
@@ -454,6 +492,7 @@ impl<'a> Checker<'a> {
             effect_var_applications: HashMap::new(),
             navigation_values: HashMap::new(),
             subset_tags: HashMap::new(),
+            subset_types: HashMap::new(),
             tuple_payloads: HashMap::new(),
             receptions: HashMap::new(),
             narrow_errors: HashMap::new(),
@@ -990,7 +1029,7 @@ impl<'a> Checker<'a> {
             }
     }
 
-    fn state_clause_fits(expected: &[String], clause: &str) -> bool {
+    pub(super) fn state_clause_fits(expected: &[String], clause: &str) -> bool {
         if expected.iter().any(|e| e == clause) {
             return true;
         }

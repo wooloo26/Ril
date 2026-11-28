@@ -215,9 +215,17 @@ impl Checker<'_> {
                 self.constrain_len_expr(env, &mut dbm, &target, base_arg.value);
                 cb_env.refinements.dbm = dbm;
             }
-            self.expect(&mut cb_env, update.value, &callback);
-            env.effects_seen.extend(cb_env.effects_seen);
-            env.effect_vars_seen.extend(cb_env.effect_vars_seen);
+            let actual_cb = self.expect(&mut cb_env, update.value, &callback);
+            self.invalidate_live(
+                env,
+                Code::E0533,
+                span,
+                crate::ty::NarrowDropCause::OpenStateCall,
+            );
+            if !env.shadow {
+                env.merge_effects_from(&cb_env);
+                self.collect_open_callback_effects_seen(env, &callback, &actual_cb);
+            }
             return base;
         }
         if name == "with_scoped"
@@ -252,7 +260,18 @@ impl Checker<'_> {
                 direct_open_effects: true,
                 ..unknown_callable()
             }));
-            let actual_cb = self.expect(env, body_arg.value, &callback);
+            let mut cb_env = env.clone();
+            let actual_cb = self.expect(&mut cb_env, body_arg.value, &callback);
+            self.invalidate_live(
+                env,
+                Code::E0533,
+                span,
+                crate::ty::NarrowDropCause::OpenStateCall,
+            );
+            if !env.shadow {
+                env.merge_effects_from(&cb_env);
+                self.collect_open_callback_effects_seen(env, &callback, &actual_cb);
+            }
             if let Ty::Callable(cb) = self.normalize(&actual_cb) {
                 return cb.result.clone();
             }

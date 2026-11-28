@@ -362,16 +362,78 @@ impl Checker<'_> {
             let row = self.effect_row_from_paths(&mut local, &obligations.effects);
             (row.concrete, row.vars)
         };
+        let open_effects =
+            obligations.open_effects || (!env.open_effects_seen && local.open_effects_seen);
+        let direct_open_effects = obligations.direct_open_effects
+            || (!open_effects && !env.direct_open_effects_seen && local.direct_open_effects_seen);
         Ty::Callable(Arc::new(Callable {
             parameters,
             result,
             effects,
             effect_vars,
             effect_infers: Vec::new(),
-            open_effects: obligations.open_effects,
-            direct_open_effects: obligations.direct_open_effects,
+            open_effects,
+            direct_open_effects,
             ..unknown_callable()
         }))
+    }
+
+    pub(in crate::ty) fn collect_open_callback_effects_seen(
+        &mut self,
+        env: &mut Env,
+        formal_ty: &Ty,
+        actual_ty: &Ty,
+    ) {
+        let formal = self.normalize(formal_ty);
+        let actual = self.normalize(actual_ty);
+        match (&formal, &actual) {
+            (Ty::Callable(f), Ty::Callable(a)) if f.open_effects || f.direct_open_effects => {
+                for eff in &a.effects {
+                    if !f.effects.iter().any(|cov| self.effect_covers(cov, eff)) {
+                        env.effects_seen.insert(eff.clone());
+                    }
+                }
+                for &var in &a.effect_vars {
+                    if !f.effect_vars.contains(&var) {
+                        env.effect_vars_seen.insert(var);
+                    }
+                }
+                if a.open_effects {
+                    env.open_effects_seen = true;
+                } else if a.direct_open_effects {
+                    env.direct_open_effects_seen = true;
+                }
+            }
+            (Ty::Array(fm), Ty::Array(am)) => {
+                self.collect_open_callback_effects_seen(env, &fm.ty, &am.ty);
+            }
+            (Ty::Map(fk, fv), Ty::Map(ak, av)) => {
+                self.collect_open_callback_effects_seen(env, fk, ak);
+                self.collect_open_callback_effects_seen(env, &fv.ty, &av.ty);
+            }
+            (Ty::Tuple(fs), Ty::Tuple(as_)) => {
+                for (fm, am) in fs.iter().zip(as_) {
+                    self.collect_open_callback_effects_seen(env, &fm.ty, &am.ty);
+                }
+            }
+            (Ty::Record(ff, _), Ty::Record(af, _)) => {
+                for (k, fm) in ff {
+                    if let Some(am) = af.get(k) {
+                        self.collect_open_callback_effects_seen(env, &fm.ty, &am.ty);
+                    }
+                }
+            }
+            (Ty::Adt(fa), Ty::Adt(aa)) if fa.definition == aa.definition => {
+                for (fg, ag) in fa.arguments.iter().zip(&aa.arguments) {
+                    if let (crate::ty::GenericValue::Type(ft), crate::ty::GenericValue::Type(at)) =
+                        (fg, ag)
+                    {
+                        self.collect_open_callback_effects_seen(env, ft, at);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn call(
@@ -918,6 +980,7 @@ impl Checker<'_> {
         if call.is_ctl
             || call.open_effects
             || call.direct_open_effects
+            || call.has_open_effect_or_state_param()
             || !call.effect_vars.is_empty()
             || !call.effect_infers.is_empty()
             || call.open_state
@@ -1038,6 +1101,21 @@ impl Checker<'_> {
         if !env.shadow {
             env.effects_seen.extend(effects);
             env.effect_vars_seen.extend(effect_vars);
+            if call.open_effects {
+                env.open_effects_seen = true;
+            } else if call.direct_open_effects {
+                env.direct_open_effects_seen = true;
+            }
+            for (index, param) in call.parameters.iter().enumerate() {
+                if let Some(arg_expr) = arg_by_formal.get(index).copied().flatten() {
+                    let arg_ty = self
+                        .types
+                        .get(&ast.expr(arg_expr).span)
+                        .cloned()
+                        .unwrap_or(Ty::Unknown);
+                    self.collect_open_callback_effects_seen(env, &param.ty, &arg_ty);
+                }
+            }
         }
         if !env.shadow
             && let Some(known) = def_id

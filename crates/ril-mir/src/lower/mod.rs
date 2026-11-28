@@ -1790,9 +1790,7 @@ impl<'a> Builder<'_, 'a> {
                 }
             }
             Pattern::Subset { binding, .. } => {
-                if let Some(binding) = binding {
-                    self.bind(*binding, value)?;
-                }
+                self.bind(*binding, value)?;
             }
             Pattern::Wildcard
             | Pattern::Rest(None)

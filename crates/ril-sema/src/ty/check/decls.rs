@@ -44,6 +44,13 @@ impl Checker<'_> {
         }
         self.generic_env(&mut env, &function.generics);
         let call = Arc::new(self.callable(&mut env, &function.signature, true));
+        if call.open_effects || call.direct_open_effects || call.open_state {
+            self.error(
+                Code::E0547,
+                function.name.span,
+                "named definitions cannot declare bare '@', '@fn', or '&' on their outer arrow; put them on callback parameters or declare an explicit '<@E>' effect row parameter",
+            );
+        }
         if self.hir.operation_effect(id).is_some() {
             let mut has_open = false;
             for param in &call.parameters {
@@ -500,7 +507,7 @@ impl Checker<'_> {
                         self.negate_pattern_proofs(&mut fb_env, *pattern, *val_expr);
                     }
                     let otherwise = self.expr(&mut fb_env, *fallback, None);
-                    local.effects_seen.extend(fb_env.effects_seen);
+                    local.merge_effects_from(&fb_env);
                     if otherwise != Ty::Never && otherwise != Ty::Unknown {
                         self.error(
                             Code::E0321,
@@ -735,15 +742,17 @@ impl Checker<'_> {
                                 .collect();
                             if let Ty::Adt(adt) = self.adt(id, decl, args) {
                                 self.sum_variants(&adt);
-                                if decl.kind == ril_syntax::syntax::TypeKind::Opaque
-                                    && !decl.is_linear
-                                    && self.is_must_consume_ty(&local, &Ty::Adt(Arc::clone(&adt)))
-                                {
-                                    self.error(
-                                        Code::E0625,
-                                        decl.name.span,
-                                        "opaque sum containing a must-consume payload must be declared 'opaque linear type'",
-                                    );
+                                if self.is_must_consume_ty(&local, &Ty::Adt(Arc::clone(&adt))) {
+                                    self.sum_must_consume.insert(id);
+                                    if decl.kind == ril_syntax::syntax::TypeKind::Opaque
+                                        && !decl.is_linear
+                                    {
+                                        self.error(
+                                            Code::E0625,
+                                            decl.name.span,
+                                            "opaque sum containing a must-consume payload must be declared 'opaque linear type'",
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -825,12 +834,12 @@ impl Checker<'_> {
                 });
                 defer_env.refinements.call_proofs.clear();
                 self.expect(&mut defer_env, *expr, &Ty::Unit);
-                env.effects_seen.extend(defer_env.effects_seen);
+                env.merge_effects_from(&defer_env);
                 env.active_defers.push(*expr);
             }
             StmtKind::With(handler) => {
                 let answer = env.expected_return.clone();
-                self.check_handler_arm(env, handler, answer.as_ref(), &[]);
+                self.check_handler_arm(env, handler, answer.as_ref(), &[], (false, false));
             }
             StmtKind::Import(_) | StmtKind::Error => {}
         }
@@ -843,6 +852,7 @@ impl Checker<'_> {
         handler: &syntax::Handler,
         answer_ty: Option<&Ty>,
         residual_effects: &[String],
+        residual_open: (bool, bool),
     ) -> Option<Ty> {
         if let Some(operation) = self.resolve(handler.operation.span)
             && self.hir.operation_effect(operation).is_some()
@@ -919,8 +929,8 @@ impl Checker<'_> {
                         effects: residual_effects.to_vec(),
                         effect_vars: Vec::new(),
                         effect_infers: Vec::new(),
-                        open_effects: false,
-                        direct_open_effects: false,
+                        open_effects: residual_open.0,
+                        direct_open_effects: residual_open.1,
                         state: Vec::new(),
                         open_state: false,
                     }));
@@ -1020,6 +1030,12 @@ impl Checker<'_> {
                         span,
                         "function with static parameter proof cannot be used as a first-class callable; call directly or wrap in a closure",
                     );
+                } else if !callee && call.has_open_effect_param() {
+                    self.error(
+                        Code::E0534,
+                        span,
+                        "function with open-effect callback parameter cannot be used as a first-class callable; call directly, wrap in a closure, or declare an explicit '<@E>' effect row parameter",
+                    );
                 }
                 Ty::Callable(call)
             }
@@ -1102,6 +1118,12 @@ impl Checker<'_> {
                             span,
                             "function with static proof requirement cannot be used as a first-class callable; call directly or wrap in a closure",
                         );
+                    } else if !callee && call.has_open_effect_param() {
+                        self.error(
+                            Code::E0534,
+                            span,
+                            "function with open-effect callback parameter cannot be used as a first-class callable; call directly, wrap in a closure, or declare an explicit '<@E>' effect row parameter",
+                        );
                     }
                     return Ty::Callable(call);
                 }
@@ -1148,9 +1170,9 @@ impl Checker<'_> {
                     }
                 }
             }
-            syntax::Pattern::Subset {
-                binding: Some(pat), ..
-            } => self.collect_pattern_defs(env, *pat, out),
+            syntax::Pattern::Subset { binding, .. } => {
+                self.collect_pattern_defs(env, *binding, out);
+            }
             _ => {}
         }
     }

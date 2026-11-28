@@ -1717,6 +1717,10 @@ impl Checker<'_> {
                 }
             }
             Pattern::Constructor(path, items_opt) => {
+                if items_opt.is_none() && self.subset_tags.contains_key(&ast.pattern(pattern).span)
+                {
+                    return;
+                }
                 let tag_name = path.segments.last().map(|s| s.name.value.as_str());
                 if tag_name == Some("None") {
                     if let Some((base, index)) = self.is_map_safe_index(env, value_expr)
@@ -1976,6 +1980,10 @@ impl Checker<'_> {
                 }
             }
             Pattern::Constructor(path, items_opt) => {
+                if items_opt.is_none() && self.subset_tags.contains_key(&ast.pattern(pattern).span)
+                {
+                    return;
+                }
                 let tag_name = path.segments.last().map(|s| s.name.value.as_str());
                 let inner_irrefutable = items_opt.as_ref().is_none_or(|items| {
                     items.iter().all(|&p| {
@@ -2869,6 +2877,7 @@ impl Checker<'_> {
                     if let Some(sig) = self.callables.get(&id)
                         && !sig.open_effects
                         && !sig.direct_open_effects
+                        && !sig.has_open_effect_or_state_param()
                         && sig.effect_vars.is_empty()
                         && !sig.open_state
                         && sig.effects.iter().all(|e| e == "io")
@@ -3132,15 +3141,20 @@ impl Checker<'_> {
                 let is_known_safe = match &ast.expr(*callee).value {
                     Expr::Path(path) => self.resolve(path.span).is_some_and(|id| {
                         self.hir.operation_effect(id).is_none()
-                            && (self.hir.intrinsic(id).is_some()
-                                || self.callables.get(&id).is_some_and(|sig| {
-                                    !sig.open_effects
-                                        && !sig.direct_open_effects
-                                        && sig.effect_vars.is_empty()
-                                        && !sig.open_state
-                                        && sig.effects.iter().all(|e| e == "io")
-                                        && sig.state.is_empty()
-                                }))
+                            && (self.hir.intrinsic(id).is_some_and(|intr| {
+                                !matches!(
+                                    intr,
+                                    ril_hir::Intrinsic::Derive | ril_hir::Intrinsic::WithScoped
+                                )
+                            }) || self.callables.get(&id).is_some_and(|sig| {
+                                !sig.open_effects
+                                    && !sig.direct_open_effects
+                                    && !sig.has_open_effect_or_state_param()
+                                    && sig.effect_vars.is_empty()
+                                    && !sig.open_state
+                                    && sig.effects.iter().all(|e| e == "io")
+                                    && sig.state.is_empty()
+                            }))
                     }),
                     _ => false,
                 };

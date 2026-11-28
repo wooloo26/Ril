@@ -93,6 +93,9 @@ impl Checker<'_> {
                     {
                         let pre_refinements = env.refinements.clone();
                         let saved_effects = std::mem::take(&mut env.effects_seen);
+                        let saved_effect_vars = std::mem::take(&mut env.effect_vars_seen);
+                        let saved_open = std::mem::take(&mut env.open_effects_seen);
+                        let saved_direct = std::mem::take(&mut env.direct_open_effects_seen);
                         let rest = statements.get(idx + 1..).unwrap_or_default();
                         let body_res = self.check_ctl_block_tail(
                             env,
@@ -109,6 +112,9 @@ impl Checker<'_> {
                             env.refinements.dbm.unsat = true;
                         }
                         let body_effects = std::mem::take(&mut env.effects_seen);
+                        let body_effect_vars = std::mem::take(&mut env.effect_vars_seen);
+                        let body_open = std::mem::take(&mut env.open_effects_seen);
+                        let body_direct = std::mem::take(&mut env.direct_open_effects_seen);
                         let handled =
                             self.handled_effect_labels(env, std::slice::from_ref(handler));
                         let mut residual: Vec<String> = body_effects
@@ -118,6 +124,10 @@ impl Checker<'_> {
                         residual.sort();
                         env.effects_seen = saved_effects;
                         env.effects_seen.extend(residual.iter().cloned());
+                        env.effect_vars_seen = saved_effect_vars;
+                        env.effect_vars_seen.extend(body_effect_vars);
+                        env.open_effects_seen = saved_open || body_open;
+                        env.direct_open_effects_seen = saved_direct || body_direct;
                         let mut arm_env = env.clone();
                         arm_env.refinements = pre_refinements;
                         if let Some(arm_res) = self.check_handler_arm(
@@ -125,10 +135,11 @@ impl Checker<'_> {
                             handler,
                             ctl_answer.as_ref(),
                             &residual,
+                            (body_open, body_direct),
                         ) {
                             ctl_arm_results.push(arm_res);
                         }
-                        env.effects_seen.extend(arm_env.effects_seen);
+                        env.merge_effects_from(&arm_env);
                         break;
                     }
                     let right = if last
@@ -204,11 +215,14 @@ impl Checker<'_> {
                 let mut arm_results = Vec::new();
                 for handler in handlers {
                     if !handler.is_ctl {
-                        self.check_handler_arm(env, handler, None, &[]);
+                        self.check_handler_arm(env, handler, None, &[], (false, false));
                     }
                 }
                 let pre_body_refinements = env.refinements.clone();
                 let saved_effects = std::mem::take(&mut env.effects_seen);
+                let saved_effect_vars = std::mem::take(&mut env.effect_vars_seen);
+                let saved_open = std::mem::take(&mut env.open_effects_seen);
+                let saved_direct = std::mem::take(&mut env.direct_open_effects_seen);
                 let saved_defers = env.active_defers.len();
                 let mut result = Ty::Unit;
                 for (index, &item) in statements.iter().enumerate() {
@@ -246,6 +260,9 @@ impl Checker<'_> {
                 }
                 env.active_defers.truncate(saved_defers);
                 let body_effects = std::mem::take(&mut env.effects_seen);
+                let body_effect_vars = std::mem::take(&mut env.effect_vars_seen);
+                let body_open = std::mem::take(&mut env.open_effects_seen);
+                let body_direct = std::mem::take(&mut env.direct_open_effects_seen);
                 let handled = self.handled_effect_labels(env, handlers);
                 let mut residual: Vec<String> = body_effects
                     .into_iter()
@@ -254,6 +271,10 @@ impl Checker<'_> {
                 residual.sort();
                 env.effects_seen = saved_effects;
                 env.effects_seen.extend(residual.iter().cloned());
+                env.effect_vars_seen = saved_effect_vars;
+                env.effect_vars_seen.extend(body_effect_vars);
+                env.open_effects_seen = saved_open || body_open;
+                env.direct_open_effects_seen = saved_direct || body_direct;
                 if has_ctl {
                     let mut arm_env = env.clone();
                     arm_env.refinements = pre_body_refinements;
@@ -264,12 +285,13 @@ impl Checker<'_> {
                                 handler,
                                 answer_ty.as_ref(),
                                 &residual,
+                                (body_open, body_direct),
                             )
                         {
                             arm_results.push(arm_res);
                         }
                     }
-                    env.effects_seen.extend(arm_env.effects_seen);
+                    env.merge_effects_from(&arm_env);
                 }
                 for arm_res in arm_results {
                     result = self.join(env, span, result, arm_res);
@@ -466,14 +488,14 @@ impl Checker<'_> {
                 local.expected_return = None;
                 local.inferred_return = None;
                 local.return_scope = None;
-                local.effects_seen.clear();
+                local.clear_effects_seen();
                 if env.phase == Phase::Runtime {
                     local.static_boundary = Some(span);
                 }
                 let stripped_expected = expected.map(Self::strip_live_modes);
                 let ty = self.expr(&mut local, *inner, stripped_expected.as_ref());
                 let norm = self.normalize(&ty);
-                if !env.shadow && !local.effects_seen.is_empty() {
+                if !env.shadow && local.has_effects_seen() {
                     self.error(
                         Code::E0810,
                         span,
@@ -539,16 +561,16 @@ impl Checker<'_> {
                                 return if taken {
                                     self.assumption(&mut yes_env, condition, true);
                                     let ty = self.expr(&mut yes_env, *yes, expected);
+                                    env.merge_effects_from(&yes_env);
                                     env.refinements = yes_env.refinements;
-                                    env.effects_seen.extend(yes_env.effects_seen);
                                     ty
                                 } else {
                                     self.assumption(&mut no_env, condition, false);
                                     let ty = no
                                         .map(|no| self.expr(&mut no_env, no, expected))
                                         .unwrap_or(Ty::Unit);
+                                    env.merge_effects_from(&no_env);
                                     env.refinements = no_env.refinements;
-                                    env.effects_seen.extend(no_env.effects_seen);
                                     ty
                                 };
                             }
@@ -593,15 +615,15 @@ impl Checker<'_> {
                                         self.meta_if_decisions.insert(span, taken);
                                         return if taken {
                                             let ty = self.expr(&mut yes_env, *yes, expected);
+                                            env.merge_effects_from(&yes_env);
                                             env.refinements = yes_env.refinements;
-                                            env.effects_seen.extend(yes_env.effects_seen);
                                             ty
                                         } else {
                                             let ty = no
                                                 .map(|no| self.expr(&mut no_env, no, expected))
                                                 .unwrap_or(Ty::Unit);
+                                            env.merge_effects_from(&no_env);
                                             env.refinements = no_env.refinements;
-                                            env.effects_seen.extend(no_env.effects_seen);
                                             ty
                                         };
                                     }
@@ -632,8 +654,8 @@ impl Checker<'_> {
                         .map(|no| self.expr(&mut no_env, no, expected))
                         .unwrap_or(Ty::Unit);
                     env.refinements = self.merge_refinements(&yes_env, &no_env, &yes, &no);
-                    env.effects_seen.extend(yes_env.effects_seen);
-                    env.effects_seen.extend(no_env.effects_seen);
+                    env.merge_effects_from(&yes_env);
+                    env.merge_effects_from(&no_env);
                     self.join(env, span, yes, no)
                 } else {
                     let mut yes_env = env.clone();
@@ -659,8 +681,8 @@ impl Checker<'_> {
                         Ty::Unit
                     };
                     env.refinements = self.merge_refinements(&yes_env, &no_env, &yes, &no);
-                    env.effects_seen.extend(yes_env.effects_seen);
-                    env.effects_seen.extend(no_env.effects_seen);
+                    env.merge_effects_from(&yes_env);
+                    env.merge_effects_from(&no_env);
                     self.join(env, span, yes, no)
                 }
             }
@@ -700,7 +722,7 @@ impl Checker<'_> {
                 }
                 exit_env.refinements.dbm = post_dbm;
                 env.refinements = exit_env.refinements;
-                env.effects_seen.extend(body_env.effects_seen);
+                env.merge_effects_from(&body_env);
                 if matches!(condition, Condition::Expr(test) if matches!(&self.ast(env.file).expr(*test).value,
                     Expr::Literal(value) if matches!(literal(value), Ok(Value::Bool(true)))))
                     && !self.has_break(env, *body)
@@ -771,7 +793,7 @@ impl Checker<'_> {
                 let mut merged = self.merge_refinements(env, &body_env, &Ty::Unit, &body_ty);
                 merged.dbm = for_exit_dbm;
                 env.refinements = merged;
-                env.effects_seen.extend(body_env.effects_seen);
+                env.merge_effects_from(&body_env);
                 Ty::Unit
             }
             Expr::Match {
@@ -889,6 +911,9 @@ impl Checker<'_> {
             {
                 let pre_refinements = env.refinements.clone();
                 let saved_effects = std::mem::take(&mut env.effects_seen);
+                let saved_effect_vars = std::mem::take(&mut env.effect_vars_seen);
+                let saved_open = std::mem::take(&mut env.open_effects_seen);
+                let saved_direct = std::mem::take(&mut env.direct_open_effects_seen);
                 let rest = statements.get(idx + 1..).unwrap_or_default();
                 let body_res = self.check_ctl_block_tail(
                     env,
@@ -905,6 +930,9 @@ impl Checker<'_> {
                     env.refinements.dbm.unsat = true;
                 }
                 let body_effects = std::mem::take(&mut env.effects_seen);
+                let body_effect_vars = std::mem::take(&mut env.effect_vars_seen);
+                let body_open = std::mem::take(&mut env.open_effects_seen);
+                let body_direct = std::mem::take(&mut env.direct_open_effects_seen);
                 let handled = self.handled_effect_labels(env, std::slice::from_ref(handler));
                 let mut residual: Vec<String> = body_effects
                     .into_iter()
@@ -913,14 +941,22 @@ impl Checker<'_> {
                 residual.sort();
                 env.effects_seen = saved_effects;
                 env.effects_seen.extend(residual.iter().cloned());
+                env.effect_vars_seen = saved_effect_vars;
+                env.effect_vars_seen.extend(body_effect_vars);
+                env.open_effects_seen = saved_open || body_open;
+                env.direct_open_effects_seen = saved_direct || body_direct;
                 let mut arm_env = env.clone();
                 arm_env.refinements = pre_refinements;
-                if let Some(arm_res) =
-                    self.check_handler_arm(&mut arm_env, handler, expected, &residual)
-                {
+                if let Some(arm_res) = self.check_handler_arm(
+                    &mut arm_env,
+                    handler,
+                    expected,
+                    &residual,
+                    (body_open, body_direct),
+                ) {
                     ctl_arm_results.push(arm_res);
                 }
-                env.effects_seen.extend(arm_env.effects_seen);
+                env.merge_effects_from(&arm_env);
                 break;
             }
             let right =
