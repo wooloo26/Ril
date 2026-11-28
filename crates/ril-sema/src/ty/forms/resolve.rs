@@ -22,6 +22,14 @@ impl Checker<'_> {
         let node = self.ast(env.file).ty(id);
         let ty = match &node.value {
             Type::Named(path) => self.named_type(env, path),
+            Type::Proof(_) => {
+                self.error(
+                    Code::E0306,
+                    node.span,
+                    "static proof cannot be used as a general type",
+                );
+                Ty::Unknown
+            }
             Type::Unit => Ty::Unit,
             Type::Tuple(items) => Ty::Tuple(
                 items
@@ -359,6 +367,7 @@ impl Checker<'_> {
                 match std_ty {
                     StdType::Option | StdType::Result | StdType::Set | StdType::TypeKind => {}
                     StdType::Derived => return Ty::Draft(Box::new(arg0(self, env))),
+                    StdType::Scoped => {}
                     StdType::FieldMode => return Ty::Mode,
                     StdType::PanicReport | StdType::PanicError => {}
                 }
@@ -384,11 +393,14 @@ impl Checker<'_> {
                         );
                         return Ty::Unknown;
                     }
-                    "KeyOf" => {
+                    "KeyOf" | "Reflects" | "Implies" | "Ensures" => {
                         self.error(
                             Code::E0306,
                             path.span,
-                            "KeyOf is only valid as a static check",
+                            format!(
+                                "{} is only valid as a static proof/check guard",
+                                last.name.value
+                            ),
                         );
                         return Ty::Unknown;
                     }

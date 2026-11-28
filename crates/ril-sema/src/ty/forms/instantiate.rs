@@ -564,29 +564,24 @@ impl Checker<'_> {
                 local.generics.insert(id, input.clone());
             }
             if !type_params.is_empty() {
-                let value_args_start = if arguments.len() == type_params.len() + trailing.len() {
-                    for (tp, arg) in type_params.iter().zip(arguments) {
-                        if let Some(id) = self.resolve(tp.name.span) {
-                            let val = self.generic_argument(env, tp, arg, span);
-                            local.generics.insert(id, val);
-                        }
-                    }
-                    type_params.len()
-                } else {
-                    for tp in type_params {
-                        if let Some(id) = self.resolve(tp.name.span) {
-                            local.generics.insert(id, GenericValue::Type(self.fresh()));
-                        }
-                    }
-                    0
-                };
-                let rem = arguments.get(value_args_start..).unwrap_or_default();
-                if rem.len() > trailing.len() {
+                if arguments.len() > trailing.len() + type_params.len() {
                     self.error(Code::E0340, path.span, "too many static check arguments");
                     return;
                 }
+                let val_args = arguments.get(..trailing.len()).unwrap_or(arguments);
+                let type_args = arguments.get(trailing.len()..).unwrap_or_default();
+                for (index, tp) in type_params.iter().enumerate() {
+                    if let Some(id) = self.resolve(tp.name.span) {
+                        let val = if let Some(arg) = type_args.get(index) {
+                            self.generic_argument(env, tp, arg, span)
+                        } else {
+                            GenericValue::Type(self.fresh())
+                        };
+                        local.generics.insert(id, val);
+                    }
+                }
                 for (index, parameter) in trailing.iter().enumerate() {
-                    let value = if let Some(argument) = rem.get(index) {
+                    let value = if let Some(argument) = val_args.get(index) {
                         self.generic_argument(env, parameter, argument, span)
                     } else if let Some(default) = &parameter.default {
                         self.generic_argument(&mut local, parameter, default, span)

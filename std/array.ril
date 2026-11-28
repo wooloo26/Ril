@@ -12,14 +12,14 @@ pub fn pop<T>(mut xs: [via]T) &mut -> new ?T
 pub fn pop_front<T>(mut xs: [via]T) &mut -> new ?T
 
 -- Swaps the elements at `i` and `j` in `xs` in place.
-pub fn swap<T>(mut xs: [via]T, i: int |> InBounds(xs), j: int |> InBounds(xs)) &mut -> ()
+pub fn swap<T>(mut xs: [via]T, i: InBounds(xs), j: InBounds(xs)) &mut -> ()
 
 -- Inserts `item` at `index` in `xs`, shifting subsequent elements right.
-pub fn insert<T>(mut xs: [via]T, index: int |> Between(0, len(xs)), via item: T) &mut -> ()
+pub fn insert<T>(mut xs: [via]T, index: Between(0, len(xs)), via item: T) &mut -> ()
 
 -- Removes and returns the element at `index` in `xs`, shifting subsequent elements left.
 -- Supports destructive extraction from arrays holding must-consume values.
-pub fn remove<T>(mut xs: [via]T, index: int |> InBounds(xs)) &mut -> T
+pub fn remove<T>(mut xs: [via]T, index: InBounds(xs)) &mut -> T
 
 -- Returns the first element of `xs`, or `None` if empty.
 pub fn first<T>(via xs: []T) &return(xs) -> new ?T {
@@ -37,7 +37,7 @@ pub fn last<T>(via xs: []T) &return(xs) -> new ?T {
 }
 
 -- Returns a new array containing `count` copies of `value`.
-pub fn repeat<T>(value: T, count: int |> Nat) &return(value) -> new []T |> Len(count) {
+pub fn repeat<T>(value: T, count: Nat) &return(value) -> new []T |> Len(count) {
     let mut out: []T = []
     for 0..count as _ {
         push(mut out, value)

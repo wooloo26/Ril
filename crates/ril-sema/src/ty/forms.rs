@@ -25,12 +25,15 @@ pub(in crate::ty) fn is_value_generic_param(param: &GenericParam) -> bool {
 pub(in crate::ty) fn partition_type_fn_params(
     params: &[GenericParam],
 ) -> (&[GenericParam], Option<&GenericParam>, &[GenericParam]) {
-    let k = params
+    let v = params
         .iter()
-        .take_while(|p| !is_value_generic_param(p))
+        .take_while(|p| is_value_generic_param(p))
         .count();
-    let (type_params, rest) = params.split_at(k);
-    let Some((subject, trailing)) = rest.split_first() else {
+    if v == 0 {
+        return (params, None, &[]);
+    }
+    let (value_params, type_params) = params.split_at(v);
+    let Some((subject, trailing)) = value_params.split_first() else {
         return (type_params, None, &[]);
     };
     (type_params, Some(subject), trailing)
@@ -116,13 +119,48 @@ impl Checker<'_> {
         guard: syntax::ExprId,
         subject: &Ty,
         output: &Ty,
+        is_return: bool,
     ) {
         let original_span = self.ast(env.file).expr(guard).span;
         match self.hir.classify_guard(env.file, guard) {
             GuardKind::StaticProof(id) => {
                 self.check_static_proof_guard(env, guard, id, subject);
             }
-            GuardKind::StaticProofPrimitive(_) => {}
+            GuardKind::StaticProofPrimitive(id) => {
+                let name = self.hir.definition(id).name.value.as_str();
+                if matches!(name, "Reflects" | "Implies" | "Ensures") {
+                    if !is_return {
+                        self.error(
+                            Code::E0306,
+                            original_span,
+                            format!("{name} is only valid on function return types"),
+                        );
+                        return;
+                    }
+                    if matches!(name, "Reflects" | "Implies")
+                        && self.normalize(subject) != Ty::Bool
+                        && self.normalize(subject) != Ty::Unknown
+                    {
+                        self.error(
+                            Code::E0306,
+                            original_span,
+                            format!("{name} requires a bool return type"),
+                        );
+                    }
+                    let ast = self.ast(env.file);
+                    let valid_call = matches!(
+                        &ast.expr(guard).value,
+                        syntax::Expr::Call { args, .. } if args.len() == 1
+                    );
+                    if !valid_call {
+                        self.error(
+                            Code::E0314,
+                            original_span,
+                            format!("{name} requires exactly one predicate argument"),
+                        );
+                    }
+                }
+            }
             GuardKind::RuntimeFn(id) => {
                 self.check_runtime_fn_guard(env, guard, id, subject, output);
             }
@@ -227,14 +265,19 @@ impl Checker<'_> {
             type_param_ids.push((idx, pid));
         }
 
-        // Bind subject type.
+        // Bind subject type (if it depends on an uninferred trailing type param via a
+        // type function like `InKey<C>`, `subject_param_ty` evaluates to `Ty::Unknown` here
+        // and will be re-evaluated once trailing arguments resolve `tf_env.generics`).
         let subject_param_ty = subject_param
             .bound
             .first()
             .map(|&ty| self.type_expr(&mut tf_env, ty))
             .unwrap_or(Ty::Unknown);
-        let expected_subject = super::check::substitute(&subject_param_ty, &subst);
-        self.require(env, span, subject, &expected_subject);
+        let subject_deferred = subject_param_ty == Ty::Unknown && !subject_param.bound.is_empty();
+        if !subject_deferred {
+            let expected_subject = super::check::substitute(&subject_param_ty, &subst);
+            self.require(env, span, subject, &expected_subject);
+        }
 
         // Bind extra paren arguments (positional + named).
         let mut bound_args: Vec<Option<syntax::Argument>> = vec![None; trailing_params.len()];
@@ -366,6 +409,16 @@ impl Checker<'_> {
                     );
                 }
                 self.validate_static_checks(&mut tf_env, tp, &GenericValue::Type(actual), span);
+            }
+        }
+        if subject_deferred {
+            let subject_param_ty = subject_param
+                .bound
+                .first()
+                .map(|&ty| self.type_expr(&mut tf_env, ty))
+                .unwrap_or(Ty::Unknown);
+            if subject_param_ty != Ty::Unknown {
+                self.require(env, span, subject, &subject_param_ty);
             }
         }
 
@@ -588,32 +641,40 @@ impl Checker<'_> {
     }
 
     pub(super) fn generic_env(&mut self, env: &mut Env, params: &[GenericParam]) {
+        // Pass 1: register non-value (type/mode) parameter domains first so leading
+        // value parameters (Style A) may reference trailing type parameters.
         for param in params {
-            if let Some(id) = self.resolve(param.name.span) {
-                if param
-                    .name
-                    .value
-                    .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
-                {
-                    let ty = param
-                        .bound
-                        .first()
-                        .map(|&ty| self.type_expr(env, ty))
-                        .unwrap_or(Ty::Unknown);
-                    self.bindings.insert(id, ty);
-                } else if !env.generics.contains_key(&id) {
-                    let prev_open = env.allow_open_record;
-                    env.allow_open_record = true;
-                    let domain: Vec<_> = param
-                        .bound
-                        .iter()
-                        .map(|&ty| self.type_expr(env, ty))
-                        .collect();
-                    env.allow_open_record = prev_open;
-                    if !domain.is_empty() {
-                        env.domains.insert(id, domain);
-                    }
+            if is_value_generic_param(param) {
+                continue;
+            }
+            if let Some(id) = self.resolve(param.name.span)
+                && !env.generics.contains_key(&id)
+            {
+                let prev_open = env.allow_open_record;
+                env.allow_open_record = true;
+                let domain: Vec<_> = param
+                    .bound
+                    .iter()
+                    .map(|&ty| self.type_expr(env, ty))
+                    .collect();
+                env.allow_open_record = prev_open;
+                if !domain.is_empty() {
+                    env.domains.insert(id, domain);
                 }
+            }
+        }
+        // Pass 2: resolve value parameter types.
+        for param in params {
+            if !is_value_generic_param(param) {
+                continue;
+            }
+            if let Some(id) = self.resolve(param.name.span) {
+                let ty = param
+                    .bound
+                    .first()
+                    .map(|&ty| self.type_expr(env, ty))
+                    .unwrap_or(Ty::Unknown);
+                self.bindings.insert(id, ty);
             }
         }
     }
@@ -626,29 +687,82 @@ impl Checker<'_> {
     ) -> Callable {
         // Read the complete signature before deciding which mode parameters
         // are in scope for a nested callable type.
+        // 2-pass parameter resolution so proof-typed parameters (e.g., `k: In(m)` or
+        // `i: InBounds(xs)`) can reference sibling parameters even when declared earlier.
         let enclosing = env.mode_scope.take();
+        let mut resolved_tys: Vec<Option<Ty>> = vec![None; signature.params.len()];
+        let mut saved_bindings: Vec<(DefinitionId, Option<Ty>)> = Vec::new();
+        for (idx, param) in signature.params.iter().enumerate() {
+            if let Some(ty_id) = param.ty {
+                let is_proof_ty = matches!(self.ast(env.file).ty(ty_id).value, Type::Proof(_))
+                    || self.bare_proof_type_info(env.file, ty_id).is_some();
+                if !is_proof_ty {
+                    let prev_open = env.allow_open_record;
+                    env.allow_open_record = named;
+                    let resolved = self.type_expr(env, ty_id);
+                    env.allow_open_record = prev_open;
+                    if let Some(name) = &param.name
+                        && let Some(pid) = self.resolve(name.span)
+                    {
+                        let prev = self.bindings.insert(pid, resolved.clone());
+                        saved_bindings.push((pid, prev));
+                    }
+                    if let Some(slot) = resolved_tys.get_mut(idx) {
+                        *slot = Some(resolved);
+                    }
+                }
+            }
+        }
+        for (idx, param) in signature.params.iter().enumerate() {
+            if resolved_tys.get(idx).and_then(Option::as_ref).is_some() {
+                continue;
+            }
+            let resolved = if let Some(ty_id) = param.ty {
+                if let Type::Proof(guard) = self.ast(env.file).ty(ty_id).value {
+                    self.guard_parameter(env, guard)
+                } else if let Some((tf_id, angle_args, span)) =
+                    self.bare_proof_type_info(env.file, ty_id)
+                {
+                    self.static_proof_subject_type(env, tf_id, &angle_args, &[], span)
+                        .unwrap_or_else(|| {
+                            self.error(
+                                Code::E0544,
+                                span,
+                                "static proof does not uniquely determine the parameter type",
+                            );
+                            Ty::Unknown
+                        })
+                } else {
+                    Ty::Unknown
+                }
+            } else if let Some(&guard) = param.guards.first() {
+                self.guard_parameter(env, guard)
+            } else {
+                if named && let Some(name) = &param.name {
+                    self.error(
+                        Code::E0544,
+                        name.span,
+                        "named parameter needs a type or a first guard",
+                    );
+                }
+                self.fresh()
+            };
+            if let Some(name) = &param.name
+                && let Some(pid) = self.resolve(name.span)
+            {
+                let prev = self.bindings.insert(pid, resolved.clone());
+                saved_bindings.push((pid, prev));
+            }
+            if let Some(slot) = resolved_tys.get_mut(idx) {
+                *slot = Some(resolved);
+            }
+        }
         let params: Vec<_> = signature
             .params
             .iter()
-            .map(|param| {
-                let ty = if let Some(ty) = param.ty {
-                    let prev_open = env.allow_open_record;
-                    env.allow_open_record = named;
-                    let resolved = self.type_expr(env, ty);
-                    env.allow_open_record = prev_open;
-                    resolved
-                } else if let Some(&guard) = param.guards.first() {
-                    self.guard_parameter(env, guard)
-                } else {
-                    if named && let Some(name) = &param.name {
-                        self.error(
-                            Code::E0544,
-                            name.span,
-                            "named parameter needs a type or a first guard",
-                        );
-                    }
-                    self.fresh()
-                };
+            .zip(resolved_tys)
+            .map(|(param, ty_opt)| {
+                let ty = ty_opt.unwrap_or(Ty::Unknown);
                 if param.is_meta {
                     self.declare_meta_key(env, param);
                 }
@@ -754,7 +868,30 @@ impl Checker<'_> {
                 }
             })
             .collect();
-        let result = self.type_expr(env, signature.result);
+        let result = if let Type::Proof(guard) = self.ast(env.file).ty(signature.result).value {
+            self.guard_parameter(env, guard)
+        } else if let Some((tf_id, angle_args, span)) =
+            self.bare_proof_type_info(env.file, signature.result)
+        {
+            self.static_proof_subject_type(env, tf_id, &angle_args, &[], span)
+                .unwrap_or_else(|| {
+                    self.error(
+                        Code::E0544,
+                        span,
+                        "static proof does not uniquely determine the return type",
+                    );
+                    Ty::Unknown
+                })
+        } else {
+            self.type_expr(env, signature.result)
+        };
+        for (pid, prev) in saved_bindings.into_iter().rev() {
+            if let Some(old) = prev {
+                self.bindings.insert(pid, old);
+            } else {
+                self.bindings.remove(&pid);
+            }
+        }
         env.mode_scope = enclosing;
         let effects = signature
             .obligations
@@ -857,6 +994,93 @@ impl Checker<'_> {
         });
     }
 
+    pub(in crate::ty) fn bare_proof_type_info(
+        &self,
+        file: ril_source::span::FileId,
+        ty_id: syntax::TypeId,
+    ) -> Option<(DefinitionId, Vec<GenericArg>, Span)> {
+        let node = self.ast(file).ty(ty_id);
+        let Type::Named(path) = &node.value else {
+            return None;
+        };
+        let id = self.resolve(path.span)?;
+        let def = self.hir.definition(id);
+        let stmt = def.stmt?;
+        let def_file = def.name.span.file;
+        let StmtKind::Type(decl) = &self.ast(def_file).stmt(stmt).value.kind else {
+            return None;
+        };
+        let TypeDefinition::Function(tf_params, _) = &decl.definition else {
+            return None;
+        };
+        let (_, Some(_), _) = partition_type_fn_params(tf_params) else {
+            return None;
+        };
+        let angle_args = path
+            .segments
+            .last()
+            .map(|s| s.arguments.clone())
+            .unwrap_or_default();
+        Some((id, angle_args, node.span))
+    }
+
+    pub(in crate::ty) fn check_static_proof_bare(
+        &mut self,
+        env: &mut Env,
+        id: DefinitionId,
+        angle_args: &[GenericArg],
+        span: Span,
+        subject: &Ty,
+    ) {
+        let def = self.hir.definition(id);
+        let Some(stmt) = def.stmt else { return };
+        let def_file = def.name.span.file;
+        let def_scope = def.scope;
+        let StmtKind::Type(decl) = &self.ast(def_file).stmt(stmt).value.kind else {
+            return;
+        };
+        let TypeDefinition::Function(tf_params, tf_body) = &decl.definition else {
+            return;
+        };
+        let tf_params = tf_params.clone();
+        let tf_body = *tf_body;
+        let (type_params, Some(subject_param), trailing_params) =
+            partition_type_fn_params(&tf_params)
+        else {
+            return;
+        };
+        if trailing_params.iter().any(|p| p.default.is_none()) {
+            self.error(Code::E0314, span, "missing required static proof argument");
+            return;
+        }
+        let mut tf_env = Env::new(def_file, def_scope);
+        tf_env.phase = Phase::TypeEval;
+        tf_env.caller_scope = Some(env.effective_scope());
+        tf_env.error_span = Some(span);
+        let mut subst = std::collections::HashMap::new();
+        for (idx, tp) in type_params.iter().enumerate() {
+            let Some(pid) = self.resolve(tp.name.span) else {
+                continue;
+            };
+            let gv = if let Some(arg) = angle_args.get(idx) {
+                self.generic_argument(env, tp, arg, span)
+            } else {
+                GenericValue::Type(self.fresh())
+            };
+            subst.insert(pid, gv.clone());
+            tf_env.generics.insert(pid, gv);
+        }
+        let subject_param_ty = subject_param
+            .bound
+            .first()
+            .map(|&ty| self.type_expr(&mut tf_env, ty))
+            .unwrap_or(Ty::Unknown);
+        let expected_subject = super::check::substitute(&subject_param_ty, &subst);
+        self.require(env, span, subject, &expected_subject);
+        let mut seen = HashSet::new();
+        self.check_static_proof_shape(id, def_file, tf_body, span, &mut seen);
+    }
+
     fn guard_parameter(&mut self, env: &Env, guard: syntax::ExprId) -> Ty {
         let ast = self.ast(env.file);
         let mut node = ast.expr(guard);
@@ -865,8 +1089,10 @@ impl Checker<'_> {
         {
             node = ast.expr(*value);
         }
-        if let syntax::Expr::Call { callee, .. } = node.value {
-            node = ast.expr(callee);
+        let mut extra_args: Vec<syntax::Argument> = Vec::new();
+        if let syntax::Expr::Call { callee, args } = &node.value {
+            extra_args = args.clone();
+            node = ast.expr(*callee);
         }
         let node_span = node.span;
         match self.hir.classify_guard(env.file, guard) {
@@ -886,7 +1112,7 @@ impl Checker<'_> {
                     _ => Vec::new(),
                 };
                 if let Some(inferred) =
-                    self.static_proof_subject_type(env, id, &angle_args, node_span)
+                    self.static_proof_subject_type(env, id, &angle_args, &extra_args, node_span)
                 {
                     return inferred;
                 }
@@ -901,11 +1127,12 @@ impl Checker<'_> {
         Ty::Unknown
     }
 
-    fn static_proof_subject_type(
+    pub(in crate::ty) fn static_proof_subject_type(
         &mut self,
         env: &Env,
         id: DefinitionId,
         angle_args: &[GenericArg],
+        extra_args: &[syntax::Argument],
         span: Span,
     ) -> Option<Ty> {
         if !self.resolving.insert(id) {
@@ -922,22 +1149,79 @@ impl Checker<'_> {
                 return None;
             };
             let tf_params = tf_params.clone();
-            let (type_params, Some(subject_param), _) = partition_type_fn_params(&tf_params) else {
+            let (type_params, Some(subject_param), trailing_params) =
+                partition_type_fn_params(&tf_params)
+            else {
                 return None;
             };
             let mut tf_env = Env::new(def_file, def.scope);
+            tf_env.phase = Phase::TypeEval;
             tf_env.caller_scope = Some(env.effective_scope());
             let mut caller_env = env.clone();
-            let mut unbound = HashSet::new();
+            caller_env.shadow = true;
+            let mut subst = std::collections::HashMap::new();
+            let mut type_param_ids = Vec::new();
             for (idx, tp) in type_params.iter().enumerate() {
                 let Some(pid) = self.resolve(tp.name.span) else {
                     continue;
                 };
-                if let Some(arg) = angle_args.get(idx) {
-                    let gv = self.generic_argument(&mut caller_env, tp, arg, span);
-                    tf_env.generics.insert(pid, gv);
+                let gv = if let Some(arg) = angle_args.get(idx) {
+                    self.generic_argument(&mut caller_env, tp, arg, span)
                 } else {
-                    unbound.insert(pid);
+                    GenericValue::Type(self.fresh())
+                };
+                subst.insert(pid, gv.clone());
+                tf_env.generics.insert(pid, gv);
+                type_param_ids.push(pid);
+            }
+            // Match trailing value arguments (e.g., `m` in `In(m)` or `xs` in `InBounds(xs)`)
+            // so trailing type parameters like `C` in `In = \key: InKey<C>, c: C, C` can be deduced.
+            if !extra_args.is_empty() && !trailing_params.is_empty() {
+                let mut bound_args: Vec<Option<&syntax::Argument>> =
+                    vec![None; trailing_params.len()];
+                let mut pos_idx = 0usize;
+                for arg in extra_args {
+                    if let Some(label) = &arg.name {
+                        if let Some(pos) = trailing_params
+                            .iter()
+                            .position(|p| p.name.value == label.value)
+                            && let Some(slot) = bound_args.get_mut(pos)
+                        {
+                            *slot = Some(arg);
+                        }
+                    } else {
+                        while bound_args.get(pos_idx).is_some_and(Option::is_some) {
+                            pos_idx += 1;
+                        }
+                        if let Some(slot) = bound_args.get_mut(pos_idx) {
+                            *slot = Some(arg);
+                            pos_idx += 1;
+                        }
+                    }
+                }
+                for (idx, param) in trailing_params.iter().enumerate() {
+                    if let Some(Some(arg)) = bound_args.get(idx) {
+                        let param_ty = param
+                            .bound
+                            .first()
+                            .map(|&ty| self.type_expr(&mut tf_env, ty))
+                            .unwrap_or(Ty::Unknown);
+                        let expected_arg = super::check::substitute(&param_ty, &subst);
+                        let mut arg_env = caller_env.clone();
+                        arg_env.shadow = true;
+                        let _ = self.expect(&mut arg_env, arg.value, &expected_arg);
+                    }
+                }
+            }
+            let mut unbound = HashSet::new();
+            for pid in type_param_ids {
+                if let Some(GenericValue::Type(actual)) = subst.get(&pid) {
+                    let norm = self.normalize(actual);
+                    if matches!(norm, Ty::Infer(_)) {
+                        unbound.insert(pid);
+                    } else {
+                        tf_env.generics.insert(pid, GenericValue::Type(norm));
+                    }
                 }
             }
             let ty = subject_param
@@ -945,7 +1229,10 @@ impl Checker<'_> {
                 .first()
                 .map(|&t| self.type_expr(&mut tf_env, t))?;
             let ty = self.normalize(&ty);
-            if ty == Ty::Unknown || ty_mentions_any_param(&ty, &unbound) {
+            if ty == Ty::Unknown
+                || matches!(ty, Ty::Infer(_))
+                || ty_mentions_any_param(&ty, &unbound)
+            {
                 None
             } else {
                 Some(ty)

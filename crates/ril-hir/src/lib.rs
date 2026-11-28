@@ -50,6 +50,7 @@ pub enum Intrinsic {
     Inner,
     Clone,
     Derive,
+    WithScoped,
     UnwindCtl,
     RecoverPanic,
     PanicMessage,
@@ -144,6 +145,7 @@ pub enum StdType {
     Result,
     Set,
     Derived,
+    Scoped,
     FieldMode,
     TypeKind,
     PanicReport,
@@ -440,6 +442,27 @@ impl Program {
         matches!(
             &self.file(def.name.span.file).ast.stmt(stmt).value.kind,
             StmtKind::Function(fun) if fun.signature.is_ctl
+        )
+    }
+
+    /// Returns `true` when `operation` is a `ctl` effect operation whose declared
+    /// return type is syntactically `never` (abort-only, never resumable).
+    pub fn is_abort_only_ctl_operation(&self, operation: DefinitionId) -> bool {
+        let def = self.definition(operation);
+        let Some(stmt) = def.stmt else {
+            return false;
+        };
+        let file = self.file(def.name.span.file);
+        let StmtKind::Function(fun) = &file.ast.stmt(stmt).value.kind else {
+            return false;
+        };
+        if !fun.signature.is_ctl {
+            return false;
+        }
+        matches!(
+            &file.ast.ty(fun.signature.result).value,
+            ril_syntax::syntax::Type::Named(path)
+                if matches!(path.segments.as_slice(), [seg] if seg.name.value == "never")
         )
     }
 
@@ -786,7 +809,12 @@ impl Program {
                     GuardKind::Invalid
                 }
             }
-            DefinitionKind::Primitive(_) if def.name.value == "KeyOf" => {
+            DefinitionKind::Primitive(_)
+                if matches!(
+                    def.name.value.as_str(),
+                    "KeyOf" | "Reflects" | "Implies" | "Ensures"
+                ) =>
+            {
                 GuardKind::StaticProofPrimitive(id)
             }
             DefinitionKind::Function | DefinitionKind::Primitive(_) => GuardKind::RuntimeFn(id),

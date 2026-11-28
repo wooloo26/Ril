@@ -232,6 +232,21 @@ pub(super) enum Phase {
 }
 
 #[derive(Clone)]
+pub(super) struct PendingClosureParamProof {
+    pub(super) cb_param_idx: usize,
+    pub(super) tf_id: DefinitionId,
+    pub(super) extra: Vec<Option<syntax::ExprId>>,
+    pub(super) def_file: FileId,
+    pub(super) formal_to_caller: HashMap<DefinitionId, syntax::ExprId>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ReturnProofRef {
+    Expr(syntax::ExprId),
+    Bare(DefinitionId, Span),
+}
+
+#[derive(Clone)]
 pub(super) struct Env {
     pub(super) file: FileId,
     pub(super) scope: ScopeId,
@@ -244,7 +259,9 @@ pub(super) struct Env {
     pub(super) expected_return: Option<Ty>,
     pub(super) inferred_return: Option<usize>,
     pub(super) return_scope: Option<Span>,
-    pub(super) return_proofs: Vec<syntax::ExprId>,
+    pub(super) return_proofs: Vec<ReturnProofRef>,
+    pub(super) pending_closure_param_proofs: Vec<PendingClosureParamProof>,
+    pub(super) callback_param_sigs: HashMap<DefinitionId, (FileId, syntax::Signature)>,
     pub(super) checking_fn_tail: bool,
     pub(super) active_defers: Vec<syntax::ExprId>,
     pub(super) shadow: bool,
@@ -277,6 +294,8 @@ impl Env {
             inferred_return: None,
             return_scope: None,
             return_proofs: Vec::new(),
+            pending_closure_param_proofs: Vec::new(),
+            callback_param_sigs: HashMap::new(),
             checking_fn_tail: false,
             active_defers: Vec::new(),
             shadow: false,

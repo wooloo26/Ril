@@ -108,7 +108,7 @@ eff Fail<E> {
 }
 
 fn run_fail(flag: bool) @io -> int {
-    with ctl Fail<str>::raise = \_err, _ -> {
+    with ctl Fail<str>::raise = \_err -> {
         Io::println("arm-body")
         80
     }
@@ -214,7 +214,7 @@ fn main() @io -> () {
 
     let mut abort_log: []str = []
     with {
-        ctl Abort::stop = \_ -> ()
+        ctl Abort::stop = \-> ()
         defer Array::push(mut abort_log, "a1")
         defer Array::push(mut abort_log, "a2")
         Abort::stop()

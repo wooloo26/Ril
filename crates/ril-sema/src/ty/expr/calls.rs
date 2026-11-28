@@ -191,6 +191,7 @@ impl Checker<'_> {
         local.inferred_return = None;
         local.return_scope = Some(self.ast(env.file).expr(body).span);
         local.return_proofs.clear();
+        let pending_cb_proofs = std::mem::take(&mut local.pending_closure_param_proofs);
         local.checking_fn_tail = false;
         local.active_defers.clear();
         let mut parameters = Vec::new();
@@ -219,13 +220,55 @@ impl Checker<'_> {
                 self.pattern(&mut local, pattern, &ty);
                 let mut ids = Vec::new();
                 self.collect_pattern_defs(&local, pattern, &mut ids);
-                for id in ids {
-                    if let Some(bound_ty) = self.bindings.get(&id).cloned() {
+                for id in &ids {
+                    if let Some(bound_ty) = self.bindings.get(id).cloned() {
                         self.seed_type_invariants(
                             &mut local,
-                            &crate::ty::dbm::Place::local(id),
+                            &crate::ty::dbm::Place::local(*id),
                             &bound_ty,
                         );
+                    }
+                }
+                if let [param_id] = ids.as_slice() {
+                    for p in pending_cb_proofs.iter().filter(|p| p.cb_param_idx == index) {
+                        if let Ok(lowered) = self.lower_type_fn(p.tf_id) {
+                            let mut scratch = local.refinements.dbm.clone();
+                            let mut arg_vals = Vec::with_capacity(1 + p.extra.len());
+                            arg_vals.push(crate::ty::proofs::ProofArgVal::Place(
+                                crate::ty::dbm::Place::local(*param_id),
+                            ));
+                            let mut ok = true;
+                            for opt in &p.extra {
+                                if let Some(e) = opt {
+                                    if let Some(v) = self.eval_callee_guard_arg(
+                                        env,
+                                        &mut scratch,
+                                        p.def_file,
+                                        *e,
+                                        &p.formal_to_caller,
+                                    ) {
+                                        arg_vals.push(v);
+                                    } else {
+                                        ok = false;
+                                        break;
+                                    }
+                                } else {
+                                    arg_vals.push(crate::ty::proofs::ProofArgVal::Const(0));
+                                }
+                            }
+                            if ok
+                                && let Some(pred) = self.instantiate_proof_pred(
+                                    &local,
+                                    &mut scratch,
+                                    &lowered.pred,
+                                    &arg_vals,
+                                )
+                            {
+                                scratch.assume(&pred);
+                                scratch.forget_temps();
+                                local.refinements.dbm = scratch;
+                            }
+                        }
                     }
                 }
             } else if let Some(name) = &item.name {
@@ -571,7 +614,51 @@ impl Checker<'_> {
                 }
                 self.expect(&mut arg_env, arg.value, &param_ty);
             } else {
+                // D6: if passing an anonymous closure to a HOF parameter whose `CallableType`
+                // carries static parameter proofs, seed those proofs into the closure's entry DBM.
+                if !env.shadow
+                    && matches!(
+                        self.ast(env.file).expr(arg.value).value,
+                        Expr::Closure { .. }
+                    )
+                    && let Some(callee_id) = def_id
+                    && let Some(stmt) = self.hir.definition(callee_id).stmt
+                {
+                    let def_file = self.hir.definition(callee_id).name.span.file;
+                    if let ril_syntax::syntax::StmtKind::Function(fun) =
+                        &self.ast(def_file).stmt(stmt).value.kind
+                        && let Some(fp) = fun.signature.params.get(index)
+                        && let Some(ty_id) = fp.ty
+                        && let ril_syntax::syntax::Type::Callable(cb_sig) =
+                            &self.ast(def_file).ty(ty_id).value
+                    {
+                        let cb_sig = (**cb_sig).clone();
+                        let mut formal_to_caller = std::collections::HashMap::new();
+                        for (fidx, fparam) in fun.signature.params.iter().enumerate() {
+                            if let Some(fname) = &fparam.name
+                                && let Some(fid) = self.resolve(fname.span)
+                                && let Some(Some(caller_arg)) = arg_by_formal.get(fidx)
+                            {
+                                formal_to_caller.insert(fid, *caller_arg);
+                            }
+                        }
+                        for (cb_idx, cb_param) in cb_sig.params.iter().enumerate() {
+                            for (tf_id, extra, _) in self.param_static_proofs(def_file, cb_param) {
+                                env.pending_closure_param_proofs.push(
+                                    crate::ty::check::PendingClosureParamProof {
+                                        cb_param_idx: cb_idx,
+                                        tf_id,
+                                        extra,
+                                        def_file,
+                                        formal_to_caller: formal_to_caller.clone(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
                 self.expect(env, arg.value, &param_ty);
+                env.pending_closure_param_proofs.clear();
             }
             if matches!(arg.mode, Mode::Mut | Mode::Shared | Mode::Ref)
                 && let Some(arg_ty) = self.types.get(&arg_span).cloned()
@@ -751,18 +838,38 @@ impl Checker<'_> {
         if !env.shadow
             && let Some(id) = def_id
         {
-            if self.hir.intrinsic(id) == Some(ril_hir::Intrinsic::Unreachable) {
-                if env.refinements.dbm.unsat {
-                    self.proved_ops.insert(span);
-                } else {
-                    self.error(
-                        Code::E0323,
-                        span,
-                        "unreachable() is not statically proved unreachable",
-                    );
+            if let Some((cb_file, cb_sig)) = env.callback_param_sigs.get(&id).cloned() {
+                for (cb_idx, cb_param) in cb_sig.params.iter().enumerate() {
+                    let Some(Some(subject_expr)) = arg_by_formal.get(cb_idx) else {
+                        continue;
+                    };
+                    for (tf_id, extra, guard_span) in self.param_static_proofs(cb_file, cb_param) {
+                        let arg_span = self.ast(env.file).expr(*subject_expr).span;
+                        let mut scratch = env.refinements.dbm.clone();
+                        let mut arg_vals = Vec::with_capacity(1 + extra.len());
+                        arg_vals.push(crate::ty::proofs::ProofArgVal::Expr(*subject_expr));
+                        for opt in extra {
+                            if let Some(e) = opt {
+                                arg_vals.push(crate::ty::proofs::ProofArgVal::Expr(e));
+                            } else {
+                                arg_vals.push(crate::ty::proofs::ProofArgVal::Const(0));
+                            }
+                        }
+                        self.verify_proof_obligation_with_scratch_code(
+                            env,
+                            &mut scratch,
+                            tf_id,
+                            &arg_vals,
+                            arg_span,
+                            guard_span,
+                            "callback argument does not satisfy static proof",
+                            Code::E0323,
+                        );
+                    }
                 }
+            } else {
+                self.check_call_param_proofs(env, id, &arg_by_formal, span);
             }
-            self.check_call_param_proofs(env, id, &arg_by_formal, span);
         }
         if !env.shadow
             && let Some(id) = def_id

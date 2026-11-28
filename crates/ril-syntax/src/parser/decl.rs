@@ -376,12 +376,15 @@ impl Parser<'_> {
             self.close(")")?;
         }
         let result_mode_span = result_mode_start.map(|start| start.join(self.last));
-        let result = self.ty()?;
-        let guards = if named && !parameter_types {
-            self.guards()?
+        let (result, leading_result_guard) = if !is_ctl {
+            self.ty_or_proof()?
         } else {
-            Vec::new()
+            (self.ty()?, None)
         };
+        let mut guards = if !is_ctl { self.guards()? } else { Vec::new() };
+        if let Some(leading) = leading_result_guard {
+            guards.insert(0, leading);
+        }
         Ok(Signature {
             is_ctl,
             params,
@@ -418,8 +421,11 @@ impl Parser<'_> {
         } else {
             None
         };
+        let mut leading_param_guard = None;
         let ty = if types_only && name.is_none() || self.eat(":") {
-            Some(self.ty()?)
+            let (ty_id, leading) = self.ty_or_proof()?;
+            leading_param_guard = leading;
+            Some(ty_id)
         } else if named
             && matches!(
                 self.current().kind,
@@ -431,11 +437,10 @@ impl Parser<'_> {
         } else {
             None
         };
-        let guards = if types_only {
-            Vec::new()
-        } else {
-            self.guards()?
-        };
+        let mut guards = self.guards()?;
+        if let Some(leading) = leading_param_guard {
+            guards.insert(0, leading);
+        }
         let default = if !types_only && self.eat("=") {
             Some(self.expr()?)
         } else {
@@ -451,6 +456,25 @@ impl Parser<'_> {
             guards,
             default,
         })
+    }
+
+    fn ty_or_proof(&mut self) -> Result<(crate::syntax::TypeId, Option<ExprId>)> {
+        let ty_id = self.ty()?;
+        if let crate::syntax::Type::Named(path) = self.ast.ty(ty_id).value.clone()
+            && self.tight("(")
+        {
+            let start = path.span;
+            let callee = self.ast.add_expr(start, crate::syntax::Expr::Path(path));
+            self.open("(", ")", Layout::List)?;
+            let args = self.list(")", Self::argument)?;
+            let span = start.join(self.last);
+            let call = self
+                .ast
+                .add_expr(span, crate::syntax::Expr::Call { callee, args });
+            let proof_ty = self.ast.add_ty(span, crate::syntax::Type::Proof(call));
+            return Ok((proof_ty, Some(call)));
+        }
+        Ok((ty_id, None))
     }
 
     fn guards(&mut self) -> Result<Vec<ExprId>> {

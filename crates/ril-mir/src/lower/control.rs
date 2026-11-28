@@ -364,11 +364,22 @@ impl Builder<'_, '_> {
         self.current = Some(no_block);
         let result = if let Some(no) = no {
             self.expr(no)?
+        } else if self
+            .global
+            .typed
+            .types
+            .get(&span)
+            .is_some_and(|t| *t != Ty::Unit)
+        {
+            self.terminate(Terminator::Unreachable);
+            self.register()
         } else {
             self.unit()
         };
         let no_normal = self.current.is_some();
-        self.join_with(join, &names, result);
+        if no_normal {
+            self.join_with(join, &names, result);
+        }
         self.scopes = scopes;
         self.locals = saved;
         if yes_normal || no_normal {

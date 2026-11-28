@@ -566,10 +566,8 @@ fn main() -> () {
 
     let p = Port::(8080)
     let sp = Span::(.{ lo: 2, hi: 5 })
-    if sp.lo > sp.hi {
-        unreachable()
-    }
+    let span_len = if sp.lo <= sp.hi { sp.hi - sp.lo }
     let xs = [10, 20, 30, 40, 50]
     let win = slice_window(xs, sp.lo, sp.hi)
-    assert(inner(p) == 8080 && len(win) == 3 && win[0] == 30 && win[2] == 50)
+    assert(inner(p) == 8080 && span_len == 3 && len(win) == 3 && win[0] == 30 && win[2] == 50)
 }

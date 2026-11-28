@@ -26,7 +26,7 @@ fn binary_rili_v32_roundtrip_and_tamper_detection() -> Result<(), String> {
     let iface = Driver
         .interface(&lib)
         .map_err(|diags| format!("interface failed: {diags:?}"))?;
-    assert_eq!(iface.format_version, 2);
+    assert_eq!(iface.format_version, 3);
     assert!(!iface.codegen_abi_hash.is_empty());
 
     let bin = iface.encode().map_err(|e| format!("encode failed: {e}"))?;

@@ -116,6 +116,19 @@ impl Checker<'_> {
                         env.refinements.dbm.unsat = true;
                     }
                 }
+                if result == Ty::Unit
+                    && env.refinements.dbm.unsat
+                    && let Some(&last_stmt) = statements.last()
+                    && matches!(
+                        self.ast(env.file).stmt(last_stmt).value.kind,
+                        StmtKind::Expr(e) if matches!(
+                            self.ast(env.file).expr(e).value,
+                            Expr::If { .. } | Expr::Match { .. }
+                        )
+                    )
+                {
+                    result = Ty::Never;
+                }
                 env.active_defers.truncate(saved_defers);
                 for arm_res in ctl_arm_results {
                     result = self.join(env, span, result, arm_res);
@@ -183,6 +196,19 @@ impl Checker<'_> {
                     if result == Ty::Never {
                         env.refinements.dbm.unsat = true;
                     }
+                }
+                if result == Ty::Unit
+                    && env.refinements.dbm.unsat
+                    && let Some(&last_stmt) = statements.last()
+                    && matches!(
+                        self.ast(env.file).stmt(last_stmt).value.kind,
+                        StmtKind::Expr(e) if matches!(
+                            self.ast(env.file).expr(e).value,
+                            Expr::If { .. } | Expr::Match { .. }
+                        )
+                    )
+                {
+                    result = Ty::Never;
                 }
                 env.active_defers.truncate(saved_defers);
                 for arm_res in arm_results {
@@ -274,7 +300,24 @@ impl Checker<'_> {
             }
             Expr::Index { base, index, .. } => {
                 let base_ty = self.expr(env, *base, None);
-                self.index(env, Some(*base), base_ty, *index, false, span)
+                let ty = self.index(env, Some(*base), base_ty.clone(), *index, false, span);
+                if !env.shadow
+                    && self.normalize(&base_ty) == Ty::Bytes
+                    && self.normalize(&ty) == Ty::Int
+                    && let Some(place) = self.resolve_place(env, id)
+                {
+                    env.refinements.dbm.add_le(
+                        crate::ty::dbm::Atom::Zero,
+                        crate::ty::dbm::Atom::Val(place.clone()),
+                        0,
+                    );
+                    env.refinements.dbm.add_le(
+                        crate::ty::dbm::Atom::Val(place),
+                        crate::ty::dbm::Atom::Zero,
+                        255,
+                    );
+                }
+                ty
             }
             Expr::Range { start, end, .. } => {
                 for &value in start.iter().chain(end) {
@@ -541,15 +584,20 @@ impl Checker<'_> {
                     }
                     self.assumption(&mut yes_env, condition, true);
                     self.assumption(&mut no_env, condition, false);
-                    if check_tail && no.is_some() {
+                    let implicit_else_unsat = no.is_none() && no_env.refinements.dbm.unsat;
+                    if check_tail && (no.is_some() || implicit_else_unsat) {
                         yes_env.checking_fn_tail = true;
                         no_env.checking_fn_tail = true;
                         tail_checked_inside = true;
                     }
                     let yes = self.expr(&mut yes_env, *yes, expected);
-                    let no = no
-                        .map(|no| self.expr(&mut no_env, no, expected))
-                        .unwrap_or(Ty::Unit);
+                    let no = if let Some(no) = no {
+                        self.expr(&mut no_env, *no, expected)
+                    } else if implicit_else_unsat {
+                        Ty::Never
+                    } else {
+                        Ty::Unit
+                    };
                     env.refinements = self.merge_refinements(&yes_env, &no_env, &yes, &no);
                     env.effects_seen.extend(yes_env.effects_seen);
                     env.effects_seen.extend(no_env.effects_seen);

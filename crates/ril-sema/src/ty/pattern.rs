@@ -783,7 +783,14 @@ impl Checker<'_> {
         if let Some(dbm) = merged_dbm {
             env.refinements.dbm = dbm;
         }
-        if self.useful(env, &prior, super::coverage::Shape::Any, input)
+        let is_ext_extensible = matches!(
+            input,
+            Ty::Adt(adt) if matches!(adt.kind, AdtKind::Sum | AdtKind::OpaqueSum)
+                && self.match_domain(env, input).is_none()
+        );
+        let dbm_exhaustive = !is_meta && remaining_env.refinements.dbm.unsat && !is_ext_extensible;
+        if !dbm_exhaustive
+            && self.useful(env, &prior, super::coverage::Shape::Any, input)
             && !matches!(input, Ty::Unknown | Ty::Never | Ty::Infer(_))
         {
             self.error(

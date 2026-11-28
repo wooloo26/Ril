@@ -33,6 +33,10 @@ pub use Result::(Ok, Err)
 -- the original snapshot; cannot escape the `derive` closure (`E0607`).
 pub opaque type Derived<T>
 
+-- Lexically confined handle introduced by `with_scoped`. Cannot escape its introducing
+-- callback (`E0607`) and supports `mut`/`ref` attenuation via `inner(mut s)` / `inner(ref s)`.
+pub opaque type Scoped<T>
+
 pkg meta fn compile_error_code(code: str, message: str) -> never
 
 -- Aborts compilation at static evaluation time with diagnostic `E0832` and `message`.
@@ -55,6 +59,7 @@ pub type LenTarget = \T -> match <T> {
 -- Fails `E0308` on sealed opaque types and `E0301` on non-wrappers.
 pub type Inner = \W -> match <W> {
     <Derived<let Payload>> -> <Derived<Inner<Payload>>>
+    <Scoped<let Payload>> -> <Payload>
     <Nominal<let Payload>> -> <Payload>
     _ -> match Reflect::type_kind(<W>) {
         Reflect::TypeKind::OpaqueValue |
@@ -111,18 +116,26 @@ pub type AtMost = \n: int, hi: int -> if n <= hi { <()> } else { <never> }
 pub type Between = \n: int, lo: int, hi: int -> if n >= lo && n <= hi { <()> } else { <never> }
 
 -- Static proof that `len(xs) > 0`.
-pub type NonEmpty = \T |> LenTarget, xs: T -> if len(xs) > 0 { <()> } else { <never> }
+pub type NonEmpty = \xs: T, T |> LenTarget -> if len(xs) > 0 { <()> } else { <never> }
 
 -- Static proof that `len(xs) == n`.
-pub type Len = \T |> LenTarget, xs: T, n: int -> if len(xs) == n { <()> } else { <never> }
+pub type Len = \xs: T, n: int, T |> LenTarget -> if len(xs) == n { <()> } else { <never> }
 
 -- Static proof that `len(xs) == len(ys)`.
-pub type SameLen = \A |> LenTarget, B |> LenTarget, xs: A, ys: B ->
+pub type SameLen = \xs: A, ys: B, A |> LenTarget, B |> LenTarget ->
     if len(xs) == len(ys) { <()> } else { <never> }
 
 -- Static proof that `0 <= i && i < len(xs)`.
-pub type InBounds = \T |> LenTarget, i: int, xs: T ->
+pub type InBounds = \i: int, xs: T, T |> LenTarget ->
     if i >= 0 && i < len(xs) { <()> } else { <never> }
+
+-- Static type function extracting the key/element type of a map, `Set<T>`, or `Derived<T>`.
+pub type InKey = \C -> match <C> {
+    <Derived<let Payload>> -> <InKey<Payload>>
+    <Set<let Elem>> -> <Elem>
+    <[let Key: let _ _]> -> <Key>
+    _ -> compile_error_code("E0301", "In requires a map or Set")
+}
 
 -- Static check accepting types that support `In`: maps, `Set<T>`, and `Derived<T>` wrapping any of them.
 pub type InTarget = \C, K -> match <C> {
@@ -145,15 +158,15 @@ pub type InTarget = \C, K -> match <C> {
     _ -> compile_error_code("E0301", "In requires a map or Set")
 }
 
-pkg meta fn has_key<K, C |> InTarget<K>>(c: C, key: K) -> bool
+pkg meta fn has_key<C>(c: C, key: InKey<C>) -> bool
 
 -- Static proof that `key` is a present member of map or `Set` `c`.
-pub type In = \K, C |> InTarget<K>, key: K, c: C -> if has_key(c, key) { <()> } else { <never> }
+pub type In = \key: InKey<C>, c: C, C -> if has_key(c, key) { <()> } else { <never> }
 
 -- Dual-phase length query returning scalar count for `str`, byte count for `bytes`,
 -- or element/entry count for arrays, maps, `Set<T>`, and `Derived` collections.
 -- Accepts plain or `ref` access on collections (`E0401` on `ref str` / `ref bytes`).
-pub fn len<T |> LenTarget>(via item: T) -> int |> Nat
+pub fn len<T |> LenTarget>(via item: T) -> Nat
 
 -- Dual-phase unwrapper projecting an accessible `.ril` nominal wrapper (or `Derived<W>`)
 -- to its payload (`()` for unit nominals). `inner(mut x)` is a scoped path projection.
@@ -188,17 +201,22 @@ pub fn clone<T |> SharedObject>(via value: T) -> new T
 -- ```
 pub fn derive<T |> SharedObject>(base: T, via update: fn(mut Derived<T>) @& -> ()) -> T
 
+-- Runs `body` with a lexically confined `Scoped<T>` view of `value`.
+-- The `Scoped<T>` handle cannot escape `body` (`E0607`) and `body` cannot invoke outer `ctl` effects.
+pub fn with_scoped<T, R>(via value: T, via body: fn(via Scoped<T>) @& -> infer R) -> infer R
+
 -- Synchronously discards a one-shot `ctl(...)` delimited continuation by unwinding its
 -- suspended frames and running their registered `defer` cleanups in LIFO order.
 --
 -- ```ril
--- eff Abort { ctl stop() -> never }
+-- eff Pause { ctl pause() -> () }
 -- fn run() -> str {
---     with ctl Abort::stop = \k -> {
+--     with ctl Pause::pause = \k -> {
 --         unwind_ctl(k)
 --         "aborted"
 --     }
---     Abort::stop()
+--     Pause::pause()
+--     "done"
 -- }
 -- ```
 pub fn unwind_ctl<T>(k: T) -> ()
@@ -206,10 +224,6 @@ pub fn unwind_ctl<T>(k: T) -> ()
 -- Dual-phase defect trap that unwinds active `defer` cleanups (or fails static evaluation
 -- with `E0831`) and never completes normally.
 pub fn panic(message: str) -> never
-
--- Statically proved unreachable branch. Requires the compiler's static prover to establish
--- that the call site is unreachable (`E0323`); never introduces `@panic`, `@abort`, or `@diverge`.
-pub fn unreachable() -> never
 
 -- Dual-phase assertion that calls `panic(message)` (or fails static evaluation with `E0830`)
 -- when `condition` is `false`.

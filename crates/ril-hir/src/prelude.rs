@@ -17,7 +17,7 @@ const LANGUAGE_PRIMITIVES: &[(PrimitivePhase, Visibility, &[&str])] = &[
     (
         PrimitivePhase::Static,
         Visibility::Public,
-        &["KeyOf", "Nominal"],
+        &["KeyOf", "Nominal", "Reflects", "Implies", "Ensures"],
     ),
 ];
 

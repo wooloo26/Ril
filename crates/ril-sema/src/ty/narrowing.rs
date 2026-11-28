@@ -641,6 +641,28 @@ impl Checker<'_> {
                 *dbm = Dbm::join(&left_dbm, &right_dbm);
             }
             Expr::Call { callee, args } => {
+                // Proof-carrying boolean return (`Reflects(P)` / `Implies(P)`).
+                if let Some(proofs) = env.refinements.call_proofs.get(&test) {
+                    for cp in proofs {
+                        if cp.is_payload {
+                            continue;
+                        }
+                        let should_apply = match cp.kind {
+                            super::proofs::ProofKind::Reflects => true,
+                            super::proofs::ProofKind::Implies => truth,
+                            _ => false,
+                        };
+                        if should_apply
+                            && let Some(pred) = cp.pred.map_atoms(&mut |ra| match ra {
+                                ReturnAtom::Caller(a) => Some(a.clone()),
+                                _ => None,
+                            })
+                        {
+                            let effective = if truth { pred } else { pred.negate() };
+                            dbm.assume(&effective);
+                        }
+                    }
+                }
                 if let Expr::Path(path) = &ast.expr(*callee).value
                     && let Some(id) = self.resolve(path.span)
                     && (matches!(
@@ -818,6 +840,23 @@ impl Checker<'_> {
         // 2. Direct Place.
         if let Some(place) = self.resolve_place(env, expr) {
             dbm.add_eq(target.clone(), Atom::Val(place), 0);
+            if let Expr::Index {
+                base, safe: false, ..
+            } = &self.ast(env.file).expr(expr).value
+            {
+                let base_ty = self
+                    .types
+                    .get(&self.ast(env.file).expr(*base).span)
+                    .cloned()
+                    .or_else(|| {
+                        self.resolve_local(env, *base)
+                            .and_then(|id| self.bindings.get(&id).cloned())
+                    });
+                if base_ty.is_some_and(|t| self.normalize(&t) == Ty::Bytes) {
+                    dbm.add_le(Atom::Zero, target.clone(), 0);
+                    dbm.add_le(target.clone(), Atom::Zero, 255);
+                }
+            }
             return;
         }
         let ast = self.ast(env.file);
@@ -1036,8 +1075,78 @@ impl Checker<'_> {
                         dbm.add_le(target.clone(), a, 0);
                     }
                 }
+                "&" => {
+                    // Two's-complement BigInt bitwise AND: if either operand is >= 0,
+                    // its infinite sign-bit prefix is 0, so `0 <= (a & b) <= nonneg_operand`.
+                    let a = self
+                        .resolve_place(env, *left)
+                        .map(Atom::Val)
+                        .unwrap_or_else(|| self.expr_to_atom(env, dbm, *left));
+                    let b = self
+                        .resolve_place(env, *right)
+                        .map(Atom::Val)
+                        .unwrap_or_else(|| self.expr_to_atom(env, dbm, *right));
+                    if dbm.is_nonneg(&b) {
+                        dbm.add_le(Atom::Zero, target.clone(), 0);
+                        dbm.add_le(target.clone(), b.clone(), 0);
+                    }
+                    if dbm.is_nonneg(&a) {
+                        dbm.add_le(Atom::Zero, target.clone(), 0);
+                        dbm.add_le(target.clone(), a, 0);
+                    }
+                }
+                "|" | "^" => {
+                    let a = self
+                        .resolve_place(env, *left)
+                        .map(Atom::Val)
+                        .unwrap_or_else(|| self.expr_to_atom(env, dbm, *left));
+                    let b = self
+                        .resolve_place(env, *right)
+                        .map(Atom::Val)
+                        .unwrap_or_else(|| self.expr_to_atom(env, dbm, *right));
+                    if dbm.is_nonneg(&a) && dbm.is_nonneg(&b) {
+                        dbm.add_le(Atom::Zero, target.clone(), 0);
+                    }
+                }
+                ">>" => {
+                    // Arithmetic right shift on non-negative `a` with `b >= 0`: `0 <= (a >> b) <= a`.
+                    let a = self
+                        .resolve_place(env, *left)
+                        .map(Atom::Val)
+                        .unwrap_or_else(|| self.expr_to_atom(env, dbm, *left));
+                    let b = self
+                        .resolve_place(env, *right)
+                        .map(Atom::Val)
+                        .unwrap_or_else(|| self.expr_to_atom(env, dbm, *right));
+                    if dbm.is_nonneg(&a) && dbm.is_nonneg(&b) {
+                        dbm.add_le(Atom::Zero, target.clone(), 0);
+                        dbm.add_le(target.clone(), a.clone(), 0);
+                        if dbm.is_pos(&a) && dbm.is_pos(&b) {
+                            dbm.add_le(target.clone(), a.clone(), -1);
+                        }
+                        if let (Some(ua), Some(lb)) = (dbm.ub(&a), dbm.lb(&b))
+                            && ua >= 0
+                            && lb >= 0
+                        {
+                            let shifted = if lb >= 127 { 0 } else { ua >> (lb as u32) };
+                            dbm.add_le(target.clone(), Atom::Zero, shifted);
+                        }
+                    }
+                }
                 _ => {}
             },
+            Expr::Index {
+                base, safe: false, ..
+            } => {
+                if self
+                    .types
+                    .get(&ast.expr(*base).span)
+                    .is_some_and(|t| self.normalize(t) == Ty::Bytes)
+                {
+                    dbm.add_le(Atom::Zero, target.clone(), 0);
+                    dbm.add_le(target.clone(), Atom::Zero, 255);
+                }
+            }
             Expr::Block { statements, .. } => {
                 if let Some(&last) = statements.last()
                     && let StmtKind::Expr(tail) = ast.stmt(last).value.kind
@@ -1148,7 +1257,7 @@ impl Checker<'_> {
         true
     }
 
-    fn expr_to_atom(&self, env: &Env, dbm: &mut Dbm, expr: ExprId) -> Atom {
+    pub(super) fn expr_to_atom(&self, env: &Env, dbm: &mut Dbm, expr: ExprId) -> Atom {
         if let Some(c) = self.const_int_in_dbm(env, dbm, expr) {
             if c == 0 {
                 return Atom::Zero;
@@ -1192,6 +1301,7 @@ impl Checker<'_> {
         }
         match &ast.expr(expr).value {
             Expr::Array(items) => Some(items.len()),
+            Expr::Map(entries) if entries.is_empty() => Some(0),
             Expr::Literal(lit) => match super::literal(lit).ok()? {
                 Value::Str(s) => Some(s.chars().count()),
                 Value::Bytes(b) => Some(b.len()),
@@ -1226,6 +1336,11 @@ impl Checker<'_> {
         }
         let ast = self.ast(env.file);
         match &ast.expr(expr).value {
+            Expr::Wrap { args, .. } => {
+                if let [arg] = args.as_slice() {
+                    self.constrain_len_expr(env, dbm, target, arg.value);
+                }
+            }
             Expr::Call { callee, args } => {
                 if let Expr::Path(path) = &ast.expr(*callee).value
                     && let Some(id) = self.resolve(path.span)
@@ -2747,7 +2862,7 @@ impl Checker<'_> {
                         });
                         return true;
                     }
-                    if matches!(intr, Some(Intrinsic::Panic | Intrinsic::Unreachable)) {
+                    if matches!(intr, Some(Intrinsic::Panic)) {
                         return false;
                     }
                     // Known pure user/stdlib call: check callable effects/state if already declared.

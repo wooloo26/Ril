@@ -7,7 +7,7 @@ use ril/map
 pub opaque type Set<T>([T: ()])
 
 -- Creates a new empty `Set<T>`.
-pub fn empty<T>() -> new Set<T> {
+pub fn empty<T>() -> new Set<T> |> Len(0) {
     Set::([:])
 }
 

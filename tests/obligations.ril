@@ -945,8 +945,6 @@ fn lookup_via_contains(m: [str: int], k: str) -> int {
 fn lookup_via_safe_index(m: [str: int], k: str) -> int {
     if m?[k] != None {
         m[k]
-    } else if let Some(_) = m?[k] {
-        unreachable()
     } else {
         0
     }
@@ -1013,50 +1011,162 @@ fn bad_set(mut s: Set<str>, x: str) &mut -> bool {
     -- ^ E0323
 }
 
--- @case unreachable_proved_in_dead_branches_and_defer compile-pass
-fn proved_dead(x: int, xs: []int |> NonEmpty, m: [str: int], k: str |> In(m)) -> int {
-    defer {
-        if false {
-            unreachable()
-        }
-    }
-    if x > 0 && x < 0 {
-        unreachable()
-    }
-    if len(m) == 0 {
-        unreachable()
-    }
-    let [head, ..] = xs else { unreachable() }
-    match x >= 0 {
-        true -> head
-        false -> head + 1
+-- @case dbm_unsat_match_if_block_and_let_irrefutable compile-pass
+type HttpClass(int) |> Between(100, 599)
+
+fn classify_http(c: HttpClass) -> str {
+    match inner(c) {
+        100..=199 -> "info"
+        200..=299 -> "ok"
+        300..=399 -> "redirect"
+        400..=499 -> "client"
+        500..=599 -> "server"
     }
 }
 
--- @case unreachable_reachable_call_is_e0323 compile-fail E0323
-fn bad_unreachable(x: int) -> int {
-    if x > 0 {
-        unreachable()
-        -- ^ E0323
-    } else {
+fn sign_no_else(x: int) -> int {
+    if x < 0 {
+        -1
+    } else if x == 0 {
         0
+    } else if x > 0 {
+        1
     }
 }
 
--- @case unreachable_first_class_decay_is_e0534 compile-fail E0534
-fn bad_decay() -> fn() -> never {
-    unreachable
-    -- ^ E0534
+fn sign_block_tail(x: int) -> int {
+    if x < 0 { return -1 }
+    if x == 0 { return 0 }
+    if x > 0 { return 1 }
 }
 
--- @case unreachable_f64_nan_not_unsat_is_e0323 compile-fail E0323
+fn irrefutable_nonempty_and_in(
+    xs: []int |> NonEmpty,
+    m: [str: int],
+    k: In(m),
+) -> int {
+    let [head, ..] = xs
+    let v = m[k]
+    head + v
+}
+
+fn bitwise_and_shift_bounds(v: Between(0, 65535), raw: bytes) -> Between(0, 255) {
+    let hi = (v >> 8) & 0xFF
+    let lo = v & 0xFF
+    if len(raw) > 0 {
+        raw[0]
+    } else if hi > 0 {
+        hi
+    } else {
+        lo
+    }
+}
+
+-- @case dbm_f64_nan_not_exhaustive_is_e0351 compile-fail E0351
 fn nan_guard(x: f64) -> int {
-    if !(x < 0.0) && !(x >= 0.0) {
-        unreachable()
-        -- ^ E0323
-    } else {
-        0
+    if x < 0.0 {
+        -1
+    } else if x >= 0.0 {
+        -- ^ E0351
+        1
     }
+}
+
+-- @case reflects_implies_and_ensures_compile_pass compile-pass
+fn is_valid_slice(lo: int, hi: int, xs: []int) -> bool
+    |> Reflects(Between(lo, 0, hi) && AtMost(hi, len(xs)))
+{
+    lo >= 0 && lo <= hi && hi <= len(xs)
+}
+
+fn is_pos_strict(x: int) -> bool |> Implies(Positive(x)) {
+    x > 10
+}
+
+fn ensure_key(mut m: [str: int], k: str) &mut -> () |> Ensures(In(k, m)) {
+    if !Map::contains(ref m, k) {
+        m[k] = 0
+    }
+}
+
+fn use_combinators(xs: []int, a: int, b: int, x: int, mut m: [str: int], k: str) &mut -> int {
+    let part: []int = if is_valid_slice(a, b, xs) { xs[a..b] } else { [] }
+    let q = if is_pos_strict(x) { 100 / x } else { 0 }
+    ensure_key(mut m, k)
+    m[k] += 1
+    len(part) + q + m[k]
+}
+
+-- @case implies_false_branch_not_negated_is_e0361 compile-fail E0361
+fn conservative_zero(x: int) -> bool |> Implies(x == 0) {
+    false
+}
+fn bad_else_negation(x: int) -> int {
+    if conservative_zero(x) {
+        0
+    } else {
+        10 / x
+        -- ^ E0361
+    }
+}
+
+-- @case reflects_unproved_false_branch_is_e0323 compile-fail E0323
+fn bad_reflects(x: int) -> bool |> Reflects(Positive(x)) {
+    x > 10
+    -- ^ E0323
+}
+
+-- @case hof_callback_static_proof_compile_pass compile-pass
+fn map_indexed<T, R>(
+    xs: []T,
+    via f: fn(i: InBounds(xs), x: T) @& -> R,
+) -> new []R |> SameLen(xs) {
+    let mut out: []R = []
+    for 0..len(xs) as i {
+        Array::push(mut out, f(i, xs[i]))
+    }
+    out
+}
+
+fn add_same_len(xs: []int, ys: []int |> SameLen(xs)) -> new []int |> SameLen(xs) {
+    map_indexed(xs, \i, x -> x + ys[i])
+}
+
+-- @case hof_callback_unproved_call_is_e0323 compile-fail E0323
+fn bad_hof(xs: []int, f: fn(i: InBounds(xs)) -> int) -> int {
+    f(0)
+    -- ^ E0323
+}
+
+-- @case scoped_handle_attenuation_and_confinement_compile_pass compile-pass
+type Tx = .{ var balance: int }
+
+fn read_balance(ref s: Scoped<Tx>) -> int {
+    inner(ref s).balance
+}
+
+fn run_tx(mut tx: Tx) &mut -> int {
+    with_scoped(mut tx, \mut s -> {
+        let before = read_balance(ref s)
+        inner(mut s).balance += 10
+        before + inner(ref s).balance
+    })
+}
+
+-- @case scoped_handle_escape_return_is_e0607 compile-fail E0607 stage=access
+type Tx = .{ var balance: int }
+
+fn bad_escape(tx: Tx) -> Scoped<Tx> {
+    with_scoped(tx, \ref s -> s)
+    -- ^ E0607
+}
+
+-- @case scoped_handle_by_value_inner_is_e0406 compile-fail E0406
+type Tx = .{ var balance: int }
+
+fn bad_inner_by_value(tx: Tx) -> Tx {
+    with_scoped(tx, \s -> inner(s))
+    -- ^ E0406
 }
 
 -- @case exact_slice_length_conservation compile-pass
@@ -1082,8 +1192,8 @@ fn slice_conservation(xs: []int, ys: []int |> SameLen(xs), a: int, b: int) -> in
         let left = xs[..a]
         let right = xs[a..]
         let _ = takes_len(xs, a, left)
-        if len(left) + len(right) != len(xs) {
-            unreachable()
+        if len(left) + len(right) == len(xs) {
+            total += len(left) + len(right)
         }
     }
     if let Some(win) = xs?[a..b] {
@@ -1110,8 +1220,8 @@ fn use_invariants(p: Port, sp: Span, pr: Pair, xs: NonEmptyList<int>, nz: NonZer
     let a = 1000 / inner(p)
     let b = 100 / inner(nz)
     let c = inner(xs)[0]
-    let d = if sp.lo > sp.hi { unreachable() } else { sp.hi - sp.lo }
-    let e = if pr.0 > pr.1 { unreachable() } else { pr.1 - pr.0 }
+    let d = if sp.lo <= sp.hi { sp.hi - sp.lo }
+    let e = if pr.0 <= pr.1 { pr.1 - pr.0 }
     let p_const = Port::(8080)
     let sp_const = Span::(.{ lo: 1, hi: 5 })
     let pr_const = Pair::(2, 9)

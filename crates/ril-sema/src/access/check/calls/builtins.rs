@@ -90,12 +90,47 @@ impl Analyzer<'_> {
                 return Datum::source(span, Access::Mut, true);
             }
             "inner" => {
+                if let Some(arg0) = syntax.first() {
+                    let arg0_ty = self.ty(self.ast(ctx.file).expr(arg0.value).span);
+                    let is_scoped = matches!(
+                        arg0_ty,
+                        Ty::Adt(adt)
+                            if self.program.hir.std_type(adt.definition)
+                                == Some(ril_hir::StdType::Scoped)
+                    );
+                    if is_scoped && !matches!(arg0.mode, Mode::Ref | Mode::Mut) {
+                        self.error(
+                            Code::E0406,
+                            span,
+                            "Scoped<T> cannot be unwrapped by value; use inner(ref s) or inner(mut s)",
+                        );
+                    }
+                }
                 if let Some((_, Mode::Mut, value)) = args.iter().find(|(index, _, _)| *index == 0)
                     && self.program.is_value(self.ty(span))
                 {
                     self.mutate(ctx, ledger, value, span);
                 }
                 return first.cloned().unwrap_or_default();
+            }
+            "with_scoped" => {
+                if let Some((_, Mode::Mut, value)) = args.first() {
+                    self.mutate(ctx, ledger, value, span);
+                }
+                if let Some((_, _, callback)) = args.iter().find(|(i, _, _)| *i == 1) {
+                    let cb_ty = syntax.get(1).map_or(&Ty::Unknown, |arg| {
+                        self.ty(self.ast(ctx.file).expr(arg.value).span)
+                    });
+                    if callback.uses_ctl_handler || self.has_unhandled_ctl(ctx, callback, cb_ty) {
+                        self.error(
+                            Code::E0607,
+                            span,
+                            "with_scoped callback cannot invoke outer ctl effects",
+                        );
+                    }
+                    self.invoke_callable_obligations(ctx, ledger, callback, span);
+                }
+                return Datum::default();
             }
             "derive" => {
                 if let Some((_, _, callback)) = args.iter().find(|(i, _, _)| *i == 1) {

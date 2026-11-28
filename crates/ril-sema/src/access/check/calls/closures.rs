@@ -224,7 +224,15 @@ impl Analyzer<'_> {
                         "new parameter requires a non-linear shared object",
                     );
                 }
-                let mut value = if is_value && !is_must_consume {
+                let is_scoped = param_ty.is_some_and(|ty| {
+                    matches!(
+                        ty,
+                        Ty::Adt(adt)
+                            if self.program.hir.std_type(adt.definition)
+                                == Some(ril_hir::StdType::Scoped)
+                    )
+                });
+                let mut value = if is_value && !is_must_consume && !is_scoped {
                     Datum::default()
                 } else {
                     let mut datum = Datum::source(name.span, mode, p.mode == Mode::New);
@@ -266,7 +274,15 @@ impl Analyzer<'_> {
                 value.transform(&mut |origin| {
                     origin.dependencies.insert(name.span.into());
                     origin.enter_formal(inner.owner, p.mode);
-                    if matches!(param_ty, Some(Ty::Draft(_))) {
+                    let is_scoped = param_ty.is_some_and(|ty| {
+                        matches!(
+                            ty,
+                            Ty::Adt(adt)
+                                if self.program.hir.std_type(adt.definition)
+                                    == Some(ril_hir::StdType::Scoped)
+                        )
+                    });
+                    if matches!(param_ty, Some(Ty::Draft(_))) || is_scoped {
                         origin.confined = Some(node.span);
                         origin.draft = true;
                     }

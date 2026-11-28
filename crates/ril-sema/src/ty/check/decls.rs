@@ -235,8 +235,14 @@ impl Checker<'_> {
             .enumerate()
         {
             if !p.is_meta {
+                if let Some(ty_id) = p.ty
+                    && let Some((tf_id, angle_args, span)) =
+                        self.bare_proof_type_info(local.file, ty_id)
+                {
+                    self.check_static_proof_bare(&mut local, tf_id, &angle_args, span, &ty.ty);
+                }
                 for &guard in &p.guards {
-                    self.check_guard(&mut local, guard, &ty.ty, &call.result);
+                    self.check_guard(&mut local, guard, &ty.ty, &call.result, false);
                 }
                 if let Some(default) = p.default {
                     self.check_default_param_proofs(&mut local, fun, index, default);
@@ -249,6 +255,14 @@ impl Checker<'_> {
                 && let Some(name) = &p.name
                 && let Some(param_id) = self.resolve(name.span)
             {
+                if let Some(ty_id) = p.ty
+                    && let ril_syntax::syntax::Type::Callable(cb_sig) =
+                        &self.ast(local.file).ty(ty_id).value
+                {
+                    local
+                        .callback_param_sigs
+                        .insert(param_id, (local.file, (**cb_sig).clone()));
+                }
                 self.seed_type_invariants(
                     &mut local,
                     &crate::ty::dbm::Place::local(param_id),
@@ -265,10 +279,18 @@ impl Checker<'_> {
             normalized
         };
         local.return_proofs.clear();
+        if let Some((tf_id, angle_args, span)) =
+            self.bare_proof_type_info(local.file, fun.signature.result)
+        {
+            self.check_static_proof_bare(&mut local, tf_id, &angle_args, span, &return_subject);
+            local
+                .return_proofs
+                .push(super::ReturnProofRef::Bare(tf_id, span));
+        }
         for &guard in &fun.signature.guards {
-            self.check_guard(&mut local, guard, &return_subject, &call.result);
+            self.check_guard(&mut local, guard, &return_subject, &call.result, true);
             if self.hir.is_static_proof_guard(local.file, guard) {
-                local.return_proofs.push(guard);
+                local.return_proofs.push(super::ReturnProofRef::Expr(guard));
             }
         }
         self.collect_export_proofs(local.file, id, fun);
@@ -494,7 +516,14 @@ impl Checker<'_> {
                     && !matches!(inferred, Ty::Unknown | Ty::Never)
                 {
                     let shape = self.pattern_shape(local, *pattern, &inferred);
-                    if self.useful(local, &[shape], crate::ty::coverage::Shape::Any, &inferred) {
+                    let dbm_irrefutable = value.is_some_and(|val_expr| {
+                        let mut neg_env = local.clone();
+                        self.negate_pattern_proofs(&mut neg_env, *pattern, val_expr);
+                        neg_env.refinements.dbm.unsat
+                    });
+                    if !dbm_irrefutable
+                        && self.useful(local, &[shape], crate::ty::coverage::Shape::Any, &inferred)
+                    {
                         self.error(
                             Code::E0345,
                             self.ast(local.file).pattern(*pattern).span,
@@ -720,6 +749,40 @@ impl Checker<'_> {
                     TypeDefinition::Function(params, body) => {
                         local.phase = Phase::TypeEval;
                         local.checking_type_template = true;
+                        // Style A well-formedness: if a type function starts with a value
+                        // parameter, all value parameters must precede trailing type parameters,
+                        // and value parameters may not carry defaults when trailing type
+                        // parameters are present.
+                        if params
+                            .first()
+                            .is_some_and(crate::ty::forms::is_value_generic_param)
+                        {
+                            let v = params
+                                .iter()
+                                .take_while(|p| crate::ty::forms::is_value_generic_param(p))
+                                .count();
+                            let (value_params, tail_params) = params.split_at(v);
+                            for p in tail_params {
+                                if crate::ty::forms::is_value_generic_param(p) {
+                                    self.error(
+                                        Code::E0120,
+                                        p.name.span,
+                                        "type function value parameters must precede trailing type parameters",
+                                    );
+                                }
+                            }
+                            if !tail_params.is_empty() {
+                                for p in value_params {
+                                    if p.default.is_some() {
+                                        self.error(
+                                            Code::E0316,
+                                            p.name.span,
+                                            "value parameter cannot have a default when trailing type parameters are present",
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         self.validate_defaults(&local, params);
                         self.generic_env(&mut local, params);
                         let ty = self.expr(&mut local, *body, None);
@@ -815,40 +878,42 @@ impl Checker<'_> {
             }
             if op_is_ctl {
                 let ans = answer_ty.cloned().unwrap_or_else(|| self.fresh());
-                let k_params = if self.normalize(&op_result) == Ty::Unit {
-                    Vec::new()
-                } else {
-                    vec![crate::ty::Parameter {
+                if !self.hir.is_abort_only_ctl_operation(operation) {
+                    let k_params = if self.normalize(&op_result) == Ty::Unit {
+                        Vec::new()
+                    } else {
+                        vec![crate::ty::Parameter {
+                            label: None,
+                            mode: Mode::Plain,
+                            ty: op_result,
+                            optional: false,
+                            is_meta: false,
+                        }]
+                    };
+                    let norm_ans = self.normalize(&ans);
+                    let k_result_mode = if self.is_value_ty(env, &norm_ans) {
+                        Mode::Plain
+                    } else {
+                        Mode::New
+                    };
+                    let k_ty = Ty::Callable(Arc::new(Callable {
+                        is_ctl: true,
+                        parameters: k_params,
+                        result: ans.clone(),
+                        result_mode: k_result_mode,
+                        effects: Vec::new(),
+                        open_effects: false,
+                        state: Vec::new(),
+                        open_state: false,
+                    }));
+                    expected.parameters.push(crate::ty::Parameter {
                         label: None,
                         mode: Mode::Plain,
-                        ty: op_result,
+                        ty: k_ty,
                         optional: false,
                         is_meta: false,
-                    }]
-                };
-                let norm_ans = self.normalize(&ans);
-                let k_result_mode = if self.is_value_ty(env, &norm_ans) {
-                    Mode::Plain
-                } else {
-                    Mode::New
-                };
-                let k_ty = Ty::Callable(Arc::new(Callable {
-                    is_ctl: true,
-                    parameters: k_params,
-                    result: ans.clone(),
-                    result_mode: k_result_mode,
-                    effects: Vec::new(),
-                    open_effects: false,
-                    state: Vec::new(),
-                    open_state: false,
-                }));
-                expected.parameters.push(crate::ty::Parameter {
-                    label: None,
-                    mode: Mode::Plain,
-                    ty: k_ty,
-                    optional: false,
-                    is_meta: false,
-                });
+                    });
+                }
                 expected.result = ans.clone();
                 expected.result_mode = Mode::Infer;
                 let actual = self.expect(env, handler.value, &Ty::Callable(Arc::new(expected)));
@@ -1002,10 +1067,7 @@ impl Checker<'_> {
                             span,
                             "meta fn requires direct saturated application",
                         );
-                    } else if !callee
-                        && (self.hir.has_static_param_proof(id)
-                            || self.hir.intrinsic(id) == Some(ril_hir::Intrinsic::Unreachable))
-                    {
+                    } else if !callee && self.hir.has_static_param_proof(id) {
                         self.error(
                             Code::E0534,
                             span,

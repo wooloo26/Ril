@@ -295,7 +295,7 @@ impl Parser<'_> {
         Ok(value)
     }
 
-    fn argument(&mut self) -> Result<Argument> {
+    pub(super) fn argument(&mut self) -> Result<Argument> {
         let name = if matches!(self.current().kind, Kind::Word(_)) && self.next_text() == ":" {
             let name = self.name(Some(Word::Value), false)?;
             self.require(":")?;

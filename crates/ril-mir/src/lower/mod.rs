@@ -34,6 +34,7 @@ enum NativeBody<'a> {
     CtlArmAdapter {
         op_arity: usize,
         abort_k_first: bool,
+        omit_k: bool,
     },
     Accessor(&'a [(bool, Member)]),
     Constructor(&'a str, usize),
@@ -125,7 +126,7 @@ struct Lowering<'a> {
     closure_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
     defer_index: HashMap<(FileId, ExprId), Vec<FunctionId>>,
     stmt_thunk_index: HashMap<(FileId, Span), Vec<FunctionId>>,
-    adapter_index: HashMap<(usize, bool), FunctionId>,
+    adapter_index: HashMap<(usize, bool, bool), FunctionId>,
     used_symbols: HashSet<String>,
     source_locs: Vec<SourceLocEntry>,
     effect_ops: HashMap<String, u64>,
@@ -168,6 +169,7 @@ enum Work {
     CtlArmAdapter {
         op_arity: usize,
         abort_k_first: bool,
+        omit_k: bool,
     },
 }
 
@@ -260,8 +262,9 @@ impl<'a> Lowering<'a> {
             Work::CtlArmAdapter {
                 op_arity,
                 abort_k_first,
+                omit_k,
             } => {
-                let key = (*op_arity, *abort_k_first);
+                let key = (*op_arity, *abort_k_first, *omit_k);
                 if let Some(&func) = self.adapter_index.get(&key) {
                     return func;
                 }
@@ -522,14 +525,16 @@ impl<'a> Lowering<'a> {
                 Work::CtlArmAdapter {
                     op_arity,
                     abort_k_first,
+                    omit_k,
                 } => (
                     "ctl_arm",
                     Span::new(FileId::BUILTIN, 0, 0),
                     self.typed.hir.entry,
-                    format!("ctl_arm_adapter_{op_arity}_{abort_k_first}"),
+                    format!("ctl_arm_adapter_{op_arity}_{abort_k_first}_{omit_k}"),
                     NativeBody::CtlArmAdapter {
                         op_arity,
                         abort_k_first,
+                        omit_k,
                     },
                     &[][..],
                     Vec::new(),
@@ -605,6 +610,7 @@ impl<'a> Lowering<'a> {
             NativeBody::CtlArmAdapter {
                 op_arity,
                 abort_k_first,
+                omit_k,
             } => {
                 let entry_params = builder.params(entry);
                 let args_tuple = entry_params
@@ -621,12 +627,14 @@ impl<'a> Lowering<'a> {
                 if abort_k_first {
                     builder.runtime("ril_rt_abort_ctl", vec![k]);
                 }
-                let mut call_args = Vec::with_capacity(op_arity + 1);
+                let mut call_args = Vec::with_capacity(op_arity + usize::from(!omit_k));
                 for index in 0..op_arity {
                     let idx = builder.integer(&index.to_string());
                     call_args.push(builder.runtime("ril_rt_load", vec![args_tuple, idx]));
                 }
-                call_args.push(if abort_k_first { builder.unit() } else { k });
+                if !omit_k {
+                    call_args.push(if abort_k_first { builder.unit() } else { k });
+                }
                 builder.invoke_closure(handler, call_args)
             }
             NativeBody::Accessor(path) => {
@@ -1246,21 +1254,24 @@ impl<'a> Builder<'_, 'a> {
                 let op_arity = self.global.declaration(operation).map_or(0, |decl| {
                     decl.signature.params.iter().filter(|p| !p.is_meta).count()
                 });
-                let abort_k_first = matches!(
-                    &self.ast().expr(handler.value).value,
-                    Expr::Closure { params, .. }
-                        if params.last().is_some_and(|p| {
-                            p.name.as_ref().is_some_and(|n| n.value == "_")
-                                || p.pattern.is_some_and(|pat| {
-                                    matches!(self.ast().pattern(pat).value, Pattern::Wildcard)
-                                })
-                        })
-                );
+                let omit_k = self.global.typed.hir.is_abort_only_ctl_operation(operation);
+                let abort_k_first = omit_k
+                    || matches!(
+                        &self.ast().expr(handler.value).value,
+                        Expr::Closure { params, .. }
+                            if params.last().is_some_and(|p| {
+                                p.name.as_ref().is_some_and(|n| n.value == "_")
+                                    || p.pattern.is_some_and(|pat| {
+                                        matches!(self.ast().pattern(pat).value, Pattern::Wildcard)
+                                    })
+                            })
+                    );
                 let env = self.runtime("ril_rt_tuple", Vec::new());
                 self.runtime("ril_rt_append", vec![env, value]);
                 let adapter_fn = self.global.queue(Work::CtlArmAdapter {
                     op_arity,
                     abort_k_first,
+                    omit_k,
                 });
                 self.box_closure(adapter_fn, 2, env)
             } else {

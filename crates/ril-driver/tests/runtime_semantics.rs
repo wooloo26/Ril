@@ -195,10 +195,7 @@ fn main() @io -> () {
     for 0..100 as i {
         var cleaned = 0
         let v = with {
-            ctl Stop::halt = \n, k -> {
-                unwind_ctl(k)
-                n
-            }
+            ctl Stop::halt = \n -> n
             defer { cleaned += 1 }
             Stop::halt(i)
         }

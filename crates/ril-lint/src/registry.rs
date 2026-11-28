@@ -523,6 +523,15 @@ pub const UNEXPECTED_BEHAVIOR_IN_PUB: LintDescriptor = LintDescriptor {
     fix_safety: None,
     tags: NO_TAGS,
 };
+pub const REDUNDANT_PROOF_BASE_TYPE: LintDescriptor = LintDescriptor {
+    id: "redundant_proof_base_type",
+    category: LintCategory::Style,
+    default_level: LintLevel::Warn,
+    stage: LintStage::Typed,
+    summary: "Base type before `|>` is redundant when the leading static proof uniquely determines it",
+    fix_safety: Some(FixSafety::Safe),
+    tags: UNNECESSARY,
+};
 
 pub const ALL_LINTS: &[&LintDescriptor] = &[
     &CANNOT_SUPPRESS_ERROR,
@@ -579,6 +588,7 @@ pub const ALL_LINTS: &[&LintDescriptor] = &[
     &TOO_MANY_ARGUMENTS,
     &LARGE_FUNCTION,
     &UNEXPECTED_BEHAVIOR_IN_PUB,
+    &REDUNDANT_PROOF_BASE_TYPE,
 ];
 
 pub fn find_rule(id: &str) -> Option<&'static LintDescriptor> {

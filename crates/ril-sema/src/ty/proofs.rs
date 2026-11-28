@@ -18,6 +18,16 @@ use super::{
     forms::partition_type_fn_params,
 };
 
+/// Polarity/modality of a static proof in `.rili` exports and call return proofs.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub(crate) enum ProofKind {
+    #[default]
+    Plain,
+    Reflects,
+    Implies,
+    Ensures,
+}
+
 /// Canonical static proof recorded in `.rili` function exports for ABI hashing and variance checking.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExportProof {
@@ -25,20 +35,52 @@ pub struct ExportProof {
     pub(crate) pred: Option<ProofPred<ProofAtom>>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) fallback: String,
+    #[serde(default)]
+    pub(crate) kind: ProofKind,
 }
 
 /// Checks whether a set of exported static proofs semantically entails every target exported proof.
 pub(crate) fn export_proofs_entail(assumptions: &[ExportProof], targets: &[ExportProof]) -> bool {
-    let dbm_assumptions: Vec<ProofPred<ProofAtom>> =
-        assumptions.iter().filter_map(|p| p.pred.clone()).collect();
+    let plain_assumptions: Vec<ProofPred<ProofAtom>> = assumptions
+        .iter()
+        .filter(|p| p.kind == ProofKind::Plain)
+        .filter_map(|p| p.pred.clone())
+        .collect();
+    let ensures_assumptions: Vec<ProofPred<ProofAtom>> = assumptions
+        .iter()
+        .filter(|p| p.kind == ProofKind::Ensures)
+        .filter_map(|p| p.pred.clone())
+        .collect();
+    let implies_assumptions: Vec<ProofPred<ProofAtom>> = assumptions
+        .iter()
+        .filter(|p| matches!(p.kind, ProofKind::Reflects | ProofKind::Implies))
+        .filter_map(|p| p.pred.clone())
+        .collect();
+    let reflects_assumptions: Vec<ProofPred<ProofAtom>> = assumptions
+        .iter()
+        .filter(|p| p.kind == ProofKind::Reflects)
+        .filter_map(|p| p.pred.clone())
+        .collect();
     for target in targets {
         if let Some(ref pred) = target.pred {
-            if !preds_entail(&dbm_assumptions, pred) {
+            let ok = match target.kind {
+                ProofKind::Plain => preds_entail(&plain_assumptions, pred),
+                ProofKind::Ensures => preds_entail(&ensures_assumptions, pred),
+                ProofKind::Implies => preds_entail(&implies_assumptions, pred),
+                ProofKind::Reflects => {
+                    !reflects_assumptions.is_empty()
+                        && preds_entail(&reflects_assumptions, pred)
+                        && reflects_assumptions
+                            .iter()
+                            .all(|a| preds_entail(std::slice::from_ref(pred), a))
+                }
+            };
+            if !ok {
                 return false;
             }
         } else if !assumptions
             .iter()
-            .any(|a| a.pred.is_none() && a.fallback == target.fallback)
+            .any(|a| a.pred.is_none() && a.kind == target.kind && a.fallback == target.fallback)
         {
             return false;
         }
@@ -74,6 +116,7 @@ pub(super) struct CallReturnProof {
     pub(super) pred: ProofPred<ReturnAtom>,
     /// True when the proof constrains the `Some(v)` / `Ok(v)` payload of `?T` / `!<T, E>`.
     pub(super) is_payload: bool,
+    pub(super) kind: ProofKind,
 }
 
 /// Linear difference expression used when lowering Type-Function bodies and runtime guards.
@@ -490,7 +533,6 @@ impl Checker<'_> {
                             Intrinsic::CompileError
                                 | Intrinsic::CompileErrorCode
                                 | Intrinsic::Panic
-                                | Intrinsic::Unreachable
                         )
                     )
                 {
@@ -959,6 +1001,74 @@ impl Checker<'_> {
     // 2. Guard Extraction & Instantiation Helpers
     // -------------------------------------------------------------------------
 
+    pub(super) fn extract_proof_combinator(
+        &self,
+        file: FileId,
+        guard: ExprId,
+    ) -> Option<(ProofKind, ExprId)> {
+        let GuardKind::StaticProofPrimitive(id) = self.hir.classify_guard(file, guard) else {
+            return None;
+        };
+        let kind = match self.hir.definition(id).name.value.as_str() {
+            "Reflects" => ProofKind::Reflects,
+            "Implies" => ProofKind::Implies,
+            "Ensures" => ProofKind::Ensures,
+            _ => return None,
+        };
+        let Expr::Call { args, .. } = &self.ast(file).expr(guard).value else {
+            return None;
+        };
+        let [arg] = args.as_slice() else {
+            return None;
+        };
+        Some((kind, arg.value))
+    }
+
+    fn lower_combinator_pred(
+        &mut self,
+        file: FileId,
+        expr: ExprId,
+        locals: &HashMap<DefinitionId, TfLocal>,
+    ) -> Result<ProofPred<ProofAtom>, LowerError> {
+        let ast = self.ast(file);
+        let node = ast.expr(expr);
+        let span = node.span;
+        match &node.value {
+            Expr::Binary { op, left, right } if op.value == "&&" => {
+                let l = self.lower_combinator_pred(file, *left, locals)?;
+                let r = self.lower_combinator_pred(file, *right, locals)?;
+                Ok(ProofPred::and(vec![l, r]))
+            }
+            Expr::Binary { op, left, right } if op.value == "||" => {
+                let l = self.lower_combinator_pred(file, *left, locals)?;
+                let r = self.lower_combinator_pred(file, *right, locals)?;
+                Ok(ProofPred::or(vec![l, r]))
+            }
+            Expr::Unary { op, value } if op.value == "!" => {
+                Ok(self.lower_combinator_pred(file, *value, locals)?.negate())
+            }
+            Expr::Call { callee, args } => {
+                if let Expr::Path(path) = &ast.expr(*callee).value
+                    && let Some(tf_id) = self.resolve(path.span)
+                    && self.hir.definition(tf_id).kind == ril_hir::DefinitionKind::Type
+                {
+                    let args = args.clone();
+                    let lowered = self.lower_type_fn(tf_id)?;
+                    let mut sub_args = Vec::with_capacity(args.len());
+                    for arg in &args {
+                        sub_args.push(self.lower_tf_arg(file, arg.value, locals)?);
+                    }
+                    return substitute_tf_pred(&lowered.pred, &sub_args).ok_or(LowerError {
+                        span,
+                        reason: "could not substitute proof combinator argument",
+                    });
+                }
+                self.lower_tf_bool(file, expr, locals)
+            }
+            _ => self.lower_tf_bool(file, expr, locals),
+        }
+    }
+
     /// Extract `(tf_id, extra_args_by_trailing_param_idx)` from a static proof guard AST node.
     pub(super) fn extract_static_proof_guard(
         &self,
@@ -1017,6 +1127,42 @@ impl Checker<'_> {
     // 3. Callee Entry Seeding & Default Verification
     // -------------------------------------------------------------------------
 
+    pub(super) fn param_static_proofs(
+        &self,
+        file: FileId,
+        param: &syntax::Parameter,
+    ) -> Vec<(DefinitionId, Vec<Option<ExprId>>, Span)> {
+        let mut out = Vec::new();
+        if let Some(ty_id) = param.ty
+            && let Some((tf_id, _, span)) = self.bare_proof_type_info(file, ty_id)
+        {
+            out.push((tf_id, Vec::new(), span));
+        }
+        for &guard in &param.guards {
+            if let Some((tf_id, extra)) = self.extract_static_proof_guard(file, guard) {
+                out.push((tf_id, extra, self.ast(file).expr(guard).span));
+            }
+        }
+        out
+    }
+
+    fn return_static_proofs(
+        &self,
+        file: FileId,
+        sig: &syntax::Signature,
+    ) -> Vec<(DefinitionId, Vec<Option<ExprId>>, Span)> {
+        let mut out = Vec::new();
+        if let Some((tf_id, _, span)) = self.bare_proof_type_info(file, sig.result) {
+            out.push((tf_id, Vec::new(), span));
+        }
+        for &guard in &sig.guards {
+            if let Some((tf_id, extra)) = self.extract_static_proof_guard(file, guard) {
+                out.push((tf_id, extra, self.ast(file).expr(guard).span));
+            }
+        }
+        out
+    }
+
     pub(super) fn seed_fn_param_proofs(&mut self, env: &mut Env, fun: &syntax::Function) {
         for p in &fun.signature.params {
             if p.is_meta {
@@ -1026,10 +1172,7 @@ impl Checker<'_> {
             let Some(param_id) = self.resolve(name.span) else {
                 continue;
             };
-            for &guard in &p.guards {
-                let Some((tf_id, extra)) = self.extract_static_proof_guard(env.file, guard) else {
-                    continue;
-                };
+            for (tf_id, extra, _) in self.param_static_proofs(env.file, p) {
                 let Ok(lowered) = self.lower_type_fn(tf_id) else {
                     continue;
                 };
@@ -1069,11 +1212,7 @@ impl Checker<'_> {
             return;
         }
         let default_span = self.ast(env.file).expr(default_expr).span;
-        for &guard in &p.guards {
-            let Some((tf_id, extra)) = self.extract_static_proof_guard(env.file, guard) else {
-                continue;
-            };
-            let guard_span = self.ast(env.file).expr(guard).span;
+        for (tf_id, extra, guard_span) in self.param_static_proofs(env.file, p) {
             let mut arg_vals = Vec::with_capacity(1 + extra.len());
             arg_vals.push(ProofArgVal::Expr(default_expr));
             for opt in extra {
@@ -1128,11 +1267,153 @@ impl Checker<'_> {
         });
 
         let return_proofs = exit_env.return_proofs.clone();
-        for guard in return_proofs {
-            let Some((tf_id, extra)) = self.extract_static_proof_guard(exit_env.file, guard) else {
+        for proof_ref in return_proofs {
+            if let super::check::ReturnProofRef::Expr(guard) = proof_ref
+                && let Some((kind, pred_expr)) = self.extract_proof_combinator(exit_env.file, guard)
+            {
+                let guard_span = self.ast(exit_env.file).expr(guard).span;
+                let pred_span = self.ast(exit_env.file).expr(pred_expr).span;
+                let mut locals: HashMap<DefinitionId, TfLocal> = HashMap::new();
+                let mut arg_vals: Vec<ProofArgVal> = Vec::new();
+                for (_, def_id) in self.hir.references_within(pred_span) {
+                    if !locals.contains_key(&def_id)
+                        && self.hir.definition(def_id).kind == ril_hir::DefinitionKind::Local
+                    {
+                        let idx = arg_vals.len();
+                        locals.insert(
+                            def_id,
+                            TfLocal::Place(ProofPlace {
+                                param_idx: idx,
+                                path: Vec::new(),
+                            }),
+                        );
+                        arg_vals.push(ProofArgVal::Place(Place::local(def_id)));
+                    }
+                }
+                let Ok(lowered_pred) =
+                    self.lower_combinator_pred(exit_env.file, pred_expr, &locals)
+                else {
+                    self.error(
+                        Code::E0323,
+                        guard_span,
+                        "proof combinator predicate is outside the decidable DBM fragment",
+                    );
+                    continue;
+                };
+                match kind {
+                    ProofKind::Ensures => {
+                        let mut scratch = exit_env.refinements.dbm.clone();
+                        let ok = self
+                            .instantiate_proof_pred(
+                                &exit_env,
+                                &mut scratch,
+                                &lowered_pred,
+                                &arg_vals,
+                            )
+                            .is_some_and(|p| scratch.entails(&p));
+                        if !ok {
+                            let mut diag = Diagnostic::error(
+                                Code::E0323,
+                                report_span,
+                                "function exit does not satisfy Ensures postcondition",
+                            );
+                            diag = diag.with_label(guard_span, "required by this Ensures clause");
+                            self.diagnostics.push(diag);
+                        }
+                    }
+                    ProofKind::Implies | ProofKind::Reflects => {
+                        let Some(ret_expr) = expr else { continue };
+                        let mut true_env = exit_env.clone();
+                        self.relate(&mut true_env, ret_expr, true);
+                        let mut true_scratch = true_env.refinements.dbm.clone();
+                        let true_ok = self
+                            .instantiate_proof_pred(
+                                &true_env,
+                                &mut true_scratch,
+                                &lowered_pred,
+                                &arg_vals,
+                            )
+                            .is_some_and(|p| true_scratch.entails(&p));
+                        if !true_ok {
+                            let label = if kind == ProofKind::Reflects {
+                                "Reflects"
+                            } else {
+                                "Implies"
+                            };
+                            let mut diag = Diagnostic::error(
+                                Code::E0323,
+                                report_span,
+                                format!("true return path does not satisfy {label} predicate"),
+                            );
+                            diag = diag.with_label(guard_span, "required by this proof guard");
+                            self.diagnostics.push(diag);
+                        }
+                        if kind == ProofKind::Reflects {
+                            let mut false_env = exit_env.clone();
+                            self.relate(&mut false_env, ret_expr, false);
+                            let mut false_scratch = false_env.refinements.dbm.clone();
+                            let direct_false_ok = self
+                                .instantiate_proof_pred(
+                                    &false_env,
+                                    &mut false_scratch,
+                                    &lowered_pred.negate(),
+                                    &arg_vals,
+                                )
+                                .is_some_and(|p| false_scratch.entails(&p));
+                            // Contrapositive check: `!ret => !P` is equivalent to `P => ret`,
+                            // which avoids losing conjunctive `&&` facts under negation!
+                            let contrapositive_ok = if direct_false_ok {
+                                true
+                            } else if let Ok(ret_pred) =
+                                self.lower_combinator_pred(exit_env.file, ret_expr, &locals)
+                            {
+                                let mut cp_scratch = exit_env.refinements.dbm.clone();
+                                if let Some(inst_p) = self.instantiate_proof_pred(
+                                    &exit_env,
+                                    &mut cp_scratch,
+                                    &lowered_pred,
+                                    &arg_vals,
+                                ) && let Some(inst_ret) = self.instantiate_proof_pred(
+                                    &exit_env,
+                                    &mut cp_scratch,
+                                    &ret_pred,
+                                    &arg_vals,
+                                ) {
+                                    cp_scratch.assume(&inst_p);
+                                    cp_scratch.entails(&inst_ret)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            if !contrapositive_ok {
+                                let mut diag = Diagnostic::error(
+                                    Code::E0323,
+                                    report_span,
+                                    "false return path does not satisfy negated Reflects predicate",
+                                );
+                                diag =
+                                    diag.with_label(guard_span, "required by this Reflects guard");
+                                self.diagnostics.push(diag);
+                            }
+                        }
+                    }
+                    ProofKind::Plain => {}
+                }
                 continue;
+            }
+            let (tf_id, extra, guard_span) = match proof_ref {
+                super::check::ReturnProofRef::Expr(guard) => {
+                    let Some((tf_id, extra)) =
+                        self.extract_static_proof_guard(exit_env.file, guard)
+                    else {
+                        continue;
+                    };
+                    (tf_id, extra, self.ast(exit_env.file).expr(guard).span)
+                }
+                super::check::ReturnProofRef::Bare(tf_id, span) => (tf_id, Vec::new(), span),
             };
-            let guard_span = self.ast(exit_env.file).expr(guard).span;
             let Some(ret_expr) = expr else { continue };
             let subject_expr = if is_fallible_return {
                 match self.extract_fallible_return_payload(&exit_env, ret_expr) {
@@ -1298,12 +1579,8 @@ impl Checker<'_> {
             let Some(Some(subject_expr)) = arg_by_formal.get(idx) else {
                 continue;
             };
-            for &guard in &param.guards {
-                let Some((tf_id, extra)) = self.extract_static_proof_guard(def_file, guard) else {
-                    continue;
-                };
+            for (tf_id, extra, guard_span) in self.param_static_proofs(def_file, param) {
                 had_static_proof = true;
-                let guard_span = self.ast(def_file).expr(guard).span;
                 let arg_span = self.ast(env.file).expr(*subject_expr).span;
                 let mut arg_vals = Vec::with_capacity(1 + extra.len());
                 arg_vals.push(ProofArgVal::Expr(*subject_expr));
@@ -1379,11 +1656,17 @@ impl Checker<'_> {
         let StmtKind::Function(fun) = &self.ast(def_file).stmt(stmt).value.kind else {
             return;
         };
-        if fun.signature.guards.is_empty() {
+        let ret_proofs = self.return_static_proofs(def_file, &fun.signature);
+        let ret_combinators: Vec<(ProofKind, ExprId)> = fun
+            .signature
+            .guards
+            .iter()
+            .filter_map(|&g| self.extract_proof_combinator(def_file, g))
+            .collect();
+        if ret_proofs.is_empty() && ret_combinators.is_empty() {
             return;
         }
         let params = fun.signature.params.clone();
-        let ret_guards = fun.signature.guards.clone();
 
         let is_payload = self
             .callables
@@ -1402,10 +1685,7 @@ impl Checker<'_> {
         }
 
         let mut instantiated = Vec::new();
-        for guard in ret_guards {
-            let Some((tf_id, extra)) = self.extract_static_proof_guard(def_file, guard) else {
-                continue;
-            };
+        for (tf_id, extra, _) in ret_proofs {
             let Ok(lowered) = self.lower_type_fn(tf_id) else {
                 continue;
             };
@@ -1461,7 +1741,108 @@ impl Checker<'_> {
                 }
                 ProofAtom::Const(kc) => Some(ReturnAtom::Caller(Atom::KeyConst(kc.clone()))),
             }) {
-                instantiated.push(CallReturnProof { pred, is_payload });
+                instantiated.push(CallReturnProof {
+                    pred,
+                    is_payload,
+                    kind: ProofKind::Plain,
+                });
+            }
+        }
+        if !ret_combinators.is_empty() {
+            let mut formal_locals: HashMap<DefinitionId, TfLocal> = HashMap::new();
+            let mut caller_resolved: Vec<Option<CallerArgRef>> =
+                (0..params.len()).map(|_| None).collect();
+            for (idx, param) in params.iter().enumerate() {
+                if let Some(name) = &param.name
+                    && let Some(fid) = self.resolve(name.span)
+                {
+                    formal_locals.insert(
+                        fid,
+                        TfLocal::Place(ProofPlace {
+                            param_idx: idx,
+                            path: Vec::new(),
+                        }),
+                    );
+                    if let Some(Some(arg_expr)) = arg_by_formal.get(idx)
+                        && let Some(slot) = caller_resolved.get_mut(idx)
+                    {
+                        *slot = if let Some(p) = self.resolve_place(env, *arg_expr) {
+                            Some(CallerArgRef::Place(p))
+                        } else if let Some(c) =
+                            self.const_int_in_dbm(env, &env.refinements.dbm, *arg_expr)
+                        {
+                            Some(CallerArgRef::Const(c))
+                        } else {
+                            let mut dbm = std::mem::take(&mut env.refinements.dbm);
+                            let a = self
+                                .key_expr_to_atom(env, &mut dbm, *arg_expr)
+                                .unwrap_or_else(|| self.expr_to_atom(env, &mut dbm, *arg_expr));
+                            env.refinements.dbm = dbm;
+                            Some(CallerArgRef::Atom(a))
+                        };
+                    }
+                }
+            }
+            for (kind, pred_expr) in ret_combinators {
+                let Ok(lowered) = self.lower_combinator_pred(def_file, pred_expr, &formal_locals)
+                else {
+                    continue;
+                };
+                if let Some(pred) = lowered.map_atoms(&mut |atom| match atom {
+                    ProofAtom::Val(pp) => {
+                        let arg = caller_resolved.get(pp.param_idx)?.as_ref()?;
+                        match arg {
+                            CallerArgRef::Place(base) => {
+                                let mut p = base.clone();
+                                p.path.extend(pp.path.iter().cloned());
+                                Some(ReturnAtom::Caller(Atom::Val(p)))
+                            }
+                            CallerArgRef::LenOf(base) if pp.path.is_empty() => {
+                                Some(ReturnAtom::Caller(Atom::Len(base.clone())))
+                            }
+                            CallerArgRef::Const(c) if pp.path.is_empty() => {
+                                let t = env.refinements.dbm.fresh_temp();
+                                env.refinements.dbm.add_eq(t.clone(), Atom::Zero, *c);
+                                Some(ReturnAtom::Caller(t))
+                            }
+                            CallerArgRef::KeyConst(kc) if pp.path.is_empty() => {
+                                Some(ReturnAtom::Caller(Atom::KeyConst(kc.clone())))
+                            }
+                            CallerArgRef::Atom(a) if pp.path.is_empty() => {
+                                Some(ReturnAtom::Caller(a.clone()))
+                            }
+                            _ => None,
+                        }
+                    }
+                    ProofAtom::Len(pp) => {
+                        let arg = caller_resolved.get(pp.param_idx)?.as_ref()?;
+                        match arg {
+                            CallerArgRef::Place(base) => {
+                                let mut p = base.clone();
+                                p.path.extend(pp.path.iter().cloned());
+                                Some(ReturnAtom::Caller(Atom::Len(p)))
+                            }
+                            _ => None,
+                        }
+                    }
+                    ProofAtom::Const(kc) => Some(ReturnAtom::Caller(Atom::KeyConst(kc.clone()))),
+                }) {
+                    if kind == ProofKind::Ensures {
+                        if let Some(caller_pred) = pred.map_atoms(&mut |ra| match ra {
+                            ReturnAtom::Caller(a) => Some(a.clone()),
+                            _ => None,
+                        }) {
+                            env.refinements.dbm.assume(&caller_pred);
+                            env.refinements.dbm.forget_temps();
+                        }
+                    } else {
+                        instantiated.push(CallReturnProof {
+                            pred,
+                            is_payload,
+                            kind,
+                        });
+                    }
+                }
             }
         }
         if !instantiated.is_empty() {
@@ -1480,7 +1861,7 @@ impl Checker<'_> {
             return;
         };
         for cp in proofs {
-            if cp.is_payload != unwrapped_payload {
+            if cp.kind != ProofKind::Plain || cp.is_payload != unwrapped_payload {
                 continue;
             }
             if let Some(pred) = instantiate_call_return_pred(&cp.pred, target) {
@@ -1538,7 +1919,7 @@ impl Checker<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn verify_proof_obligation_with_scratch_code(
+    pub(super) fn verify_proof_obligation_with_scratch_code(
         &mut self,
         env: &mut Env,
         scratch: &mut Dbm,
@@ -1753,7 +2134,7 @@ impl Checker<'_> {
         }
     }
 
-    fn instantiate_proof_pred(
+    pub(super) fn instantiate_proof_pred(
         &self,
         env: &Env,
         dbm: &mut Dbm,
@@ -2151,7 +2532,7 @@ impl Checker<'_> {
 
     /// Evaluate a callee's `GuardArg` expression (in `def_file`, referencing formal parameters)
     /// into a caller-side `ProofArgVal` (supporting `xs`, `s.rows`, `len(xs)`, `0`, `a ± b`).
-    fn eval_callee_guard_arg(
+    pub(super) fn eval_callee_guard_arg(
         &self,
         env: &Env,
         scratch: &mut Dbm,
@@ -2670,28 +3051,65 @@ impl Checker<'_> {
 
         let mut param_proofs = Vec::new();
         for (idx, param) in fun.signature.params.iter().enumerate() {
+            let subject = TfLocal::Place(ProofPlace {
+                param_idx: idx,
+                path: Vec::new(),
+            });
+            if let Some(ty_id) = param.ty
+                && let Some((tf_id, _, span)) = self.bare_proof_type_info(file, ty_id)
+            {
+                let pred = self
+                    .lower_type_fn(tf_id)
+                    .ok()
+                    .and_then(|l| substitute_tf_pred(&l.pred, std::slice::from_ref(&subject)));
+                let fallback = self.hir.definition(tf_id).name.value.clone();
+                let _ = span;
+                param_proofs.push(ExportProof {
+                    pred,
+                    fallback,
+                    kind: ProofKind::Plain,
+                });
+            }
             for &guard in &param.guards {
                 if !self.hir.is_static_proof_guard(file, guard) {
                     continue;
                 }
-                let subject = TfLocal::Place(ProofPlace {
-                    param_idx: idx,
-                    path: Vec::new(),
-                });
-                param_proofs.push(self.export_single_guard(file, guard, subject, &param_locals));
+                param_proofs.push(self.export_single_guard(
+                    file,
+                    guard,
+                    subject.clone(),
+                    &param_locals,
+                ));
             }
         }
 
         let mut return_proofs = Vec::new();
+        let ret_subject = TfLocal::Place(ProofPlace {
+            param_idx: 0,
+            path: Vec::new(),
+        });
+        if let Some((tf_id, _, _)) = self.bare_proof_type_info(file, fun.signature.result) {
+            let pred = self
+                .lower_type_fn(tf_id)
+                .ok()
+                .and_then(|l| substitute_tf_pred(&l.pred, std::slice::from_ref(&ret_subject)));
+            let fallback = self.hir.definition(tf_id).name.value.clone();
+            return_proofs.push(ExportProof {
+                pred,
+                fallback,
+                kind: ProofKind::Plain,
+            });
+        }
         for &guard in &fun.signature.guards {
             if !self.hir.is_static_proof_guard(file, guard) {
                 continue;
             }
-            let subject = TfLocal::Place(ProofPlace {
-                param_idx: 0,
-                path: Vec::new(),
-            });
-            return_proofs.push(self.export_single_guard(file, guard, subject, &return_locals));
+            return_proofs.push(self.export_single_guard(
+                file,
+                guard,
+                ret_subject.clone(),
+                &return_locals,
+            ));
         }
 
         if !param_proofs.is_empty() {
@@ -2960,6 +3378,22 @@ impl Checker<'_> {
         subject: TfLocal,
         locals: &HashMap<DefinitionId, TfLocal>,
     ) -> ExportProof {
+        if let Some((kind, pred_expr)) = self.extract_proof_combinator(file, guard) {
+            if let Ok(pred) = self.lower_combinator_pred(file, pred_expr, locals) {
+                return ExportProof {
+                    pred: Some(pred),
+                    fallback: String::new(),
+                    kind,
+                };
+            }
+            let span = self.ast(file).expr(guard).span;
+            let tokens: Vec<_> = self.hir.file(file).token_text(span).collect();
+            return ExportProof {
+                pred: None,
+                fallback: tokens.join(" "),
+                kind,
+            };
+        }
         if let Some((tf_id, extra)) = self.extract_static_proof_guard(file, guard)
             && let Ok(lowered) = self.lower_type_fn(tf_id)
         {
@@ -2980,6 +3414,7 @@ impl Checker<'_> {
                 return ExportProof {
                     pred: Some(pred),
                     fallback: String::new(),
+                    kind: ProofKind::Plain,
                 };
             }
         }
@@ -2992,6 +3427,7 @@ impl Checker<'_> {
         ExportProof {
             pred: None,
             fallback: format!("{head}:{}", tokens.join(" ")),
+            kind: ProofKind::Plain,
         }
     }
 

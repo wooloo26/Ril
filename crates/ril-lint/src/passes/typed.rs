@@ -1,14 +1,14 @@
 //! TypedProgram lint pass: type-aware correctness, idiom, and performance rules.
 
-use ril_hir::{DefinitionKind, Intrinsic};
-use ril_sema::ty::{Ty, TypedProgram};
+use ril_hir::{DefinitionId, DefinitionKind, GuardKind, Intrinsic};
+use ril_sema::ty::{Callable, Ty, TypedProgram};
 use ril_source::{
     fix::{Fix, FixKind, FixSafety, TextEdit},
     span::{FileId, Span},
 };
 use ril_syntax::syntax::{
-    Ast, Condition, Expr, ExprId, LiteralKind, Mode, Pattern, StmtId, StmtKind, StringPart,
-    Transfer,
+    Ast, Condition, Expr, ExprId, Function, LiteralKind, Mode, Pattern, StmtId, StmtKind,
+    StringPart, Transfer, Type, TypeDefinition,
 };
 
 use crate::{LintContext, registry};
@@ -47,12 +47,22 @@ fn walk_stmt(
     }
     match &spanned.value.kind {
         StmtKind::Function(fun) => {
-            let fn_fallible = typed
+            let fn_def = typed
                 .hir
                 .definitions()
                 .find(|(_, d)| d.name.span == fun.name.span)
-                .and_then(|(id, _)| typed.callables.get(&id))
-                .is_some_and(|c| c.result.is_result(&typed.hir));
+                .map(|(id, _)| id);
+            let fn_callable = fn_def.and_then(|id| typed.callables.get(&id));
+            let fn_fallible = fn_callable.is_some_and(|c| c.result.is_result(&typed.hir));
+            check_redundant_proof_base_types(
+                ctx,
+                typed,
+                file_id,
+                ast,
+                src,
+                fun,
+                fn_callable.map(|v| &**v),
+            );
             for &h in &fun.helpers {
                 walk_stmt(ctx, typed, file_id, ast, src, h, false, false);
             }
@@ -1386,4 +1396,205 @@ fn pattern_has_bindings(ast: &Ast, pat_id: ril_syntax::syntax::PatternId) -> boo
         Pattern::Record { fields, .. } => !fields.is_empty(),
         _ => false,
     }
+}
+
+fn static_proof_uniquely_determines_subject(typed: &TypedProgram, tf_id: DefinitionId) -> bool {
+    let def = typed.hir.definition(tf_id);
+    let Some(stmt) = def.stmt else {
+        return false;
+    };
+    let def_file = def.name.span.file;
+    let Some(file) = typed.hir.files().find(|f| f.id == def_file) else {
+        return false;
+    };
+    let StmtKind::Type(decl) = &file.ast.stmt(stmt).value.kind else {
+        return false;
+    };
+    let TypeDefinition::Function(params, _) = &decl.definition else {
+        return false;
+    };
+    let v = params
+        .iter()
+        .take_while(|p| {
+            p.name
+                .value
+                .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        })
+        .count();
+    if v == 0 {
+        return false;
+    }
+    let (value_params, type_params) = params.split_at(v);
+    let Some((subject, trailing)) = value_params.split_first() else {
+        return false;
+    };
+    if subject.bound.is_empty() {
+        return false;
+    }
+    if type_params.is_empty() {
+        return true;
+    }
+    let type_param_ids: std::collections::HashSet<DefinitionId> = type_params
+        .iter()
+        .filter_map(|tp| {
+            typed
+                .hir
+                .definitions()
+                .find(|(_, d)| d.name.span == tp.name.span)
+                .map(|(id, _)| id)
+        })
+        .collect();
+    let mut bound_by_trailing: std::collections::HashSet<DefinitionId> =
+        std::collections::HashSet::new();
+    for tp in trailing {
+        for &b in &tp.bound {
+            let b_span = file.ast.ty(b).span;
+            for (_, rid) in typed.hir.references_within(b_span) {
+                if type_param_ids.contains(&rid) {
+                    bound_by_trailing.insert(rid);
+                }
+            }
+        }
+    }
+    for &b in &subject.bound {
+        let b_span = file.ast.ty(b).span;
+        for (_, rid) in typed.hir.references_within(b_span) {
+            if type_param_ids.contains(&rid) && !bound_by_trailing.contains(&rid) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn check_redundant_proof_base_types(
+    ctx: &mut LintContext<'_>,
+    typed: &TypedProgram,
+    file_id: FileId,
+    ast: &Ast,
+    src: &str,
+    fun: &Function,
+    callable: Option<&Callable>,
+) {
+    if !ctx.may_fire(&registry::REDUNDANT_PROOF_BASE_TYPE) {
+        return;
+    }
+    for param in &fun.signature.params {
+        if param.is_meta {
+            continue;
+        }
+        let Some(&first_guard) = param.guards.first() else {
+            continue;
+        };
+        if let Some(ty_id) = param.ty
+            && matches!(ast.ty(ty_id).value, Type::Proof(_))
+        {
+            continue;
+        }
+        let GuardKind::StaticProof(tf_id) = typed.hir.classify_guard(file_id, first_guard) else {
+            continue;
+        };
+        if !static_proof_uniquely_determines_subject(typed, tf_id) {
+            continue;
+        }
+        let guard_span = ast.expr(first_guard).span;
+        let Some(guard_txt) = src.get(guard_span.start..guard_span.end) else {
+            continue;
+        };
+        if let Some(ty_id) = param.ty {
+            let ty_span = ast.ty(ty_id).span;
+            let full_span = Span::new(file_id, ty_span.start, guard_span.end);
+            let fix = Fix {
+                id: format!(
+                    "redundant_proof_base_type:{}:{}",
+                    file_id.0, full_span.start
+                ),
+                title: format!("Simplify to `{guard_txt}`"),
+                safety: FixSafety::Safe,
+                kind: FixKind::Lint,
+                is_preferred: true,
+                is_organize_imports: false,
+                edits: vec![TextEdit::new(full_span, guard_txt.to_owned())],
+                delta: None,
+            };
+            ctx.report(
+                &registry::REDUNDANT_PROOF_BASE_TYPE,
+                full_span,
+                format!(
+                    "redundant base type before `|> {guard_txt}`; write `{guard_txt}` directly"
+                ),
+            )
+            .with_fix(fix);
+        } else if let Some(name) = &param.name {
+            let replace_span = Span::new(file_id, name.span.end, guard_span.end);
+            let full_span = Span::new(file_id, name.span.start, guard_span.end);
+            let fix = Fix {
+                id: format!(
+                    "redundant_proof_base_type:{}:{}",
+                    file_id.0, full_span.start
+                ),
+                title: format!("Rewrite as `{}: {guard_txt}`", name.value),
+                safety: FixSafety::Safe,
+                kind: FixKind::Lint,
+                is_preferred: true,
+                is_organize_imports: false,
+                edits: vec![TextEdit::new(replace_span, format!(": {guard_txt}"))],
+                delta: None,
+            };
+            ctx.report(
+                &registry::REDUNDANT_PROOF_BASE_TYPE,
+                full_span,
+                format!(
+                    "prefer `{}: {guard_txt}` over `{} |> {guard_txt}`",
+                    name.value, name.value
+                ),
+            )
+            .with_fix(fix);
+        }
+    }
+
+    // Check return type (skip `?T |> Proof` and `!<T, E> |> Proof` payload proofs).
+    let Some(&first_ret_guard) = fun.signature.guards.first() else {
+        return;
+    };
+    let ret_ty_node = ast.ty(fun.signature.result);
+    if matches!(
+        ret_ty_node.value,
+        Type::Proof(_) | Type::Option(_) | Type::Result(_, _)
+    ) {
+        return;
+    }
+    if callable.is_some_and(|c| c.result.is_option(&typed.hir) || c.result.is_result(&typed.hir)) {
+        return;
+    }
+    let GuardKind::StaticProof(tf_id) = typed.hir.classify_guard(file_id, first_ret_guard) else {
+        return;
+    };
+    if !static_proof_uniquely_determines_subject(typed, tf_id) {
+        return;
+    }
+    let guard_span = ast.expr(first_ret_guard).span;
+    let Some(guard_txt) = src.get(guard_span.start..guard_span.end) else {
+        return;
+    };
+    let full_span = Span::new(file_id, ret_ty_node.span.start, guard_span.end);
+    let fix = Fix {
+        id: format!(
+            "redundant_proof_base_type:{}:{}",
+            file_id.0, full_span.start
+        ),
+        title: format!("Simplify return type to `{guard_txt}`"),
+        safety: FixSafety::Safe,
+        kind: FixKind::Lint,
+        is_preferred: true,
+        is_organize_imports: false,
+        edits: vec![TextEdit::new(full_span, guard_txt.to_owned())],
+        delta: None,
+    };
+    ctx.report(
+        &registry::REDUNDANT_PROOF_BASE_TYPE,
+        full_span,
+        format!("redundant return base type before `|> {guard_txt}`; write `{guard_txt}` directly"),
+    )
+    .with_fix(fix);
 }

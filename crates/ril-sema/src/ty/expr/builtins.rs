@@ -113,6 +113,7 @@ impl Checker<'_> {
         }
         match ty {
             Ty::Draft(_) | Ty::TypeValue(_) | Ty::Mode => true,
+            Ty::Adt(adt) if self.hir.std_type(adt.definition) == Some(StdType::Scoped) => true,
             Ty::Callable(c) if c.is_ctl => true,
             Ty::Param(id) => {
                 // A type match can select one type from the declared domain.
@@ -217,6 +218,44 @@ impl Checker<'_> {
             self.expect(&mut cb_env, update.value, &callback);
             env.effects_seen.extend(cb_env.effects_seen);
             return base;
+        }
+        if name == "with_scoped"
+            && let [base_arg, body_arg] = args
+        {
+            let base = self.expr(env, base_arg.value, None);
+            let scoped_ty = self.std_adt(StdType::Scoped, vec![GenericValue::Type(base)]);
+            let result_ty = expected.cloned().unwrap_or_else(|| self.fresh());
+            let cb_param_mode = match &self.ast(env.file).expr(body_arg.value).value {
+                Expr::Closure { params, .. } => {
+                    let chosen = params.first().map_or(base_arg.mode, |p| p.mode);
+                    match (base_arg.mode, chosen) {
+                        (Mode::Mut, Mode::Mut | Mode::Ref) => chosen,
+                        (Mode::Ref, Mode::Ref) => Mode::Ref,
+                        (Mode::Plain, Mode::Plain | Mode::Ref) => chosen,
+                        _ => base_arg.mode,
+                    }
+                }
+                _ => base_arg.mode,
+            };
+            let callback = Ty::Callable(Arc::new(Callable {
+                parameters: vec![Parameter {
+                    label: None,
+                    mode: cb_param_mode,
+                    ty: scoped_ty,
+                    optional: false,
+                    is_meta: false,
+                }],
+                result: result_ty.clone(),
+                result_mode: Mode::Infer,
+                open_state: true,
+                open_effects: true,
+                ..unknown_callable()
+            }));
+            let actual_cb = self.expect(env, body_arg.value, &callback);
+            if let Ty::Callable(cb) = self.normalize(&actual_cb) {
+                return cb.result.clone();
+            }
+            return result_ty;
         }
         let context_arg = if name == "clone" { expected } else { None };
         let mut types = Vec::new();
@@ -351,6 +390,24 @@ impl Checker<'_> {
                     }
                 }
                 let inner_ty = match target {
+                    Ty::Adt(adt) if self.hir.std_type(adt.definition) == Some(StdType::Scoped) => {
+                        if let Some(arg) = args.first()
+                            && !matches!(arg.mode, Mode::Ref | Mode::Mut)
+                        {
+                            self.error(
+                                Code::E0406,
+                                span,
+                                "Scoped<T> cannot be unwrapped by value; use inner(ref s) or inner(mut s)",
+                            );
+                        }
+                        adt.arguments
+                            .first()
+                            .and_then(|gv| match gv {
+                                crate::ty::GenericValue::Type(t) => Some(t.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or(Ty::Unknown)
+                    }
                     Ty::Adt(adt)
                         if adt.kind == AdtKind::Opaque && adt.defining_scope != env.scope =>
                     {

@@ -411,6 +411,7 @@ pub enum Type {
         base: TypeId,
         field: Member,
     },
+    Proof(ExprId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

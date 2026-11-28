@@ -331,20 +331,25 @@ fn unreachable_preserves_total_behavior_and_is_allowed_in_defer() {
     pkg.insert(
         pkg.entry.clone(),
         br#"
-fn total_with_unreachable(x: int) -> int {
-    defer {
-        if false {
-            unreachable()
-        }
+type HttpClass(int) |> Between(100, 599)
+
+fn total_with_dbm_exhaustiveness(x: int, c: HttpClass) -> int {
+    let base = match inner(c) {
+        100..=399 -> 1
+        400..=599 -> 2
     }
-    if x > 0 && x < 0 {
-        unreachable()
+    let sign = if x < 0 {
+        -1
+    } else if x == 0 {
+        0
+    } else if x > 0 {
+        1
     }
-    x
+    base + sign
 }
 
 fn main() -> () {
-    let _ = total_with_unreachable(1)
+    let _ = total_with_dbm_exhaustiveness(1, HttpClass::(200))
 }
 "#
         .to_vec(),
@@ -356,11 +361,11 @@ fn main() -> () {
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["sym"] == "total_with_unreachable")
+        .find(|s| s["sym"] == "total_with_dbm_exhaustiveness")
         .unwrap();
     assert_eq!(
         sym["total"], true,
-        "unreachable() must keep fn total: {sym}"
+        "DBM-exhaustive match/if must keep fn total: {sym}"
     );
     assert!(sym.get("may_panic").is_none());
     assert!(sym.get("may_abort").is_none());

@@ -69,6 +69,7 @@ pub const PRIMITIVE_TYPES: &[PrimitiveTypeSpec] = {
         ptype("Panic", "Report", PanicReport, false),
         ptype("Panic", "Error", PanicError, false),
         ptype("Prelude", "Derived", Derived, true),
+        ptype("Prelude", "Scoped", Scoped, true),
         ptype("Reflect", "FieldMode", FieldMode, false),
         ptype("Reflect", "TypeKind", TypeKind, false),
         ptype("Set", "Set", Set, false),
@@ -88,6 +89,7 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         prim("Prelude", "inner", Both, None, Some(Inner)),
         prim("Prelude", "clone", Both, Some("ril_rt_clone"), Some(Clone)),
         prim("Prelude", "derive", Both, None, Some(Derive)),
+        prim("Prelude", "with_scoped", Runtime, None, Some(WithScoped)),
         prim(
             "Prelude",
             "unwind_ctl",
@@ -113,7 +115,6 @@ pub const PRIMITIVE_FNS: &[PrimitiveSpec] = {
         ),
         prim("Prelude", "has_key", Static, None, Some(HasKey)),
         prim("Prelude", "panic", Both, Some("ril_rt_panic"), Some(Panic)),
-        prim("Prelude", "unreachable", Both, None, Some(Unreachable)),
         // Io / File
         prim("Io", "print", Runtime, Some("ril_rt_print"), Some(Print)),
         prim(

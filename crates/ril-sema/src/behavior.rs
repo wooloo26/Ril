@@ -1450,7 +1450,7 @@ impl<'a> Collector<'a> {
                         }
                         return;
                     }
-                    Intrinsic::UnwindCtl | Intrinsic::Unreachable => {
+                    Intrinsic::UnwindCtl => {
                         return;
                     }
                     Intrinsic::Clone
