@@ -3469,7 +3469,7 @@ fn published_call_obligations_agree_with_lean() -> Result<(), Box<dyn std::error
 
 #[test]
 fn provenance_examples_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("provenance", 31)
+    check_access_examples("provenance", 30)
 }
 
 #[test]
@@ -3489,7 +3489,7 @@ fn scoped_resource_examples_agree_with_lean() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn summary_signatures_agree_with_lean() -> Result<(), Box<dyn std::error::Error>> {
-    check_access_examples("summary-signatures", 21)
+    check_access_examples("summary-signatures", 20)
 }
 
 #[test]

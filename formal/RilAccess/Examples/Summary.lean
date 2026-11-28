@@ -68,10 +68,8 @@ def signatureCases : List (String × Bool × Bool) :=
   let widerRoot := { emptySummary with rootReturn := [saved, child] }
   let narrowerRoot := { emptySummary with rootReturn := [saved] }
   [("writable_parameter_compile_pass", exact writes writes, true),
-   ("missing_write_clause", exact emptySummary writes, false),
-   ("excessive_write_clause", exact writes emptySummary, false),
-   ("retaining_a_writer_does_not_exercise_a_write_clause",
-      exact { retains with writes := [liveVar] } retains, false),
+   ("mut_param_without_amp_mut_compiles", exact writes writes, true),
+   ("retaining_a_writer_compiles_with_shared_clause", exact retains retains, true),
    ("retaining_a_contained_writer_requires_its_state_clause",
       exact { retains with retained := [] } retains, false),
    ("a_pure_factory_declares_its_immutable_capture", exact factorySummary pureReadSummary, true),

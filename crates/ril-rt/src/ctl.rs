@@ -19,6 +19,7 @@ pub(crate) enum HandlerArmKind {
     CtlAbort,
 }
 
+#[cfg(not(miri))]
 impl HandlerArmKind {
     fn is_ctl(self) -> bool {
         self != Self::Fn

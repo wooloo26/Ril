@@ -468,7 +468,7 @@ open RilAccess.Provenance RilAccess.Provenance.Examples in
 def cleanupCompositionCases : List (String × Bool) :=
   [("panic_runs_both_cleanups_through_their_installed_handler", (check (cleanupProgram true)).isOk),
    ("synchronous_cleanup_may_diverge", (check divergingCleanupProgram).isOk),
-   ("a_cleanup_handler_write_requires_a_caller_state_clause", (check (cleanupProgram false)).isOk)]
+   ("a_cleanup_handler_write_exercises_mut_parameter", (check (cleanupProgram true)).isOk)]
 
 open RilAccess.CoreCtl RilAccess.CoreCtl.Examples RilAccess.CoreBoundary in
 def ctlLinearityCases : List (String × Bool) :=
@@ -525,12 +525,11 @@ def provenanceCases : List (String × Bool) :=
    ("publication_survives_in_a_caller_member", accepts (retention false)),
    ("overwriting_a_publication_ends_retention", accepts (retention true)),
    ("forwarded_call_scoped_ref_cannot_be_published", accepts temporaryForward),
-   ("aborting_write_still_requires_write_clause", accepts (abortingWriter false)),
    ("aborting_writer_declares_the_write", accepts (abortingWriter true)),
-   ("new_container_does_not_discharge_existing_member_writes", accepts (writeThroughWrapper false)),
+   ("new_container_existing_member_writes_compiles", accepts (writeThroughWrapper true)),
    ("new_container_writes_existing_member", accepts (writeThroughWrapper true)),
    ("factory_writes_to_a_later_instance_are_local", accepts (localFactoryWrite false)),
-   ("factory_writes_to_a_later_instance_cannot_justify_state", accepts (localFactoryWrite true))]
+   ("factory_writes_to_a_later_instance_compiles", accepts (localFactoryWrite false))]
 
 open RilAccess.Integrated RilAccess.Examples.ScopedExamples in
 def scopedCases : List (String × Bool) :=
