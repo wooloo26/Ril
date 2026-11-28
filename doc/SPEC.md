@@ -3046,18 +3046,20 @@ ModeModifier              ::= RecordFieldMode | ValueName
 ```ril
 type UserId(int)
 type UnwrapAny = \T -> match <T> {
-    <!<let OkT, _>>       -> <OkT>
-    <?let Inner>          -> <Inner>
-    <Nominal<let Inner>>  -> <Inner>           -- Matches accessible .ril nominal / in-scope opaque wrappers
+    <!<let OkT, _>>         -> <OkT>
+    <?let Inner>            -> <Inner>
+    <Nominal<let Inner>>    -> <Inner>         -- Matches accessible .ril nominal / in-scope opaque wrappers
+    <fn(..) @.. -> let R>   -> <R>             -- Extracts return type of any fn regardless of params/effects
     <.{ id: int, ..let R }> -> <R>             -- Captures remaining structural record tail
-    _                     -> <T>
+    _                       -> <T>
 }
 meta let _ = assert(<UnwrapAny<!<int, str>>> == <int> && <UnwrapAny<Result<int, str>>> == <int>)
 meta let _ = assert(<UnwrapAny<?str>> == <str> && <UnwrapAny<UserId>> == <int>)
+meta let _ = assert(<UnwrapAny<fn(int) @io -> bool>> == <bool>)
 meta let _ = assert(<UnwrapAny<.{ id: int, name: str }>> == <.{ name: str }>)
 ```
 
-- `let U` binds an exact type variable (or `FieldMode` in `let M field: ...`; `let _` ignores the mode). `<(..)>` matches nonempty tuples (`Reflect::TypeKind::Tuple`, distinct from `()`). Bare `PascalCase` heads match concrete nominal, sum, or opaque constructors (`E0306` on type-constructor pattern variables).
+- `let U` binds an exact type variable (or `FieldMode` in `let M field: ...`; `let _` ignores the mode). `<(..)>` matches nonempty tuples (`Reflect::TypeKind::Tuple`, distinct from `()`). `<fn(..) @.. -> let R>` and `<ctl(..) @.. -> let R>` match callable types structurally (`(..)` matches any parameter list, `@..` matches any effects and state; omitting `@..` matches closed empty effects, or explicit `@Eff` requires those effects). Bare `PascalCase` heads match concrete nominal, sum, or opaque constructors (`E0306` on type-constructor pattern variables).
 - Static-only `Nominal<pat>` matches any transparent nominal or in-scope `opaque` type and matches its payload against `pat` (never sealed `opaque` or sums; outside type patterns fails `E0306`, bare `Nominal` fails `E0319`, wrong arity fails `E0340`).
 
 ```ebnf
@@ -3070,9 +3072,12 @@ TypePatternInner      ::= "_"
                         | TypeRecordPattern
                         | TypeArrayPattern
                         | TypeMapPattern
+                        | TypeCallablePattern
                         | RigidNominalPattern
                         | PrimitivePattern
                         | LiteralPattern
+TypeCallablePattern   ::= ( "fn" | "ctl" ) "(" [ ".." | TypeCallableParam { "," TypeCallableParam } [ "," ] ] ")" { "@" ( ".." | "(" ")" | Path ) } "->" [ "new" | "ref" | "^mut" ] TypePatternInner
+TypeCallableParam     ::= [ ParameterMode ] TypePatternInner
 TypeResultPattern     ::= "!<" TypePatternInner "," TypePatternInner [ "," ] ">"
 TypeTuplePattern      ::= "(" ")"
                         | "(" ".." ")"

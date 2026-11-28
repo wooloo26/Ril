@@ -184,6 +184,7 @@ impl Checker<'_> {
                 field,
             } => self.mapped_record(env, storage, *pattern, *iterable, *field, node.span),
             Type::TupleAny
+            | Type::CallablePattern { .. }
             | Type::PatternBinding(_)
             | Type::PatternWildcard
             | Type::PatternLiteral(_) => Ty::Unknown,

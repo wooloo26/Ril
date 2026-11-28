@@ -47,10 +47,12 @@ impl Parser<'_> {
                 self.bump();
                 Type::Callable(Box::new(self.signature(false, true, false)?))
             }
+            "fn" if pattern => self.callable_pattern(false)?,
             "ctl" if !pattern => {
                 self.bump();
                 Type::Callable(Box::new(self.signature(false, true, true)?))
             }
+            "ctl" if pattern => self.callable_pattern(true)?,
             "<" if !pattern => {
                 self.open("<", ">", Layout::List)?;
                 let value = self.expression(
@@ -191,6 +193,56 @@ impl Parser<'_> {
                 .add_ty(start.join(self.last), Type::Project { base: node, field });
         }
         Ok(node)
+    }
+
+    fn callable_pattern(&mut self, is_ctl: bool) -> Result<Type> {
+        self.bump();
+        self.open("(", ")", Layout::List)?;
+        self.skip_lines();
+        let (any_params, params) = if self.eat("..") {
+            self.skip_lines();
+            self.close(")")?;
+            (true, Vec::new())
+        } else {
+            let params = self.list(")", |p| {
+                let (mode, _) =
+                    p.mode_spanned(&[Mode::Ref, Mode::Mut, Mode::Shared, Mode::New, Mode::Via]);
+                let ty = p.type_expr(true)?;
+                Ok((mode, ty))
+            })?;
+            (false, params)
+        };
+        let mut any_effects = false;
+        let mut effects = Vec::new();
+        loop {
+            self.continue_lines(|tok| tok == "@");
+            if !self.eat("@") {
+                break;
+            }
+            if self.eat("..") {
+                any_effects = true;
+            } else if self.is("(") && self.current().tight_left {
+                self.open("(", ")", Layout::List)?;
+                self.close(")")?;
+            } else {
+                effects.push(self.path(Angle::Type, true)?);
+            }
+        }
+        self.continue_lines(|tok| tok == "->");
+        self.require("->")?;
+        self.skip_lines();
+        let (rm, rm_span) = self.mode_spanned(&[Mode::New, Mode::Ref, Mode::Shared]);
+        let result_mode = rm_span.map(|_| rm);
+        let result = self.type_expr(true)?;
+        Ok(Type::CallablePattern {
+            is_ctl,
+            any_params,
+            params,
+            any_effects,
+            effects,
+            result_mode,
+            result,
+        })
     }
 
     fn record_type(&mut self, pattern: bool) -> Result<Type> {

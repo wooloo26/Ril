@@ -918,7 +918,11 @@ impl Walk<'_> {
                 self.ty(*base);
                 self.member(field);
             }
-            Type::Unit | Type::TupleAny | Type::PatternWildcard | Type::PatternLiteral(_) => {}
+            Type::Unit
+            | Type::TupleAny
+            | Type::PatternWildcard
+            | Type::PatternLiteral(_)
+            | Type::CallablePattern { .. } => {}
         }
     }
 
@@ -1047,6 +1051,20 @@ impl Walk<'_> {
                 if let Some(FieldTail::Named(name)) = tail {
                     self.bind_type_pattern_name(name, alias, seen);
                 }
+            }
+            Type::CallablePattern {
+                params,
+                effects,
+                result,
+                ..
+            } => {
+                for (_, ty) in params {
+                    self.ty_pattern(*ty, alias, seen);
+                }
+                for effect in effects {
+                    self.resolve_effect_path(effect);
+                }
+                self.ty_pattern(*result, alias, seen);
             }
             _ => self.ty(id),
         }

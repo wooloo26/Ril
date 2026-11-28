@@ -1417,6 +1417,57 @@ impl<'src, 'a> Printer<'src, 'a> {
                 let rest = self.print_signature_parts(&sig, span.start, true, false);
                 self.arena.group_concat(&[kw, rest])
             }
+            Type::CallablePattern {
+                is_ctl,
+                any_params,
+                params,
+                any_effects,
+                effects,
+                result_mode,
+                result,
+            } => {
+                let mode_text = |m: Mode| match m {
+                    Mode::Ref => "ref ",
+                    Mode::Mut => "mut ",
+                    Mode::Shared => "^mut ",
+                    Mode::New => "new ",
+                    Mode::Via => "via ",
+                    _ => "",
+                };
+                let mut parts = Vec::new();
+                parts.push(self.arena.text(if is_ctl { "ctl(" } else { "fn(" }));
+                if any_params {
+                    parts.push(self.arena.text(".."));
+                } else {
+                    for (idx, (mode, ty)) in params.iter().enumerate() {
+                        if idx > 0 {
+                            parts.push(self.arena.text(", "));
+                        }
+                        let mt = mode_text(*mode);
+                        if !mt.is_empty() {
+                            parts.push(self.arena.text(mt));
+                        }
+                        parts.push(self.print_type(*ty));
+                    }
+                }
+                parts.push(self.arena.text(")"));
+                for eff in &effects {
+                    parts.push(self.arena.text(" @"));
+                    parts.push(self.print_path(eff));
+                }
+                if any_effects {
+                    parts.push(self.arena.text(" @.."));
+                }
+                parts.push(self.arena.text(" -> "));
+                if let Some(rm) = result_mode {
+                    let mt = mode_text(rm);
+                    if !mt.is_empty() {
+                        parts.push(self.arena.text(mt));
+                    }
+                }
+                parts.push(self.print_type(result));
+                self.arena.concat(&parts)
+            }
             Type::Unquote(expr_id) => {
                 let l = self.arena.text("<");
                 let e = self.print_expr(expr_id);

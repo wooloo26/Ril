@@ -960,6 +960,7 @@ impl Checker<'_> {
         use ril_syntax::syntax::GenericArg;
         match &self.ast(env.file).ty(id).value {
             Type::TupleAny
+            | Type::CallablePattern { .. }
             | Type::PatternBinding(_)
             | Type::PatternWildcard
             | Type::PatternLiteral(_) => true,
@@ -1042,6 +1043,50 @@ impl Checker<'_> {
             Type::PatternLiteral(lit) => lit.text.clone(),
             Type::Unit => "()".into(),
             Type::TupleAny => "(..)".into(),
+            Type::CallablePattern {
+                is_ctl,
+                any_params,
+                params,
+                any_effects,
+                effects,
+                result_mode,
+                result,
+            } => {
+                let kind = if *is_ctl { "ctl" } else { "fn" };
+                let p = if *any_params {
+                    "..".to_owned()
+                } else {
+                    params
+                        .iter()
+                        .map(|(_, ty)| self.type_pattern_shape_key(env, *ty))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let mut eff_str = String::new();
+                for eff in effects {
+                    eff_str.push_str(" @");
+                    eff_str.push_str(
+                        &eff.segments
+                            .iter()
+                            .map(|s| s.name.value.as_str())
+                            .collect::<Vec<_>>()
+                            .join("::"),
+                    );
+                }
+                if *any_effects {
+                    eff_str.push_str(" @..");
+                }
+                let rm = match result_mode {
+                    Some(Mode::New) => "new ",
+                    Some(Mode::Ref) => "ref ",
+                    Some(Mode::Shared) => "^mut ",
+                    _ => "",
+                };
+                format!(
+                    "{kind}({p}){eff_str} -> {rm}{}",
+                    self.type_pattern_shape_key(env, *result)
+                )
+            }
             Type::Option(inner) => format!("?{}", self.type_pattern_shape_key(env, *inner)),
             Type::Result(ok, err) => format!(
                 "!<{}, {}>",
@@ -1149,6 +1194,12 @@ impl Checker<'_> {
                 for field in fields {
                     self.check_type_pattern_syntax(env, field.ty);
                 }
+            }
+            Type::CallablePattern { params, result, .. } => {
+                for &(_, ty) in params {
+                    self.check_type_pattern_syntax(env, ty);
+                }
+                self.check_type_pattern_syntax(env, *result);
             }
             Type::Named(path) => {
                 let args = path
@@ -1266,6 +1317,75 @@ impl Checker<'_> {
                     && self.match_type_pattern_inner(env, *val, &tv.ty, strict_eval)?)
             }
             (Type::TupleAny, Ty::Tuple(_)) => Ok(true),
+            (
+                Type::CallablePattern {
+                    is_ctl,
+                    any_params,
+                    params,
+                    any_effects,
+                    effects,
+                    result_mode,
+                    result,
+                },
+                Ty::Callable(target_call),
+            ) => {
+                if *is_ctl != target_call.is_ctl {
+                    return Ok(false);
+                }
+                if !*any_params {
+                    if params.len() != target_call.parameters.len() {
+                        return Ok(false);
+                    }
+                    for ((pat_mode, pat_ty), target_param) in
+                        params.iter().zip(&target_call.parameters)
+                    {
+                        if *pat_mode != Mode::Plain && *pat_mode != target_param.mode {
+                            return Ok(false);
+                        }
+                        if !self.match_type_pattern_inner(
+                            env,
+                            *pat_ty,
+                            &target_param.ty,
+                            strict_eval,
+                        )? {
+                            return Ok(false);
+                        }
+                    }
+                }
+                if !*any_effects {
+                    if effects.is_empty() {
+                        if target_call.open_effects
+                            || target_call.direct_open_effects
+                            || !target_call.effects.is_empty()
+                            || !target_call.effect_vars.is_empty()
+                        {
+                            return Ok(false);
+                        }
+                    } else {
+                        let expected_row = self.effect_row_from_paths(env, effects);
+                        for req in &expected_row.concrete {
+                            if !target_call
+                                .effects
+                                .iter()
+                                .any(|e| self.effect_covers(e, req))
+                            {
+                                return Ok(false);
+                            }
+                        }
+                        for req_var in &expected_row.vars {
+                            if !target_call.effect_vars.contains(req_var) {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                }
+                if let Some(rm) = result_mode
+                    && *rm != target_call.result_mode
+                {
+                    return Ok(false);
+                }
+                self.match_type_pattern_inner(env, *result, &target_call.result, strict_eval)
+            }
             (Type::Tuple(items), Ty::Tuple(targets)) => {
                 if items.len() != targets.len() {
                     return Ok(false);

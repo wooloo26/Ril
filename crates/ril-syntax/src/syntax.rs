@@ -408,6 +408,15 @@ pub enum Type {
         field: TypeId,
     },
     Callable(Box<Signature>),
+    CallablePattern {
+        is_ctl: bool,
+        any_params: bool,
+        params: Vec<(Mode, TypeId)>,
+        any_effects: bool,
+        effects: Vec<Path>,
+        result_mode: Option<Mode>,
+        result: TypeId,
+    },
     Unquote(ExprId),
     TypeOf(ExprId),
     Project {

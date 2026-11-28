@@ -423,3 +423,76 @@ meta fn check_all() -> bool {
 }
 meta let OK = check_all()
 fn main() -> () { assert(OK) }
+
+-- @case callable_type_patterns_and_named_record_join_out compile-pass
+eff Clock { fn now() -> int }
+
+type ReturnOf = \F -> match <F> {
+    <fn(..) @.. -> let R> -> <R>
+    _ -> compile_error("expected fn callable")
+}
+
+type ClockReturnOf = \F -> match <F> {
+    <fn(..) @Clock -> let R> -> <R>
+    _ -> <()>
+}
+
+type FirstParamOf = \F -> match <F> {
+    <fn(let A, _) @.. -> _> -> <A>
+    <fn(let A) @.. -> _> -> <A>
+    _ -> <()>
+}
+
+type IsPureThunk = \F -> match <F> {
+    <fn() -> _> -> <bool>
+    _ -> <()>
+}
+
+type JoinOut = \T: .{ .. } -> {
+    let mut keys: []str = []
+    for Reflect::fields(<T>) as (_, k) {
+        Array::push(mut keys, k)
+    }
+    <.{ [keys as k]: ReturnOf<T.(k)> }>
+}
+
+type OkOf = \F -> match <F> {
+    <fn(..) @.. -> !<let OkT, _>> -> <OkT>
+    _ -> compile_error("expected fallible thunk")
+}
+
+type TryJoinOut = \T: .{ .. } -> {
+    let mut keys: []str = []
+    for Reflect::fields(<T>) as (_, k) {
+        Array::push(mut keys, k)
+    }
+    <.{ [keys as k]: OkOf<T.(k)> }>
+}
+
+type Tasks = .{
+    user: fn() @Clock -> str,
+    count: fn() @io -> int,
+    flag: fn() -> bool,
+}
+
+type FallibleTasks = .{
+    a: fn() @Clock -> !<int, str>,
+    b: fn() -> !<bool, str>,
+}
+
+meta let _ = assert(<ReturnOf<fn(int, str) @Clock -> f64>> == <f64>)
+meta let _ = assert(<ClockReturnOf<fn() @Clock -> str>> == <str>)
+meta let _ = assert(<ClockReturnOf<fn() @io -> str>> == <()>)
+meta let _ = assert(<FirstParamOf<fn(str, int) @io -> bool>> == <str>)
+meta let _ = assert(<IsPureThunk<fn() -> int>> == <bool>)
+meta let _ = assert(<IsPureThunk<fn() @Clock -> int>> == <()>)
+meta let _ = assert(<JoinOut<Tasks>> == <.{ user: str, count: int, flag: bool }>)
+meta let _ = assert(<TryJoinOut<FallibleTasks>> == <.{ a: int, b: bool }>)
+
+-- @case callable_type_pattern_compile_error_on_non_callable compile-fail E0832
+type ReturnOf = \F -> match <F> {
+    <fn(..) @.. -> let R> -> <R>
+    _ -> compile_error("expected fn callable")
+}
+type Bad = ReturnOf<int>
+-- ^ E0832
